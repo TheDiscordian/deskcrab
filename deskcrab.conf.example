@@ -462,3 +462,13 @@ WHISPER_MODEL="/usr/share/whisper.cpp-model-small.en/ggml-small.en.bin"
 # to be able to sit on different models.
 # DESKCRAB_CHESS_MOVER_MODEL="fable"   # who picks the move
 # DESKCRAB_CHESS_CHAT_MODEL="sol"      # her voice at the table
+
+# The TypeSafe backend (specs/chessweb.md rule 16h). A jev-family mover
+# model — the routed timed-game defaults use "jev-latest" — is answered by
+# TypeSafe's decision-only System One API rather than a CLI engine, and the
+# call needs this key. Without it, a routed jev game leaves the move
+# unplayed with the failure exposed (identity is never substituted). The
+# key is read from the environment only; it never lands on an argv.
+# TYPESAFE_API_KEY=""
+# TYPESAFE_API_URL="https://api.typesafe.ai/v1/systemone"  # tests point this at a stub
+# TYPESAFE_HTTP_TIMEOUT="60"           # transport-level; not a thinking ceiling

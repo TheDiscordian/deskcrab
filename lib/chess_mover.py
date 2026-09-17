@@ -29,6 +29,7 @@ import re
 import shlex
 import shutil
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -773,6 +774,162 @@ def _codex_cooling():
     return False
 
 
+# --- The TypeSafe backend (specs/chessweb.md rule 16h) ----------------------
+# Jev is a decision-only System One model: no CLI, no text generation. The
+# mover asks ONE Choice question whose options ARE the legal moves, so the
+# whitelist is enforced by the question's own type instead of by parsing a
+# reply. The call runs as a subprocess (lib/typesafe_move.py) exactly where
+# a CLI engine would, so supersession, the clock bound, and the retry
+# rounds apply unchanged.
+
+def _jev_backend(model):
+    m = (model or "").lower()
+    return m == "jev" or m.startswith("jev-")
+
+
+def _jev_resolve(model):
+    m = (model or "").strip()
+    return "jev-latest" if m.lower() == "jev" else m
+
+
+def _piece_words(board, colour):
+    """The pieces in words, king first — Jev reads words better than a FEN
+    (its own jaggedness sheet: compact encodings underperform names)."""
+    parts = []
+    for pt in (chess.KING, chess.QUEEN, chess.ROOK, chess.BISHOP,
+               chess.KNIGHT, chess.PAWN):
+        squares = sorted(chess.square_name(s)
+                         for s in board.pieces(pt, colour))
+        if not squares:
+            continue
+        name = PIECE_NAME[pt] + ("s" if len(squares) > 1 else "")
+        parts.append(f"{name} on {', '.join(squares)}")
+    return "; ".join(parts) or "nothing"
+
+
+def jev_request(job, board):
+    """The one TypeSafe request body for a position (specs/chessweb.md rule
+    16h): a Choice whose options are the legal moves, each option's
+    description carrying the machine's computed verdicts in words — the
+    exchange on its destination, the sharpest reply found, the memory's
+    record with the move — and a state holding the same facts the CLI
+    prompt carries: the board (FEN and in words), the movetext, the
+    standing-losses, passed-pawn, and trades-while-ahead lines, the
+    position memory's own section, the job's note, and her persona sheet.
+    Jev judges; every count stays in code. The `model` field is the
+    helper's argv business, not this builder's."""
+    mem_lines, endorsed, _stamp = memory_sections(board)
+    scan = os.environ.get("DESKCRAB_CHESS_REPLY_SCAN", "1") != "0"
+    criteria = {}
+    for m in board.legal_moves:
+        uci = m.uci()
+        try:
+            san = board.san(m)
+        except Exception:
+            san = uci
+        backed = uci in endorsed
+        loss = material_loss(board, m)
+        if loss > 0:
+            desc = (f"{san} — the exchange on its own destination square "
+                    f"loses about {loss / 100:.1f} pawns of material")
+            if backed:
+                desc += ("; but her memory of similar positions holds a "
+                         "winning record with this move — the record is a "
+                         "concrete reason, weigh it on this board")
+            else:
+                desc += "; play it only with a concrete tactical reason"
+            criteria[uci] = desc
+            continue
+        worst = (0, None, None)
+        if scan:
+            try:
+                worst = worst_reply(board, m)
+            except Exception:
+                worst = (0, None, None)
+        victim = board.piece_type_at(m.to_square)
+        comp = PIECE_VALUE[victim] if victim else 0
+        if m.promotion:
+            comp += PIECE_VALUE[m.promotion] - PIECE_VALUE[chess.PAWN]
+        net = worst[0] - comp
+        if worst[1] is None or net < 100:
+            desc = (f"{san} — safe by the machine count: the exchange "
+                    "where it lands is even or better, and no punishing "
+                    "reply was found")
+            if backed:
+                desc += ("; her memory endorses it — similar stored "
+                         "positions where it was played were won")
+        elif worst[0] >= MATE_LOSS:
+            desc = f"{san} — walks into {worst[1]}, which is CHECKMATE"
+            if backed:
+                desc += " — her memory once backed it, but the mate stands"
+            desc += "; never play this"
+        else:
+            desc = (f"{san} — safe where it lands, but the opponent's "
+                    f"reply {worst[1]} {worst[2]}, costing about "
+                    f"{net / 100:.1f} pawns")
+            if backed:
+                desc += ("; her memory holds a winning record with it — "
+                         "weigh the record against the reply named")
+            else:
+                desc += ("; ruled out unless another fact here concretely "
+                         "answers that reply")
+        criteria[uci] = desc
+    state = {
+        "who_you_are": _persona().strip()
+        or "A strong chess player making a move in a live game.",
+        "game": (f"You are playing {job['side']} against "
+                 f"{job['opponent']} (game {job['gid']}, "
+                 f"ply {job['ply']})."),
+        "side_to_move": job["side"],
+        "position_fen": job["fen"],
+        "pieces_on_the_board": {
+            "white": _piece_words(board, chess.WHITE),
+            "black": _piece_words(board, chess.BLACK),
+        },
+        "moves_so_far": job.get("history") or "none yet",
+        "position_memory": mem_lines
+        or ["no stored positions near this one"],
+    }
+    try:
+        standing = standing_losses(board)
+        state["pieces_of_yours_the_opponent_can_win_where_they_stand"] = (
+            ", ".join(
+                f"{PIECE_NAME[p.piece_type]} on {chess.square_name(sq)} "
+                f"(loses about {loss / 100:.1f} pawns)"
+                for sq, p, loss in standing) or "none")
+    except Exception:
+        pass  # a failed sweep is a state without the field, never a lost move
+    try:
+        state["passed_pawns"] = passed_pawn_line(board)
+    except Exception:
+        pass
+    try:
+        guard = trade_guard_line(board)
+        if guard:
+            state["trades_while_ahead"] = guard
+    except Exception:
+        pass
+    note = (job.get("note") or "").strip()
+    if note:
+        state["note"] = note
+    questions = {"move": {
+        "type": "choice",
+        "instructions": (
+            f"Pick the single strongest legal chess move for "
+            f"{job['side']} in the position in the state. Every option is "
+            "one legal move in UCI notation, and its description carries "
+            "the machine-checked exchange arithmetic and her memory of "
+            "similar positions — the counting is already done; trust the "
+            "numbers as written. Prefer a move described as safe unless "
+            "another option's description names a concrete reason it wins "
+            "more. Never pick a move whose description says it loses "
+            "material, or walks into a named reply, unless the "
+            "description itself carries the answer to that."),
+        "criteria": criteria,
+    }}
+    return {"state": state, "questions": questions}
+
+
 def _codex_jsonl_answer(out):
     """(text, usage) when the stdout is a codex `--json` event stream —
     text may be "" for a run that answered nothing — else (None, None).
@@ -1065,6 +1222,7 @@ class Mover:
         schema_state = {
             "legal_uci": legal_uci if prior_rejection else None,
         }
+        jev_body = None
         for label, cmd, env in self._attempts(
                 effort, selfplay, job_model, schema_state=schema_state):
             timeout = None
@@ -1081,10 +1239,28 @@ class Mover:
                             % (selfplay_calls_tonight(),
                                selfplay_nightly_moves()))
                 break
+            send = prompt
+            if label == "typesafe":
+                # The TypeSafe attempt's stdin is the request body, not the
+                # CLI prompt (rule 16h); built once per position, lazily,
+                # so a game that never routes to Jev never pays for it.
+                if jev_body is None:
+                    try:
+                        jev_body = json.dumps(
+                            jev_request(job, board),
+                            separators=(",", ":")) + "\n"
+                    except Exception as e:
+                        # This attempt failed; the walk and the rounds
+                        # machinery own what happens next.
+                        last_why = f"typesafe request build failed: {e!r}"
+                        self.alert(f"mover: {job['gid']} ply {job['ply']} "
+                                   f"{last_why}")
+                        continue
+                send = jev_body
             self.metric("model-start",
                         f"{job['gid']} ply {job['ply']} effort {effort} "
                         f"{label}")
-            out, why = self._call(cmd, env, prompt, timeout=timeout)
+            out, why = self._call(cmd, env, send, timeout=timeout)
             dt = time.time() - t0
             if why == "superseded":
                 self.metric("model-end",
@@ -1138,6 +1314,38 @@ class Mover:
             yield "stub", shlex.split(override), self._env(None)
             return
         model = job_model or self._model(selfplay)
+        if _jev_backend(model):
+            # The TypeSafe backend (specs/chessweb.md rule 16h): the helper
+            # subprocess or nothing. A routed offer and a self-play job
+            # preserve exact identity — no key means no attempt and no
+            # substitute engine; an env-chain jev name falls through to
+            # the Claude walk after the one TypeSafe attempt, the codex
+            # bargain of model-backends.md rule 15, because an unrouted
+            # game in flight must not stall on a dry engine.
+            key = (os.environ.get("TYPESAFE_API_KEY") or "").strip()
+            if key:
+                helper = str(Path(__file__).resolve().parent
+                             / "typesafe_move.py")
+                yield ("typesafe",
+                       [sys.executable or "python3", helper,
+                        "--model", _jev_resolve(model)],
+                       self._env(None))
+            elif job_model or selfplay:
+                self.alert("mover: TYPESAFE_API_KEY is not set — no "
+                           "attempt for routed model %r; identity "
+                           "preserved, no substitute engine" % model)
+                return
+            if job_model or selfplay:
+                return
+            if not key:
+                self.alert("mover: TYPESAFE_API_KEY is not set — jev "
+                           "model %r from the environment chain goes "
+                           "straight to the Claude walk" % model)
+            model = os.environ.get("CODEX_FALLBACK_MODEL") or "sonnet"
+            if _codex_backend(model) or _jev_backend(model):
+                model = "sonnet"
+            if effort == "ultra":
+                effort = "max"
         if _codex_backend(model):
             if selfplay:
                 # An honoured codex SELF-PLAY job plays through the codex

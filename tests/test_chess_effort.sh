@@ -440,14 +440,14 @@ print("untimed:", chessweb.mover_model_for({}))
 print("none-game:", chessweb.mover_model_for(None))
 EOF
 )"
-contains "$MM" "unset: sonnet" \
+contains "$MM" "unset: jev-latest" \
     && ok "no per-speed knob means the shipped routed default rides the job" \
     || fail "mover_model_for: $MM"
 contains "$MM" "set: haiku" \
     && ok "the per-speed knob rides the job for its speed" \
     || fail "mover_model_for: $MM"
-contains "$MM" "rapid: opus opus" \
-    && ok "both Rapid controls carry the one decided rapid winner" \
+contains "$MM" "rapid: jev-latest opus" \
+    && ok "10+0 rides the exact-control jev override; 15+10 keeps the rapid winner" \
     || fail "mover_model_for: $MM"
 contains "$MM" "rapid-override: sonnet" \
     && ok "the per-speed knob overrides the routed default" \
@@ -457,7 +457,7 @@ contains "$MM" "untimed: fable" && contains "$MM" "none-game: fable" \
     || fail "mover_model_for: $MM"
 
 echo
-echo "the benchmark-chosen per-speed model default (rule 16b, 2026-08-28):"
+echo "the decided per-speed and per-control model default (rule 16b):"
 RT="$("$PY" -B - <<EOF
 import sys, os; sys.path.insert(0, "$REPO/lib")
 import chess_effort, chessweb
@@ -482,7 +482,7 @@ chess_effort.SPEED_MODELS.clear()
 print("cleared:", chessweb.mover_model_for(timed))
 EOF
 )"
-contains "$RT" "shipped: sonnet gpt-5.3-codex-spark opus opus fable" \
+contains "$RT" "shipped: jev-latest jev-latest jev-latest opus fable" \
     && ok "the shipped tables carry the user's decided route for every bucket" \
     || fail "SPEED_MODELS: $RT"
 contains "$RT" "routed: sonnet" \

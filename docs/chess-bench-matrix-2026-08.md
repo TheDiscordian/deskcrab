@@ -8,11 +8,18 @@ The full resumable plan and raw ledger are `~/.local/share/deskcrab/chess/selfpl
 
 ## Applied routing while comparisons are pending
 
+The 2026-09-17 user decision routes every timed control except 15+10 onto
+TypeSafe's Jev (specs/chessweb.md rules 16b and 16h). Jev is outside this
+study's matrix: it is unmeasured here, and its rows below carry no clock-
+safety claim. No claim is made that no configuration CAN finish a control;
+the study is incomplete, and unmeasured configurations are not spoken for.
+
 | Control | Live state | Model | Quiet/sharp | Basis |
 |---|---|---|---|---|
-| 1+0, 2+1 | disabled | sonnet | low/low | No MEASURED configuration reliably finished bullet. |
-| 3+2, 5+0 | enabled | gpt-5.3-codex-spark | low/low | EXPLICIT USER-SELECTED live-play trial; no benchmark clock-safety claim. |
-| 10+0, 15+10 | enabled | opus | low/low | Provisional rapid route pending direct comparisons. |
+| 1+0, 2+1 | disabled | jev-latest | low/low | EXPLICIT USER-SELECTED TypeSafe route, unmeasured here; no MEASURED configuration reliably finished bullet, so creation stays disabled. |
+| 3+2, 5+0 | enabled | jev-latest | low/low | EXPLICIT USER-SELECTED live-play trial of TypeSafe's Jev; unmeasured here, no benchmark clock-safety claim. |
+| 10+0 | enabled | jev-latest | low/low | The same user-selected Jev trial, via the exact-control door. |
+| 15+10 | enabled | opus | low/low | Kept by the user's explicit exclusion; provisional rapid route pending direct comparisons. |
 | untimed | enabled | gpt-6-astra | low/medium | Local untimed model override; outside this timed study. |
 
 

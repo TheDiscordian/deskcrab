@@ -1,29 +1,31 @@
 #!/bin/bash
 # The user's decided chess routing table, resolved through the real bridge
-# code path with every model backend stubbed — specs/chessweb.md rule 16b,
-# eng record redo-the-chess-benchmark-across-full-model-effor.
+# code path with every model backend stubbed — specs/chessweb.md rules 16b
+# and 16h.
 # Run: bash tests/test_chess_routing_table.sh
 #
 # The contract under test, all of it local and fully stubbed (no live model
-# call of any kind, and the real Spark backend is NEVER invoked — the only
+# call of any kind, no network beyond a doomed loopback connect — the only
 # executions are sandbox-local stub scripts):
 #
-#   1. Every standard timer resolves the user's final table (2026-09-01)
-#      through the bridge's own resolution path (chess_cli.make_time_control
-#      -> chessweb.mover_model_for + chess_effort.pair_for, the exact calls
-#      answer_position/move_effort make): bullet Sonnet low/low, blitz
-#      gpt-5.3-codex-spark low/low, rapid Opus low/low, untimed Fable
-#      low/medium.
-#   2. A routed model is exact. A cooling codex login yields NO attempt at
-#      all; a stub-refused routed codex model leaves the move unplayed with
-#      the failure exposed; neither ever substitutes a Claude call.
-#   3. Same-model Claude account rotation still succeeds: a routed Claude
-#      model refused on account 1 is answered on account 2 with the SAME
+#   1. Every standard timer resolves the user's 2026-09-17 table through
+#      the bridge's own resolution path (chess_cli.make_time_control ->
+#      chessweb.mover_model_for + chess_effort.pair_for, the exact calls
+#      answer_position/move_effort make): every timed control except 15+10
+#      rides TypeSafe's jev-latest; 15+10 keeps the measured rapid winner
+#      (Opus low/low); untimed keeps Fable low/medium. The 10+0 route is
+#      the exact-control door (CONTROL_MODELS) splitting rapid.
+#   2. A routed model is exact. A routed jev offer with no TYPESAFE_API_KEY
+#      yields NO attempt at all with the refusal named out loud; a routed
+#      jev offer whose endpoint is unreachable makes exactly one typesafe
+#      attempt and leaves the move unplayed with the failure exposed;
+#      neither ever substitutes a Claude or codex call.
+#   3. Same-model Claude account rotation still succeeds: the routed 15+10
+#      Opus refused on account 1 is answered on account 2 with the SAME
 #      model on both argvs.
-#   4. The honest wording stands pinned: the bullet verdict carries the
-#      "no MEASURED configuration" qualifier and the blitz Spark cell is
-#      named an explicit USER-SELECTED live-play trial in code, spec, and
-#      report.
+#   4. The honest wording stands pinned: Jev is named UNMEASURED on the
+#      clock matrix in code and spec, and the spec's bullet gate still
+#      claims only what was measured.
 . "$(dirname "$(readlink -f "$0")")/lib/sandbox.sh"
 set -u
 
@@ -53,34 +55,35 @@ print("untimed: %s %s/%s" % (model, q, s))
 PYEOF
 )"
 echo "$RES" | sed 's/^/    /'
-contains "$RES" "1+0: sonnet low/low" \
-    && ok "1+0 resolves Sonnet low/low" || fail "1+0 resolution" "$(printf '%s\n' "$RES" | grep '^1+0:')"
-contains "$RES" "2+1: sonnet low/low" \
-    && ok "2+1 resolves Sonnet low/low" || fail "2+1 resolution" "$(printf '%s\n' "$RES" | grep '^2+1:')"
-contains "$RES" "3+2: gpt-5.3-codex-spark low/low" \
-    && ok "3+2 resolves the user-selected Spark trial at low/low" \
+contains "$RES" "1+0: jev-latest low/low" \
+    && ok "1+0 resolves jev-latest" || fail "1+0 resolution" "$(printf '%s\n' "$RES" | grep '^1+0:')"
+contains "$RES" "2+1: jev-latest low/low" \
+    && ok "2+1 resolves jev-latest" || fail "2+1 resolution" "$(printf '%s\n' "$RES" | grep '^2+1:')"
+contains "$RES" "3+2: jev-latest low/low" \
+    && ok "3+2 resolves jev-latest" \
     || fail "3+2 resolution" "$(printf '%s\n' "$RES" | grep '^3+2:')"
-contains "$RES" "5+0: gpt-5.3-codex-spark low/low" \
-    && ok "5+0 resolves the user-selected Spark trial at low/low" \
+contains "$RES" "5+0: jev-latest low/low" \
+    && ok "5+0 resolves jev-latest" \
     || fail "5+0 resolution" "$(printf '%s\n' "$RES" | grep '^5+0:')"
-contains "$RES" "10+0: opus low/low" \
-    && ok "10+0 resolves Opus low/low" || fail "10+0 resolution" "$(printf '%s\n' "$RES" | grep '^10+0:')"
+contains "$RES" "10+0: jev-latest low/low" \
+    && ok "10+0 resolves jev-latest through the exact-control door" \
+    || fail "10+0 resolution" "$(printf '%s\n' "$RES" | grep '^10+0:')"
 contains "$RES" "15+10: opus low/low" \
-    && ok "15+10 resolves Opus low/low" || fail "15+10 resolution" "$(printf '%s\n' "$RES" | grep '^15+10:')"
+    && ok "15+10 keeps the measured rapid winner, Opus low/low" \
+    || fail "15+10 resolution" "$(printf '%s\n' "$RES" | grep '^15+10:')"
 contains "$RES" "untimed: fable low/medium" \
     && ok "untimed resolves the configured Fable model at low/medium" \
     || fail "untimed resolution" "$(printf '%s\n' "$RES" | grep '^untimed:')"
 
 echo
 echo "a routed model is exact — unavailable means unplayed, never substituted:"
-CODEX_STUB="$T/bin/codex-refusing"
+CODEX_STUB="$T/bin/codex-witness"
 CODEX_WITNESS="$T/witness/codex-calls"
 cat > "$CODEX_STUB" <<STUB
 #!/bin/bash
 cat > /dev/null
 printf 'invoked\t%s\n' "\$*" >> "$CODEX_WITNESS"
-echo '{"type":"error","message":"You have hit your usage limit. Try again later."}' >&2
-exit 1
+echo "e2e4"
 STUB
 chmod +x "$CODEX_STUB"
 
@@ -103,6 +106,7 @@ PYOUT="$(env CODEX_BIN="$CODEX_STUB" CLAUDE_BIN="$CLAUDE_STUB" \
     DESKCRAB_CHESS_DIR="$T/chess-games" \
     DESKCRAB_CHESS_MEMORY_PROMPT=0 DESKCRAB_CHESS_SIMILAR=0 \
     DESKCRAB_CODEX_STATE="$T/codex-state-clean" \
+    TYPESAFE_HTTP_TIMEOUT=2 \
     "$PY" -B - <<PYEOF
 import os, sys, time
 sys.path.insert(0, "$REPO/lib")
@@ -121,72 +125,69 @@ def job(gid, model):
             "effort": "low", "t0": time.time()}
 
 blitz_model = chess_effort.model_for("blitz", "3+2")
-bullet_model = chess_effort.model_for("bullet", "1+0")
+rapid_model = chess_effort.model_for("rapid", "15+10")
 print("blitz-routed-model:", blitz_model)
-print("bullet-routed-model:", bullet_model)
+print("rapid-routed-model:", rapid_model)
 
-# 1. COOLING: the routed blitz model's login is cooling — zero attempts of
-#    any kind, the refusal named out loud, the move unplayed.
-cool = "$T/codex-state-cooling"
-with open(cool, "w") as fh:
-    fh.write("blocked-until\t%d\tusage limit\n" % (int(time.time()) + 900))
-os.environ["DESKCRAB_CODEX_STATE"] = cool
-outcome, why = m._answer(job("cool-1", blitz_model))
-print("cooling-outcome:", outcome)
-print("cooling-alerted:", any("cooling" in a and "no substitute" in a
-                              for a in alerts))
-print("cooling-played:", len(played))
+# 1. NO KEY: the routed jev offer without TYPESAFE_API_KEY — zero attempts
+#    of any kind, the refusal named out loud, the move unplayed.
+os.environ.pop("TYPESAFE_API_KEY", None)
+outcome, why = m._answer(job("nokey-1", blitz_model))
+print("nokey-outcome:", outcome)
+print("nokey-alerted:", any("TYPESAFE_API_KEY" in a and "no substitute" in a
+                            for a in alerts))
+print("nokey-played:", len(played))
 
-# 2. REFUSAL: the login answers but the routed model refuses over usage —
-#    exactly one local stub attempt, the failure exposed, still unplayed.
-os.environ["DESKCRAB_CODEX_STATE"] = "$T/codex-state-clean"
-outcome, why = m._answer(job("refuse-1", blitz_model))
-print("refusal-outcome:", outcome)
-print("refusal-why-visible:", "usage limit" in (why or "").lower())
-print("refusal-alerted:", any("refuse-1" in a and "every attempt failed" in a
-                              for a in alerts))
-print("refusal-played:", len(played))
+# 2. DEAD ENDPOINT: the key is set but the endpoint is unreachable — one
+#    typesafe attempt (the helper), the failure exposed, still unplayed,
+#    and never a Claude or codex substitute.
+os.environ["TYPESAFE_API_KEY"] = "test-key-never-sent-anywhere"
+os.environ["TYPESAFE_API_URL"] = "http://127.0.0.1:1/systemone"
+outcome, why = m._answer(job("dead-1", blitz_model))
+print("dead-outcome:", outcome)
+print("dead-why-visible:", "connection failed" in (why or "").lower()
+      or "api error" in (why or "").lower())
+print("dead-played:", len(played))
+del os.environ["TYPESAFE_API_KEY"]
+del os.environ["TYPESAFE_API_URL"]
 
-# 3. ROTATION: the routed bullet model is Claude-family; account 1 refuses,
+# 3. ROTATION: the routed 15+10 model is Claude-family; account 1 refuses,
 #    account 2 answers — the move lands, the model never changes.
-outcome, why = m._answer(job("rotate-1", bullet_model))
+outcome, why = m._answer(job("rotate-1", rapid_model))
 print("rotation-outcome:", outcome)
 print("rotation-played:", played)
 PYEOF
 )"
 echo "$PYOUT" | sed 's/^/    /'
 
-contains "$PYOUT" "blitz-routed-model: gpt-5.3-codex-spark" \
-    && ok "the blitz offer under test is the live table's own Spark slug" \
+contains "$PYOUT" "blitz-routed-model: jev-latest" \
+    && ok "the blitz offer under test is the live table's own jev-latest" \
     || fail "blitz routed model" "$(printf '%s\n' "$PYOUT" | grep blitz-routed-model)"
-contains "$PYOUT" "bullet-routed-model: sonnet" \
-    && ok "the bullet offer under test is the live table's own Sonnet" \
-    || fail "bullet routed model" "$(printf '%s\n' "$PYOUT" | grep bullet-routed-model)"
+contains "$PYOUT" "rapid-routed-model: opus" \
+    && ok "the 15+10 offer under test is the live table's own Opus" \
+    || fail "rapid routed model" "$(printf '%s\n' "$PYOUT" | grep rapid-routed-model)"
 
 echo
-echo "cooling: no attempt, no substitute, failure exposed:"
-contains "$PYOUT" "cooling-outcome: failed" \
+echo "no key: no attempt, no substitute, failure exposed:"
+contains "$PYOUT" "nokey-outcome: failed" \
     && ok "the move is unplayed — the round is a visible failure" \
-    || fail "cooling outcome" "$(printf '%s\n' "$PYOUT" | grep cooling-outcome)"
-contains "$PYOUT" "cooling-alerted: True" \
-    && ok "the cooling refusal is named out loud with no substitute engine" \
-    || fail "cooling alert" "$(printf '%s\n' "$PYOUT" | grep cooling-alerted)"
-contains "$PYOUT" "cooling-played: 0" \
-    && ok "nothing was posted to the board" || fail "cooling played" "$(printf '%s\n' "$PYOUT" | grep cooling-played)"
+    || fail "nokey outcome" "$(printf '%s\n' "$PYOUT" | grep nokey-outcome)"
+contains "$PYOUT" "nokey-alerted: True" \
+    && ok "the missing key is named out loud with no substitute engine" \
+    || fail "nokey alert" "$(printf '%s\n' "$PYOUT" | grep nokey-alerted)"
+contains "$PYOUT" "nokey-played: 0" \
+    && ok "nothing was posted to the board" || fail "nokey played" "$(printf '%s\n' "$PYOUT" | grep nokey-played)"
 
 echo
-echo "stub refusal: one local attempt, unplayed, exposed, zero Claude calls:"
-contains "$PYOUT" "refusal-outcome: failed" \
-    && ok "the refused routed model leaves the move unplayed" \
-    || fail "refusal outcome" "$(printf '%s\n' "$PYOUT" | grep refusal-outcome)"
-contains "$PYOUT" "refusal-why-visible: True" \
-    && ok "the failure cause carries the refusal text" \
-    || fail "refusal why" "$(printf '%s\n' "$PYOUT" | grep refusal-why)"
-contains "$PYOUT" "refusal-alerted: True" \
-    && ok "the failure is exposed through the mover's alert machinery" \
-    || fail "refusal alert" "$(printf '%s\n' "$PYOUT" | grep refusal-alerted)"
-contains "$PYOUT" "refusal-played: 0" \
-    && ok "still nothing posted to the board" || fail "refusal played" "$(printf '%s\n' "$PYOUT" | grep refusal-played)"
+echo "dead endpoint: one typesafe attempt, unplayed, exposed, zero Claude calls:"
+contains "$PYOUT" "dead-outcome: failed" \
+    && ok "the unreachable routed jev leaves the move unplayed" \
+    || fail "dead outcome" "$(printf '%s\n' "$PYOUT" | grep dead-outcome)"
+contains "$PYOUT" "dead-why-visible: True" \
+    && ok "the failure cause names the transport" \
+    || fail "dead why" "$(printf '%s\n' "$PYOUT" | grep dead-why)"
+contains "$PYOUT" "dead-played: 0" \
+    && ok "still nothing posted to the board" || fail "dead played" "$(printf '%s\n' "$PYOUT" | grep dead-played)"
 
 echo
 echo "same-model account rotation still succeeds:"
@@ -199,37 +200,27 @@ contains "$PYOUT" "rotation-played: [('rotate-1', 'e2e4')]" \
 check_eq "the Claude stub ran exactly twice (both rotation accounts)" \
     "$(sandbox_count_in . "$CLAUDE_WITNESS")" "2"
 check_eq "both Claude attempts carried the routed model, never a substitute" \
-    "$(sandbox_count_in "--model sonnet" "$CLAUDE_WITNESS")" "2"
+    "$(sandbox_count_in "--model opus" "$CLAUDE_WITNESS")" "2"
 check_eq "both Claude attempts carried the routed low effort" \
     "$(sandbox_count_in "--effort low" "$CLAUDE_WITNESS")" "2"
 
 echo
-echo "Spark was never really called — every execution was a sandbox stub:"
-check_eq "the codex stub ran exactly once (the refusal case; cooling ran none)" \
-    "$(sandbox_count_in invoked "$CODEX_WITNESS")" "1"
-check_eq "that one stub invocation carried the exact routed slug" \
-    "$(sandbox_count_in "-m gpt-5.3-codex-spark" "$CODEX_WITNESS")" "1"
-check_eq "no Claude invocation ever named the spark slug (no cross-engine walk)" \
-    "$(sandbox_count_in spark "$CLAUDE_WITNESS")" "0"
-echo "    real-spark-invocations: 0 (CODEX_BIN and CLAUDE_BIN are sandbox stubs;" \
-     "the sandbox PATH holds stubs first and no network client exists here)"
+echo "no cross-engine walk anywhere in the routed cases:"
+check_eq "the codex stub never ran at all" \
+    "$(sandbox_count_in invoked "$CODEX_WITNESS")" "0"
+check_eq "no Claude invocation ever named a jev model" \
+    "$(sandbox_count_in jev "$CLAUDE_WITNESS")" "0"
 
 echo
-echo "the honest wording stands pinned (rule 20a honesty, the 2026-09-01 trial):"
-check "chess_effort.py keeps the bullet MEASURED qualifier" \
-    grep -q "no MEASURED configuration" "$REPO/lib/chess_effort.py"
-check "chess_effort.py names blitz an explicit USER-SELECTED live-play trial" \
-    grep -q "USER-SELECTED live-play trial" "$REPO/lib/chess_effort.py"
-check "chess_effort.py states the benchmark found spark-low too slow for 10+0" \
-    grep -q "too slow for 10+0" "$REPO/lib/chess_effort.py"
+echo "the honest wording stands pinned (rule 20a honesty, the 2026-09-17 route):"
+check "chess_effort.py names Jev UNMEASURED on the clock matrix" \
+    grep -q "UNMEASURED on the clock matrix" "$REPO/lib/chess_effort.py"
+check "the spec says the same of the Jev rows" \
+    grep -qi "unmeasured on the clock matrix" "$REPO/specs/chessweb.md"
 check_eq "no absolute physically-finishes claim in chess_effort.py" \
     "$(sandbox_count_in "physically finishes" "$REPO/lib/chess_effort.py")" "0"
 check_eq "no unqualified 'no configuration ... finishes' claim either" \
     "$(grep -ci "no configuration[^.]*finishes" "$REPO/lib/chess_effort.py")" "0"
-check "the spec names the blitz trial the same way" \
-    grep -q "USER-SELECTED live-play trial" "$REPO/specs/chessweb.md"
-check "the report names the blitz trial the same way" \
-    grep -q "USER-SELECTED live-play trial" "$REPO/docs/chess-bench-matrix-2026-08.md"
 check "the spec's bullet gate claims only what was measured" \
     grep -q "no MEASURED configuration finished bullet reliably" \
     "$REPO/specs/chessweb.md"

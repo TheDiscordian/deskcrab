@@ -28,13 +28,10 @@ import chess
 QUIET = os.environ.get("DESKCRAB_CHESS_EFFORT_QUIET", "low")
 SHARP = os.environ.get("DESKCRAB_CHESS_EFFORT_SHARP", "medium")
 
-# Exact controls may have different measured winners even when they share a
-# speed label, so a control table wins over the broader speed default. The
-# user's final routing decision (2026-09-01, eng record
-# redo-the-chess-benchmark-across-full-model-effor) is bucket-shaped — one
-# row per speed — so both control tables ship EMPTY and the speed tables
-# below carry every route; an exact-control override lands here only when
-# one is decided.
+# Exact controls may have different winners even when they share a speed
+# label, so a control table wins over the broader speed default. The pair
+# table is still bucket-shaped and ships empty; the model table now carries
+# the one decided exact-control override (10+0, below).
 CONTROL_PAIRS = {}
 
 SPEED_PAIRS = {
@@ -43,36 +40,44 @@ SPEED_PAIRS = {
     "rapid": ("low", "low"),
 }
 
-# The user's final routing table, decided 2026-09-01 after the completed
-# corrected full-game matrix benchmark (docs/chess-bench-matrix-2026-08.md):
+# The user's routing table, decided 2026-09-17 (chessweb.md rule 16b),
+# superseding the 2026-09-01 benchmark table for every timed control but
+# 15+10: every other timed control plays through TypeSafe's Jev
+# (`jev-latest`), the decision-only System One backend of chessweb.md rule
+# 16h. Jev is UNMEASURED on the clock matrix
+# (docs/chess-bench-matrix-2026-08.md predates it); its case is speed — a
+# decision-only model answers a Choice in about a second, where the matrix
+# found no CLI model fast enough for blitz and no reliable bullet finisher
+# at all. The Jev rows are an explicit USER-SELECTED live-play trial, not
+# a benchmark verdict, and live play is their judge — exactly as it was
+# for the Spark blitz trial this table retires.
 #
-#   bullet (1+0, 2+1)  sonnet  low/low — the benchmark's LEAST-FAILURE
-#       verdict, not a reliable finisher: no MEASURED configuration finishes
-#       bullet reliably (sonnet-low carried the fewest failures, 3 flags in
-#       8 games), and unmeasured configurations are not spoken for.
+#   bullet (1+0, 2+1)  jev-latest — the route stands ready, but
 #       Bullet remains disabled in live play
-#       (chess_cli.DISABLED_LIVE_TIME_CONTROLS).
-#   blitz (3+2, 5+0)  gpt-5.3-codex-spark  low/low — an EXPLICIT
-#       USER-SELECTED live-play trial, NOT a benchmark-proven clock-safe
-#       winner. The completed benchmark measured spark-low too slow for 10+0
-#       (game 549: flagged after 103 plies through the configured codex
-#       login) and found no measured model fast enough for blitz; the
-#       measured blitz verdict was sonnet-low. The user chose the Spark
-#       trial for live blitz anyway, and its judge is live play itself.
-#   rapid (10+0, 15+10)  opus  low/low — the measured reliable winner
-#       (pooled rate 0.75, zero failure events).
+#       (chess_cli.DISABLED_LIVE_TIME_CONTROLS) until deliberately
+#       re-enabled: no MEASURED configuration finished bullet reliably,
+#       and Jev is not measured either.
+#   blitz (3+2, 5+0)  jev-latest
+#   rapid, split by exact control: 10+0  jev-latest (CONTROL_MODELS —
+#       the exact-control door, which wins over the speed row);
+#       15+10  opus  low/low — the matrix's measured reliable winner
+#       (pooled rate 0.75, zero failure events), kept by the user's
+#       explicit exclusion.
 #   untimed  fable  low/medium — the user's decision: the configured Fable
 #       model at the module (QUIET, SHARP) pair above.
+#
+# Jev takes no reasoning-effort knob, so on its rows the pair prices only
+# the pre-check's own metrics stamp, never the call.
 #
 # A routed model is exact (chessweb.md rule 16b): the mover may rotate
 # same-model Claude accounts, but a routed model that is unavailable,
 # refusing, or cooling leaves the move unplayed with the failure exposed —
 # never a silent substitute.
-CONTROL_MODELS = {}
+CONTROL_MODELS = {"10+0": "jev-latest"}
 
 SPEED_MODELS = {
-    "bullet": "sonnet",
-    "blitz": "gpt-5.3-codex-spark",
+    "bullet": "jev-latest",
+    "blitz": "jev-latest",
     "rapid": "opus",
     "untimed": "fable",
 }
