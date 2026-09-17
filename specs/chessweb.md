@@ -353,35 +353,39 @@ cannot be changed.
     quiet position uses the first effort in the routed pair; any alarm uses the second.
     `DESKCRAB_CHESS_ALWAYS_LOW=1` bypasses the classifier and pins every move to `low`.
 
-    The routing table is the user's final decision (2026-09-01, eng record
-    redo-the-chess-benchmark-across-full-model-effor), applied to every standard timer and
-    to untimed:
+    The routing table is the user's decision of 2026-09-17, superseding the 2026-09-01
+    benchmark table (eng record redo-the-chess-benchmark-across-full-model-effor) for
+    every timed control but 15+10: every other timed control plays through TypeSafe's
+    Jev — a decision-only System One model reached over HTTPS, rule 16h's backend — and
+    15+10 keeps the measured rapid winner:
 
     | Control | Speed | Model | Quiet | Sharp |
     | --- | --- | --- | --- | --- |
-    | 1+0 | bullet | `sonnet` | `low` | `low` |
-    | 2+1 | bullet | `sonnet` | `low` | `low` |
-    | 3+2 | blitz | `gpt-5.3-codex-spark` | `low` | `low` |
-    | 5+0 | blitz | `gpt-5.3-codex-spark` | `low` | `low` |
-    | 10+0 | rapid | `opus` | `low` | `low` |
+    | 1+0 | bullet | `jev-latest` | `low` | `low` |
+    | 2+1 | bullet | `jev-latest` | `low` | `low` |
+    | 3+2 | blitz | `jev-latest` | `low` | `low` |
+    | 5+0 | blitz | `jev-latest` | `low` | `low` |
+    | 10+0 | rapid | `jev-latest` | `low` | `low` |
     | 15+10 | rapid | `opus` | `low` | `low` |
     | untimed | — | `fable` | `low` | `medium` |
 
-    The decision is bucket-shaped, so `chess_effort.SPEED_MODELS` and `SPEED_PAIRS` carry
-    every route (untimed's model rides the table's `untimed` row; its pair is the uniform
-    `DESKCRAB_CHESS_EFFORT_QUIET` / `DESKCRAB_CHESS_EFFORT_SHARP` pair, defaults
-    `low`/`medium`). `CONTROL_MODELS` and `CONTROL_PAIRS` ship empty; they remain the door
-    for a future exact-control override, and win over the speed tables when populated.
+    The decision is bucket-shaped except at rapid, so `chess_effort.SPEED_MODELS` and
+    `SPEED_PAIRS` carry the speed routes (untimed's model rides the table's `untimed`
+    row; its pair is the uniform `DESKCRAB_CHESS_EFFORT_QUIET` /
+    `DESKCRAB_CHESS_EFFORT_SHARP` pair, defaults `low`/`medium`), and `CONTROL_MODELS`
+    carries the one exact-control override — `10+0` onto `jev-latest`, splitting rapid —
+    which wins over the speed tables exactly as that door was built to. `CONTROL_PAIRS`
+    still ships empty. Jev takes no reasoning-effort knob, so on its rows the pair
+    prices only the pre-check's own stamp (rule 17's `effort` metric), never the call.
 
-    The blitz cell is an EXPLICIT USER-SELECTED live-play trial, not a benchmark-proven
-    clock-safe winner: the completed corrected benchmark measured Spark-low too slow for
-    10+0 (game 549 flagged after 103 plies through the configured codex login) and found
-    NO measured model fast enough for blitz — the measured blitz verdict was sonnet-low.
-    The user selected the Spark trial for live blitz anyway; live play is its judge.
+    The Jev rows are the user's live-play selection, not a benchmark verdict: Jev is
+    unmeasured on the clock matrix (docs/chess-bench-matrix-2026-08.md predates it), and
+    its case is speed — a decision-only model answers a Choice in about a second, where
+    the measured matrix found NO CLI model fast enough for blitz and no reliable bullet
+    finisher at all. Live play is its judge, exactly as it was for the Spark blitz trial
+    this table retires.
 
-    The bullet cell is the benchmark's least-failure verdict, not a reliable finisher: no
-    MEASURED configuration finishes bullet reliably, and unmeasured configurations are not
-    spoken for. Bullet stays disabled for live creation (see below) while its route stands
+    The bullet rows stay disabled for live creation (see below) while their route stands
     ready for a deliberate re-enable.
 
     `DESKCRAB_CHESS_MOVER_MODEL_<SPEED>` and
@@ -391,15 +395,16 @@ cannot be changed.
 
     A routed offer preserves EXACT model identity end to end: the mover may rotate
     same-model Claude accounts (identity-preserving), but it never substitutes another
-    model or engine for a routed offer — a routed codex model that refuses over usage, is
-    cooling, or cannot run yields NO attempt at all, making zero Claude calls: the move
-    stays unplayed, the failure is visible through rule 16e's alert and stall machinery,
-    and the position is re-offered on its cooldown. The engine-fallback walk
-    (model-backends.md rule 15) applies only to a model chosen by the mover's own
-    environment chain, never to a routed offer. Self-play jobs never read any of this;
-    their model is chess-selfplay.md's business (rules 2 and 15).
+    model or engine for a routed offer — a routed codex or jev model that refuses over
+    usage, is cooling, or cannot run yields NO attempt at all, making zero Claude calls:
+    the move stays unplayed, the failure is visible through rule 16e's alert and stall
+    machinery, and the position is re-offered on its cooldown. The engine-fallback walk
+    (model-backends.md rule 15, and rule 16h's jev twin of it) applies only to a model
+    chosen by the mover's own environment chain, never to a routed offer. Self-play jobs
+    never read any of this; their model is chess-selfplay.md's business (rules 2 and 15).
 
-    Only a successful CLI completion may supply a move. Output from a failed attempt is
+    Only a successful engine completion — a CLI's, or the TypeSafe helper's (rule
+    16h) — may supply a move. Output from a failed attempt is
     never scanned for UCI or SAN, even when its error metadata contains a legal-looking
     token. Structured failure messages are extracted before display truncation, so account,
     allowance, and capacity classifiers receive the actual cause rather than a JSON prefix.
@@ -422,6 +427,57 @@ cannot be changed.
     `DESKCRAB_CHESS_EFFORT_CAPTURE` (capture-alarm floor, default 5),
     `DESKCRAB_CHESS_EFFORT_NOVEL_ROWS` (vector rows before novelty may be judged, default 500),
     `DESKCRAB_CHESS_EFFORT_NOVEL_MIN` (the similarity floor, default 0.75).
+16h. **The TypeSafe backend.** A `jev`-family model — `jev` alone, or any `jev-*` name:
+    the alias `jev-latest`, `jev-preview`, a versioned `jev-1.13.0` — is TypeSafe's Jev,
+    a decision-only System One model reached over HTTPS (`POST` to `TYPESAFE_API_URL`,
+    default `https://api.typesafe.ai/v1/systemone`), never through a CLI engine. Jev
+    generates no text: the mover asks ONE Choice question whose options ARE the legal
+    moves, so rule 16's whitelist is enforced by the question's own type instead of by
+    parsing a reply, and the answer's `choice` still passes the normal board-legality
+    check before it is played. This backend exists for the chess mover alone — a
+    decision model cannot hold a conversation, so no turn, wake, job, or classifier
+    routes to it (model-backends.md, ROUTING).
+    * The call is `lib/typesafe_move.py`, spawned as the attempt's subprocess exactly
+      where a CLI engine would run, so supersession (rule 16c), the clock bound (rule
+      16g), and the retry rounds (rule 16e) apply unchanged. The complete request body
+      arrives on stdin; the answer leaves on stdout as the same `{"result": ...,
+      "usage": ...}` object shape the Claude CLI's json output takes — one parser in the
+      mover for every engine — with the answer's `confidence` carried alongside, and the
+      token ledger records the attempt like any other (kind `chess`). The helper is
+      stdlib-only: no SDK enters the chess venv for one POST.
+    * The request's `state` carries the same facts the CLI prompt does, as named fields:
+      whom she is playing and as which side, the FEN and the pieces in words (Jev reads
+      compact encodings poorly — its own jaggedness sheet's advice), the movetext, the
+      standing-losses, passed-pawn, and trades-while-ahead lines, the position memory's
+      own section (chess-reflex.md rule 14 — the nearest stored neighbours with their
+      outcomes, warnings, and endorsements ride here exactly as they ride the prompt),
+      the job's note, and her chess persona sheet — the mover is still her
+      (chess-mover-amendment.md rule 1), decision engine or not. Every arithmetic
+      verdict stays computed in code and lands in words in each option's criteria
+      description — the exchange count, the sharpest reply found, the memory's record
+      with the move — because Jev is not a calculator and is never asked to be one.
+      The state crosses to TypeSafe's API over TLS, the sitter's typed name and the
+      game facts included: the user's explicit 2026-09-17 decision, the key provided
+      for exactly this.
+    * Identity is preserved exactly as for any routed offer: no key (`TYPESAFE_API_KEY`
+      unset), an auth refusal, a rate limit, or an overload yields a failed attempt and
+      NO substitute engine — the move stays unplayed and rule 16e's machinery shows it.
+      A jev name from the mover's own ENVIRONMENT CHAIN instead falls through to the
+      Claude walk after the one TypeSafe attempt, the codex bargain of model-backends.md
+      rule 15, because an unrouted game in flight must not stall on a dry engine.
+    * The helper retries a 429/529 briefly inside the attempt (the provider's own
+      back-off advice) and carries a transport timeout per request — Jev answers in
+      about a second, so a dead minute is a dead connection, not thinking; the retired
+      per-attempt thinking ceiling (rule 16g's ruling) is a different thing and stays
+      retired. A transport failure is a failed attempt on the ordinary rounds, never a
+      manufactured move. Failure lines name their cause in the mover's own vocabulary
+      (rate limit, overloaded, not logged in), so rule 16e's cause extraction and the
+      capacity/auth classifiers read TypeSafe failures like any other engine's.
+    * Jev takes no reasoning-effort knob: rule 16b's effort answer is stamped in the
+      metrics as ever and not sent. The key comes from `TYPESAFE_API_KEY` in the
+      environment (the bridge's EnvironmentFile) and never lands on an argv;
+      `TYPESAFE_API_URL` exists so tests answer with a local stub and no test ever
+      spends a live token.
 17. The move path stamps where its time went, into the same dated turn-metrics log as every
     other path (turn-pipeline.md rule 33), kind `chess`, every line's detail opening with
     `<game id> ply <n>` so one move's stamps correlate across processes — the bridge and the

@@ -27,6 +27,12 @@ watchdog expects a trickle, so the translator carries a heartbeat.
 1. `model_backend <model>` decides the engine from the model string alone: `codex:*`, `gpt-*`,
    `o` followed by a digit, and `sol` (alone or hyphenated) answer `codex`; everything else
    answers `claude`. An unknown name is a Claude name — the pre-existing behaviour is the default.
+1a. A `jev`-family name (TypeSafe's Jev, a decision-only System One model) is NOT a session
+   engine and never becomes one here: it exists only inside the chess mover's own routing
+   (chessweb.md rule 16h), where a move is a typed Choice rather than a conversation. The
+   router still answers `claude` for it, so a turn, wake, dispute, job, or classifier knob
+   naming a jev model is a misconfiguration the Claude CLI refuses loudly — never a third
+   walk.
 2. `codex_model_resolve <model>` maps the knob's spelling to the slug Codex is given: a `codex:`
    prefix is stripped, and `sol` resolves to `CODEX_MODEL_SOL` (default `gpt-5.6-sol`). Every
    codex launch goes through it.
