@@ -52,11 +52,12 @@ SPEED_PAIRS = {
 # a benchmark verdict, and live play is their judge — exactly as it was
 # for the Spark blitz trial this table retires.
 #
-#   bullet (1+0, 2+1)  jev-latest — the route stands ready, but
-#       Bullet remains disabled in live play
-#       (chess_cli.DISABLED_LIVE_TIME_CONTROLS) until deliberately
-#       re-enabled: no MEASURED configuration finished bullet reliably,
-#       and Jev is not measured either.
+#   bullet (1+0, 2+1)  jev-latest — Bullet is live again, re-enabled by
+#       the user on 2026-09-17 with this route: no MEASURED configuration
+#       finished bullet reliably on the CLI engines, and Jev answers in
+#       well under a second. Jev is unmeasured at bullet too; live play
+#       is the judge. The empty gate stays
+#       (chess_cli.DISABLED_LIVE_TIME_CONTROLS).
 #   blitz (3+2, 5+0)  jev-latest
 #   rapid, split by exact control: 10+0  jev-latest (CONTROL_MODELS —
 #       the exact-control door, which wins over the speed row);

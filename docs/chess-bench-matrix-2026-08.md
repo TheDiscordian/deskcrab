@@ -16,7 +16,7 @@ the study is incomplete, and unmeasured configurations are not spoken for.
 
 | Control | Live state | Model | Quiet/sharp | Basis |
 |---|---|---|---|---|
-| 1+0, 2+1 | disabled | jev-latest | low/low | EXPLICIT USER-SELECTED TypeSafe route, unmeasured here; no MEASURED configuration reliably finished bullet, so creation stays disabled. |
+| 1+0, 2+1 | enabled | jev-latest | low/low | EXPLICIT USER-SELECTED TypeSafe route, unmeasured here; re-enabled 2026-09-17 on the user's call, after no MEASURED configuration reliably finished bullet on the CLI engines. |
 | 3+2, 5+0 | enabled | jev-latest | low/low | EXPLICIT USER-SELECTED live-play trial of TypeSafe's Jev; unmeasured here, no benchmark clock-safety claim. |
 | 10+0 | enabled | jev-latest | low/low | The same user-selected Jev trial, via the exact-control door. |
 | 15+10 | enabled | opus | low/low | Kept by the user's explicit exclusion; provisional rapid route pending direct comparisons. |

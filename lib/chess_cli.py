@@ -182,12 +182,14 @@ TIME_CONTROLS = {  # name -> (speed, base ms, Fischer increment ms per move)
     "15+10": ("rapid", 900_000, 10_000),
 }
 
-# Bullet remains a readable and benchmarkable clock, but it is not currently
-# offered for live games: no MEASURED configuration finished bullet reliably
-# (Spark was never measured at bullet at all — chessweb.md rule 16b). Keeping
-# the definitions above preserves every existing record and makes the future
-# re-enable a deliberate gate change rather than a file-format change.
-DISABLED_LIVE_TIME_CONTROLS = {"1+0", "2+1"}
+# Any control named here is refused for NEW live games while staying
+# readable and benchmarkable, so a disable is one set literal — never a
+# file-format change — with every creation door already enforcing it.
+# Bullet lived here while only CLI engines could move (no MEASURED
+# configuration finished bullet reliably); the user re-enabled it on
+# 2026-09-17 once the routed TypeSafe backend was answering in well under
+# a second (chessweb.md rules 16h and 22).
+DISABLED_LIVE_TIME_CONTROLS = set()
 LIVE_TIME_CONTROLS = tuple(
     name for name in TIME_CONTROLS if name not in DISABLED_LIVE_TIME_CONTROLS)
 
@@ -209,8 +211,8 @@ def make_live_time_control(name):
     """Clock fields for a new live game, subject to the current mode gate."""
     if name in DISABLED_LIVE_TIME_CONTROLS:
         raise CliError(
-            f"time control '{name}' is disabled — Beatrice is not yet fast "
-            "enough for Bullet. Choose Blitz, Rapid, or untimed")
+            f"time control '{name}' is disabled for live games — choose "
+            f"one of: {', '.join(LIVE_TIME_CONTROLS)}, untimed")
     return make_time_control(name)
 
 

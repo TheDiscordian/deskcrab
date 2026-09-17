@@ -509,8 +509,8 @@ check_eq "no absolute physically-finishes claim in lib/chess_effort.py" \
     "$(grep -ci "physically finishes" "$REPO/lib/chess_effort.py")" "0"
 check_eq "no 'no configuration ... finishes' absolute outside a MEASURED qualifier" \
     "$(grep -ci "no configuration[^.]*finishes" "$REPO/lib/chess_effort.py")" "0"
-check "the dormant Bullet route is explicitly marked disabled" \
-    grep -q "Bullet remains disabled" "$REPO/lib/chess_effort.py"
+check "the Bullet route is explicitly marked live again" \
+    grep -q "Bullet is live again" "$REPO/lib/chess_effort.py"
 check "the bullet verdict keeps its MEASURED qualifier" \
     grep -q "no MEASURED configuration" "$REPO/lib/chess_effort.py"
 check "the blitz Spark cell is named a user-selected live-play trial" \

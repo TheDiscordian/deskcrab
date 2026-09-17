@@ -121,17 +121,10 @@ page="$(http_get /)"
 contains "$page" 'id="timecontrol"' \
     && ok "the served markup carries the clock selector (rule 22h)" \
     || fail "no clock selector in the served page"
-for c in untimed 3+2 5+0 10+0 15+10; do
+for c in untimed 1+0 2+1 3+2 5+0 10+0 15+10; do
     contains "$page" "value=\"$c\"" \
         && ok "the selector offers $c" \
         || fail "the selector does not offer $c"
-done
-for c in 1+0 2+1; do
-    if contains "$page" "value=\"$c\""; then
-        fail "the selector still offers disabled Bullet $c"
-    else
-        ok "the selector does not offer disabled Bullet $c"
-    fi
 done
 n="$(PAGE="$page" pyrun <<'PY'
 import os, re
@@ -139,7 +132,7 @@ m = re.search(r'<select id="timecontrol".*?</select>', os.environ["PAGE"], re.S)
 print(len(re.findall(r"<option", m.group(0))) if m else -1)
 PY
 )"
-check_eq "and exactly the enabled live set — no invented control" "$n" "5"
+check_eq "and exactly the enabled live set — no invented control" "$n" "7"
 
 echo "POST /new creates through the one path and syncs the joined seat:"
 PORT="$PORT" REPO="$REPO" pyrun <<'PY'
@@ -192,19 +185,6 @@ check_eq "the live game stayed, nothing was created" "$(game_count)" "1"
 
 echo "enforcement is server-side only: out-of-set and forged controls refuse:"
 chess resign guest-001 >/dev/null 2>&1 || true
-res="$(http_post /new '{"control": "1+0"}')"
-check_eq "disabled Bullet is HTTP 400" "${res%%|*}" "400"
-contains "$res" "not yet fast enough for Bullet" \
-    && ok "the Bullet refusal explains why the mode is disabled" \
-    || fail "Bullet refusal body: $res"
-check_eq "and nothing was created for disabled Bullet" "$(game_count)" "1"
-if out="$(chess new cli-bullet --time-control 2+1 2>&1)"; then
-    fail "the CLI created disabled Bullet: $out"
-else
-    contains "$out" "not yet fast enough for Bullet" \
-        && ok "the CLI enforces the same Bullet gate" \
-        || fail "CLI Bullet refusal: $out"
-fi
 res="$(http_post /new '{"control": "7+7"}')"
 check_eq "an out-of-set name is HTTP 400" "${res%%|*}" "400"
 contains "$res" "unknown time control" \
@@ -268,4 +248,25 @@ PY
 [ $? -eq 0 ] \
     && ok "a stock client loses nothing (compatibility guard, green both sides)" \
     || fail "the wire NewGame no longer deals the serve default"
+
+echo "Bullet is live again (rule 22's re-enable): both creation doors deal it:"
+chess resign guest-004 >/dev/null 2>&1 || true
+res="$(http_post /new '{"control": "1+0"}')"
+check_eq "POST /new deals Bullet 1+0" "${res%%|*}" "200"
+contains "$res" '"1+0"' \
+    && ok "and answers the created game's control" \
+    || fail "bullet /new body: $res"
+check_eq "the record carries the bullet clock" \
+    "$(field guest-005 '(g["time_control"]["name"], g["clock"]["white_ms"])')" \
+    "('1+0', 60000)"
+chess resign guest-005 >/dev/null 2>&1 || true
+if out="$(chess new cli-bullet --time-control 2+1 2>&1)"; then
+    ok "the CLI deals Bullet too"
+else
+    fail "the CLI refused live Bullet: $out"
+fi
+out="$(chess list)"
+contains "$out" "cli-bullet" && contains "$out" "2+1" \
+    && ok "list splits the CLI bullet game by variant" \
+    || fail "list on the CLI bullet game: $out"
 stop_bridge
