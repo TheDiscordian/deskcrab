@@ -372,9 +372,9 @@ grep -q "a warning, not a suggestion" "$MOVER_LOG" \
 : > "$MOVER_LOG"
 : > "$WAKE_LOG"
 drive hit-001 >/dev/null
-[ ! -s "$MOVER_LOG" ] && ! grep -q "your move" "$WAKE_LOG" \
-  && grep -q "you played" "$WAKE_LOG" \
-  && ok "a position reflex knows costs no model call; only her post-move voice wakes" \
+[ ! -s "$MOVER_LOG" ] \
+  && grep -q "a move landed in game hit-001" "$WAKE_LOG" \
+  && ok "a position reflex knows costs no model call; only the post-move wake books" \
   || fail "reflex hit path: $(cat "$MOVER_LOG" "$WAKE_LOG")"
 "$PY" -B -c "
 import json; g = json.load(open('$HUBDIR/games/hit-001.json'))

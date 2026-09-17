@@ -372,37 +372,25 @@ def _record_words(wins, draws, losses):
                      (("won", wins), ("drew", draws), ("lost", losses)) if n)
 
 
-def memory_sections(board):
-    """(lines, endorsed, stamp): the position memory rendered for the move
-    prompt. `lines` go above the legal-move lists; `endorsed` is the set of
-    UCI moves whose remembered record is net-winning (rule 14c: the exchange
-    count may not bury one); `stamp` is the `similar-context` metric detail,
-    or None when no stamp is owed. The exact layer speaks here only through
-    its refusal (rule 14a): a hit the auto-play gate would CLEAR is the
-    reflex's business, answered before any prompt is built, and stays out of
-    the prompt entirely — but a hit the gate DECLINED is rendered as an
-    explicit warning, because the old blanket filter hid the browser-044
-    loss (h6: one game, zero wins, score 0.25) from the very hand about to
-    replay it. Never raises: any failure is a bare prompt, never a lost
-    move."""
+def memory_facts(board):
+    """The position memory's raw facts — ONE retrieval feeding both
+    renderers (the CLI prompt's prose and the Jev request's terse lines),
+    never twins: `declined` exact candidates (rule 14a's shape — present
+    only when the auto-play gate declined; a clearing hit is the reflex's
+    business and never reaches a prompt), `similar` neighbours picked and
+    ordered by OUTCOME-weighted similarity (a winning precedent outranks a
+    nearer loss, because nearness alone is never advice), the `endorsed`
+    UCI set (net-winning similar records, rule 14c), and the
+    `similar-context` metric stamp. Never raises: a failed layer is an
+    absent list, a broken similar store is stamp "error"."""
+    facts = {"declined": [], "similar": [], "endorsed": set(), "stamp": None}
     if os.environ.get("DESKCRAB_CHESS_MEMORY_PROMPT", "1") == "0":
-        return [], set(), None
-    lines, endorsed = [], set()
+        return facts
     fen = board.fen()
-    # -- the declined exact hit (rule 14a) ---------------------------------
-    # Judged by the gate's own arithmetic (chess_reflex.best_move — the same
-    # gate, never a twin): candidates present with no clearing move is the
-    # DECLINED shape, and only that shape prints. A clearing move means the
-    # reflex answers before any prompt exists (or the auto-play switch is
-    # off, in which case the prompt still says nothing about the position
-    # itself — decided 2026-08-21). Declined candidates never enter
-    # `endorsed`: a record the gate refused is a warning, not a
-    # recommendation.
     try:
         import chess_reflex
         cands = chess_reflex.lookup(fen)
         if cands and chess_reflex.best_move(fen, board) is None:
-            warn = []
             for c in cands:
                 try:
                     mv = chess.Move.from_uci(c["move"])
@@ -411,27 +399,11 @@ def memory_sections(board):
                     san = board.san(mv)
                 except (chess.InvalidMoveError, ValueError):
                     continue
-                record = (_record_words(c["wins"], c["draws"], c["losses"])
-                          or "no finished result")
-                verdict = ("an exact losing precedent"
-                           if c["losses"] > c["wins"]
-                           else "an exact precedent too thin to replay")
-                warn.append(f"- {san} ({c['move']}): played from this very "
-                            f"position in {c['n']} finished game(s) by the "
-                            f"side to move — {record} — score "
-                            f"{c['score']:.2f}: {verdict}")
-            if warn:
-                lines.append("This very position is in her finished games, "
-                             "and memory DECLINED to replay it: no "
-                             "candidate's record clears the auto-play gate. "
-                             "What was tried here before is a warning, "
-                             "never a recommendation:")
-                lines.extend(warn)
+                facts["declined"].append(dict(c, san=san))
     except Exception:
         pass  # a failed exact read is a prompt without the warning
-    # -- the similar section (rule 14b) ------------------------------------
     if os.environ.get("DESKCRAB_CHESS_SIMILAR", "1") == "0":
-        return lines, endorsed, None
+        return facts
     try:
         import chess_reflex
         import chess_similar
@@ -440,46 +412,76 @@ def memory_sections(board):
         stamp_top = (f"top {hits[0]['san']} {hits[0]['similarity']:.2f}"
                      if hits else "top none")
         picked = [h for h in hits if not h["exact"]][:k]
-        # The k nearest are selected by the retrieval's own ranking, then
-        # ordered for rendering by OUTCOME-weighted similarity: a winning
-        # precedent outranks a nearer loss, because nearness alone is never
-        # advice.
         picked.sort(key=lambda h: (
             -h["similarity"] * chess_reflex.score(h["wins"], h["draws"],
                                                   h["n"]),
             -h["similarity"]))
-        sim_lines = []
         for h in picked:
-            if h["n"] == 1:
-                word = ("won" if h["wins"] else
-                        "drew" if h["draws"] else "lost")
-                ended = f"{h['colour']} {word} that game"
-            else:
-                ended = (f"{h['colour']} "
-                         + _record_words(h["wins"], h["draws"], h["losses"])
-                         + f" of those {h['n']} games")
-            if h["losses"] > h["wins"]:
-                ended += " — a warning, not a suggestion"
-            elif h["wins"] > h["losses"]:
+            if h["wins"] > h["losses"]:
                 try:
                     mv = chess.Move.from_uci(h["move"])
                     if mv in board.legal_moves:
-                        endorsed.add(h["move"])
+                        facts["endorsed"].add(h["move"])
                 except (chess.InvalidMoveError, ValueError):
                     pass
-            sim_lines.append(f"- similarity {h['similarity']:.2f}: "
-                             f"{h['san']} as {h['colour']} ({h['game_id']} "
-                             f"ply {h['ply']}) — {ended}")
-        if sim_lines:
-            lines.append("Positions like this one from her finished games — "
-                         "similar is not same; weigh each against this "
-                         "board, and weigh how the game ended harder than "
-                         "how near it looks:")
-            lines.extend(sim_lines)
-        stamp = ("attached " if sim_lines else "empty ") + stamp_top
+        facts["similar"] = picked
+        facts["stamp"] = ("attached " if picked else "empty ") + stamp_top
     except Exception:
-        stamp = "error"
-    return lines, endorsed, stamp
+        facts["stamp"] = "error"
+    return facts
+
+
+def memory_sections(board):
+    """(lines, endorsed, stamp): the position memory rendered as the CLI
+    move prompt's prose, over memory_facts' one retrieval. `lines` go above
+    the legal-move lists; `endorsed` is rule 14c's set (the exchange count
+    may not bury a remembered win); `stamp` is the `similar-context`
+    metric detail, or None when no stamp is owed. A DECLINED exact hit is
+    rendered as an explicit warning (rule 14a), because the old blanket
+    filter hid the browser-044 loss (h6: one game, zero wins, score 0.25)
+    from the very hand about to replay it."""
+    facts = memory_facts(board)
+    lines = []
+    warn = []
+    for c in facts["declined"]:
+        record = (_record_words(c["wins"], c["draws"], c["losses"])
+                  or "no finished result")
+        verdict = ("an exact losing precedent"
+                   if c["losses"] > c["wins"]
+                   else "an exact precedent too thin to replay")
+        warn.append(f"- {c['san']} ({c['move']}): played from this very "
+                    f"position in {c['n']} finished game(s) by the "
+                    f"side to move — {record} — score "
+                    f"{c['score']:.2f}: {verdict}")
+    if warn:
+        lines.append("This very position is in her finished games, "
+                     "and memory DECLINED to replay it: no "
+                     "candidate's record clears the auto-play gate. "
+                     "What was tried here before is a warning, "
+                     "never a recommendation:")
+        lines.extend(warn)
+    sim_lines = []
+    for h in facts["similar"]:
+        if h["n"] == 1:
+            word = ("won" if h["wins"] else
+                    "drew" if h["draws"] else "lost")
+            ended = f"{h['colour']} {word} that game"
+        else:
+            ended = (f"{h['colour']} "
+                     + _record_words(h["wins"], h["draws"], h["losses"])
+                     + f" of those {h['n']} games")
+        if h["losses"] > h["wins"]:
+            ended += " — a warning, not a suggestion"
+        sim_lines.append(f"- similarity {h['similarity']:.2f}: "
+                         f"{h['san']} as {h['colour']} ({h['game_id']} "
+                         f"ply {h['ply']}) — {ended}")
+    if sim_lines:
+        lines.append("Positions like this one from her finished games — "
+                     "similar is not same; weigh each against this "
+                     "board, and weigh how the game ended harder than "
+                     "how near it looks:")
+        lines.extend(sim_lines)
+    return lines, facts["endorsed"], facts["stamp"]
 
 # How long a posted (or stale-discarded) position stays claimed. Only an undo
 # can bring the same position back inside this window, and the poll's resync
@@ -818,7 +820,25 @@ def jev_request(job, board):
     position memory's own section, the job's note, and her persona sheet.
     Jev judges; every count stays in code. The `model` field is the
     helper's argv business, not this builder's."""
-    mem_lines, endorsed, _stamp = memory_sections(board)
+    facts = memory_facts(board)
+    endorsed = facts["endorsed"]
+    # Terse memory: the records alone, no gate narration — where a record
+    # came from steers nothing (rule 16h).
+    mem_lines = []
+    for c in facts["declined"]:
+        record = (_record_words(c["wins"], c["draws"], c["losses"])
+                  or "no finished result")
+        mem_lines.append(f"{c['san']}: tried from this exact position "
+                         f"before — {record}")
+    for h in facts["similar"]:
+        if h["n"] == 1:
+            word = "won" if h["wins"] else "drew" if h["draws"] else "lost"
+            ended = f"{word} that game"
+        else:
+            ended = (_record_words(h["wins"], h["draws"], h["losses"])
+                     + f" of {h['n']} games")
+        mem_lines.append(f"similar ({h['similarity']:.2f}): {h['san']} as "
+                         f"{h['colour']} — {ended}")
     scan = os.environ.get("DESKCRAB_CHESS_REPLY_SCAN", "1") != "0"
     criteria = {}
     for m in board.legal_moves:
@@ -901,22 +921,18 @@ def jev_request(job, board):
     questions = {"move": {
         "type": "choice",
         "instructions": (
-            f"Pick the single strongest legal chess move for "
-            f"{job['side']} in the position in the state. Each option key "
-            "is a legal move as from-square then to-square; its "
-            "description is the same move in algebraic notation, then a "
-            "verdict computed in code — the counting is already done, "
-            "trust it. The verdicts: 'safe' means the exchange on the "
-            "landing square is even or better AND no opponent reply one "
-            "move deep wins material, forks, or mates. 'loses about N "
-            "pawns where it lands' means the capture sequence on that "
-            "square costs that much. 'reply <move> ...' names the "
-            "opponent's punishing answer found, with what it costs. "
-            "'memory ...' is her record with that move in stored games at "
-            "or near this position. Prefer a safe move that improves the "
-            "position; never pick an option marked as losing or punished "
-            "unless the state gives a concrete answer to what punishes "
-            "it."),
+            f"Pick the strongest legal chess move for {job['side']}. "
+            "Each option is one legal move: the key is the from-square "
+            "then the to-square, the description the move in algebraic "
+            "notation and a verdict. 'safe': the exchange on the landing "
+            "square is even or better and no opponent reply one move "
+            "deep wins material, forks, or mates. 'loses about N pawns "
+            "where it lands': the capture sequence there costs that "
+            "much. 'reply <move>': the opponent's punishing answer and "
+            "its cost. 'memory': the player's record with that move in "
+            "stored games at or near this position. Prefer a safe move "
+            "that improves the position; pick a losing or punished "
+            "option only when the state concretely answers the threat."),
         "criteria": criteria,
     }}
     return {"state": state, "questions": questions}

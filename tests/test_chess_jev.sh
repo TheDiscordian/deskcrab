@@ -128,20 +128,24 @@ job = {"key": "jev-1", "gid": "jev-1", "ply": 2, "fen": chess.STARTING_FEN,
        "side": "white", "opponent": "tester", "history": "1. (none)",
        "note": "the bridge says hi", "model": "jev-latest",
        "effort": "low", "t0": time.time()}
-real_memory = chess_mover.memory_sections
-chess_mover.memory_sections = lambda b: (
-    ["- similarity 0.91: Nf3 as white (game-1 ply 9) — white won that game"],
-    {"g1f3"}, None)
+real_memory = chess_mover.memory_facts
+chess_mover.memory_facts = lambda b: {
+    "declined": [],
+    "similar": [{"similarity": 0.91, "san": "Nf3", "colour": "white",
+                 "game_id": "game-1", "ply": 9, "move": "g1f3",
+                 "n": 1, "wins": 1, "draws": 0, "losses": 0}],
+    "endorsed": {"g1f3"}, "stamp": None}
 try:
     req = chess_mover.jev_request(job, board)
 finally:
-    chess_mover.memory_sections = real_memory
+    chess_mover.memory_facts = real_memory
 q = req["questions"]["move"]
 legal = sorted(mv.uci() for mv in board.legal_moves)
 print("q-type:", q["type"])
 print("criteria-are-the-whitelist:", sorted(q["criteria"]) == legal)
 print("memory-in-state:",
-      any("similarity 0.91" in line for line in req["state"]["position_memory"]))
+      any("similar (0.91): Nf3 as white — won that game" == line
+          for line in req["state"]["position_memory"]))
 print("endorsement-in-option:", "memory endorses" in q["criteria"]["g1f3"])
 print("fen-in-state:", req["state"]["position_fen"] == chess.STARTING_FEN)
 print("pieces-in-words:",
