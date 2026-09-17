@@ -829,15 +829,12 @@ def jev_request(job, board):
             san = uci
         backed = uci in endorsed
         loss = material_loss(board, m)
+        # Terse verdicts; the legend lives once in the instructions
+        # (rule 16h) — repeating it per option is large-state noise.
         if loss > 0:
-            desc = (f"{san} — the exchange on its own destination square "
-                    f"loses about {loss / 100:.1f} pawns of material")
+            desc = f"{san} — loses about {loss / 100:.1f} pawns where it lands"
             if backed:
-                desc += ("; but her memory of similar positions holds a "
-                         "winning record with this move — the record is a "
-                         "concrete reason, weigh it on this board")
-            else:
-                desc += "; play it only with a concrete tactical reason"
+                desc += "; memory holds a winning record with it"
             criteria[uci] = desc
             continue
         worst = (0, None, None)
@@ -852,27 +849,16 @@ def jev_request(job, board):
             comp += PIECE_VALUE[m.promotion] - PIECE_VALUE[chess.PAWN]
         net = worst[0] - comp
         if worst[1] is None or net < 100:
-            desc = (f"{san} — safe by the machine count: the exchange "
-                    "where it lands is even or better, and no punishing "
-                    "reply was found")
+            desc = f"{san} — safe"
             if backed:
-                desc += ("; her memory endorses it — similar stored "
-                         "positions where it was played were won")
+                desc += "; memory endorses it: similar positions were won"
         elif worst[0] >= MATE_LOSS:
-            desc = f"{san} — walks into {worst[1]}, which is CHECKMATE"
-            if backed:
-                desc += " — her memory once backed it, but the mate stands"
-            desc += "; never play this"
+            desc = f"{san} — reply {worst[1]} is CHECKMATE"
         else:
-            desc = (f"{san} — safe where it lands, but the opponent's "
-                    f"reply {worst[1]} {worst[2]}, costing about "
+            desc = (f"{san} — reply {worst[1]} {worst[2]}, costs about "
                     f"{net / 100:.1f} pawns")
             if backed:
-                desc += ("; her memory holds a winning record with it — "
-                         "weigh the record against the reply named")
-            else:
-                desc += ("; ruled out unless another fact here concretely "
-                         "answers that reply")
+                desc += "; memory holds a winning record with it"
         criteria[uci] = desc
     state = {
         "who_you_are": _persona().strip()
@@ -916,15 +902,21 @@ def jev_request(job, board):
         "type": "choice",
         "instructions": (
             f"Pick the single strongest legal chess move for "
-            f"{job['side']} in the position in the state. Every option is "
-            "one legal move in UCI notation, and its description carries "
-            "the machine-checked exchange arithmetic and her memory of "
-            "similar positions — the counting is already done; trust the "
-            "numbers as written. Prefer a move described as safe unless "
-            "another option's description names a concrete reason it wins "
-            "more. Never pick a move whose description says it loses "
-            "material, or walks into a named reply, unless the "
-            "description itself carries the answer to that."),
+            f"{job['side']} in the position in the state. Each option key "
+            "is a legal move as from-square then to-square; its "
+            "description is the same move in algebraic notation, then a "
+            "verdict computed in code — the counting is already done, "
+            "trust it. The verdicts: 'safe' means the exchange on the "
+            "landing square is even or better AND no opponent reply one "
+            "move deep wins material, forks, or mates. 'loses about N "
+            "pawns where it lands' means the capture sequence on that "
+            "square costs that much. 'reply <move> ...' names the "
+            "opponent's punishing answer found, with what it costs. "
+            "'memory ...' is her record with that move in stored games at "
+            "or near this position. Prefer a safe move that improves the "
+            "position; never pick an option marked as losing or punished "
+            "unless the state gives a concrete answer to what punishes "
+            "it."),
         "criteria": criteria,
     }}
     return {"state": state, "questions": questions}

@@ -456,6 +456,10 @@ cannot be changed.
       verdict stays computed in code and lands in words in each option's criteria
       description — the exchange count, the sharpest reply found, the memory's record
       with the move — because Jev is not a calculator and is never asked to be one.
+      The verdict LEGEND is stated once, in the question's instructions; each option's
+      description stays terse (the move, its verdict, its numbers). Repeating the
+      legend per option is the large-state noise Jev's own jaggedness sheet warns
+      about.
       The state crosses to TypeSafe's API over TLS, the sitter's typed name and the
       game facts included: the user's explicit 2026-09-17 decision, the key provided
       for exactly this.
