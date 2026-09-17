@@ -385,8 +385,8 @@ cannot be changed.
     finisher at all. Live play is its judge, exactly as it was for the Spark blitz trial
     this table retires.
 
-    The bullet rows stay disabled for live creation (see below) while their route stands
-    ready for a deliberate re-enable.
+    The bullet rows are live: rule 22's deliberate re-enable happened with this route —
+    the user's 2026-09-17 call that Jev plays bullet fine, where no CLI engine could.
 
     `DESKCRAB_CHESS_MOVER_MODEL_<SPEED>` and
     `DESKCRAB_CHESS_EFFORT_<SPEED>_{QUIET,SHARP}` override both exact-control and speed
@@ -578,11 +578,14 @@ cannot be changed.
     recorded like `resigned_by`). A bridge that dies mid-think in a timed game comes back to a
     clock that kept running, because the clock IS the stored stamps read against the wall
     clock — that is the honest reading of a chess clock, not a defect.
-    Bullet remains a recognised clock for existing records and benchmark evidence, but new live
-    `1+0` and `2+1` games are disabled: no MEASURED configuration finished bullet reliably. The
-    live creation gate offers only Blitz, Rapid, and untimed until Bullet is deliberately
-    re-enabled; the page, HTTP endpoint, stock-wire creation, CLI creation, and serve default all
-    enforce the same gate.
+    Bullet is a live control again. It was disabled while only CLI engines could move —
+    no MEASURED configuration finished bullet reliably — and the deliberate re-enable
+    that disable held the door for happened on 2026-09-17, the user's call, once the
+    routed TypeSafe backend (rule 16h) was answering positions in well under a second.
+    The gate machinery itself STAYS: `chess_cli.DISABLED_LIVE_TIME_CONTROLS` (now empty)
+    still stands behind the page, the HTTP endpoint, stock-wire creation, CLI creation,
+    and the serve default alike, so disabling any control again is one set literal with
+    every creation door already enforcing it.
     a. The clock is charged where the move is recorded, by ONE implementation for every path
        (`chess_cli.clock_move`, called by `betty-chess move`, the engine command, and all four
        of the bridge's record paths — user move, promotion, reflex, model): the mover's elapsed
