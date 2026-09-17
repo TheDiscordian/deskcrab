@@ -299,6 +299,22 @@ which fails silently is worse than one that does not exist.
     beside it nor gate the tidy job behind it (the unit's `ExecStartPre=-` bargain, rule 21b). A
     clean drawer, an empty drawer, and no drawer at all add not a line.
 
+21h. The brief declares its drawer paths before its first edit. The tidy job dispatches with a
+    workdir that is NOT the drawer it edits — everything the brief touches lives under
+    `~/.local/share/deskcrab/`, outside the job's workdir — so rule 25c's job-window claim can
+    never cover the tidy's writes, and for as long as nothing else covered them every file the
+    tidy moved was reported back to her as an intruder's hand, night after night (the 03:12
+    wants.md alarm of 2026-09-16 the latest). The brief's FIRST step, before any other, MUST run
+    the write declaration of rules 26/27 — `crab touching` — naming every drawer path the brief
+    may edit: `wants.md`, the `wants/` document drawer, `conduct/`, `engineering/`, and
+    `journal/`. The declaration's window MUST comfortably outlast a queued dispatch, not merely
+    a busy minute: the brief travels through `crab job` and rule 21f's single-flight door, and
+    the distance from booking to the last edit landing runs to the better part of an hour on
+    this machine — on 2026-09-16 the job queued at 02:30 and only started at 03:10 — so the
+    window is 3600 seconds, matched to the unit's own `TimeoutStartSec`, and never the
+    900-second `TOUCH_WINDOW` default, which expires mid-tidy and hands the later steps' edits
+    straight back to the alarm the declaration exists to silence.
+
 ### The self-change watcher
 
 22. The watcher is driven by a path unit using the kernel's own change notification. No polling
@@ -1226,6 +1242,11 @@ record up and the state block shouts it; the line trimmed, a second check throug
 door `crab shelf-check` exits zero, REMOVES the record, and the state block renders no finding
 the same night; and the tidy brief ends on the shelf-check step — asserted against the brief the
 shipped unit's `ExecStart` actually dispatches, never a copy held by the test.
+
+`tests/test_tidy_touch_declaration.sh` — rule 21h: the brief the shipped unit's `ExecStart`
+actually dispatches opens on the `crab touching` declaration — present, standing before the step
+numbered 1, a window of at least 1800 seconds, and all five drawer paths named under
+`.local/share/deskcrab` — read out of the unit file itself, never a copy held by the test.
 
 **To be written:**
 
