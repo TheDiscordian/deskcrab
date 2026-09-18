@@ -462,7 +462,24 @@ cannot be changed.
       The verdict LEGEND is stated once, in the question's instructions; each option's
       description stays terse (the move, its verdict, its numbers). Repeating the
       legend per option is the large-state noise Jev's own jaggedness sheet warns
-      about.
+      about. Mate is named in both directions (the user's 2026-09-17 ask, a mild
+      emphasis): a candidate that IS checkmate is marked as the immediate win and
+      outranks every other verdict, a reply that is checkmate is already the worst
+      thing the reply scan can name — and it is named on EVERY candidate, the ones
+      that lose material on their landing square included: the exchange count never
+      speaks over being mated, and a memory record never endorses a move that walks
+      into mate. Before this, a candidate priced by its destination square skipped
+      the reply scan entirely, so a move that dropped a pawn AND allowed mate in one
+      read as the cheapest option on the board (browser-066, 2026-09-17, lost in
+      twelve moves to precisely that description). The sweep that runs for those
+      candidates looks for mate only — no standing sweep, no fork hunt —
+      so the added cost is a fraction of a scan the position already pays. The state
+      says so when she stands in check, and
+      the instructions carry the rule both ways — pick a CHECKMATE option, never one
+      whose named reply is CHECKMATE — plus the standing aims of working toward mating
+      the opponent and minding the passed-pawn field both ways: push her own passed
+      pawns toward promotion, stop the opponent's before they promote. A candidate
+      that promotes says so on its own description.
       The state crosses to TypeSafe's API over TLS, the sitter's typed name and the
       game facts included: the user's explicit 2026-09-17 decision, the key provided
       for exactly this.
@@ -761,7 +778,16 @@ cannot be changed.
        bare). The reply is the message text alone, or the literal word PASS to stay
        silent: a PASS, an empty reply, or a failed call posts nothing and disturbs nothing —
        silence is chosen while writing, and chat failures never retry (the next move brings the
-       next chance). Her opponent reads everything she posts, so the prompt forbids reasoning
+       next chance). Her move-triggered voice is BIASED quiet, never gated (the user's
+       2026-09-17 ask, refined in his next breath: she talks too much, but the decision stays
+       HERS): every trigger still runs and she chooses, and a `her-move` or `their-move`
+       trigger landing within `$DESKCRAB_CHESS_CHAT_MOVE_COOLDOWN` seconds (default 300; 0
+       disables the line) of her last POSTED table message in that game carries a
+       recent-speech line — how many seconds ago she spoke, and that the bar for another
+       unprompted quip is high. A player message, a resignation, and a game's end never carry
+       the line — an answer owed is not a quip. And the prompt's own bar is specific-or-silent:
+       ONE short sentence about the event named, this board, or what the sitter said; a message
+       that could be posted at any chess game is told to be a PASS instead. Her opponent reads everything she posts, so the prompt forbids reasoning
        and plans out loud, exactly rule 7's bargain. Every call lands in the token ledger (kind
        `chess`) and stamps the chess metrics (`chat-start`, `chat-model-end`, `chat-posted` /
        `chat-pass`), evidence never control flow. `DESKCRAB_CHESS_CHAT=0` switches her replies

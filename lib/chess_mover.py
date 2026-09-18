@@ -255,6 +255,35 @@ def worst_reply(board, move):
     return best
 
 
+def mate_reply(board, move):
+    """The SAN of an opponent reply that checkmates the mover, or None.
+
+    `worst_reply` finds these too, but both verdict builders skip it for a
+    candidate that already loses material on its landing square — and
+    browser-066 was lost through exactly that hole: 11...e5 was printed
+    "loses about 1.0 pawns where it lands; memory holds a winning record
+    with it", the cheapest-looking option on the board, and the Qxh7# behind
+    it was never scanned. Being mated costs the game whatever the exchange
+    count says, so the mate-only sweep — no standing sweep, no fork hunt —
+    runs for those moves as well.
+    """
+    board.push(move)
+    try:
+        if board.is_game_over():
+            return None
+        for reply in board.legal_moves:
+            board.push(reply)
+            try:
+                mates = board.is_checkmate()
+            finally:
+                board.pop()
+            if mates:
+                return board.san(reply)
+    finally:
+        board.pop()
+    return None
+
+
 def material_balance(board, side=None):
     """Centipawns `side` (default: the side to move) is ahead, kings out."""
     if side is None:
@@ -862,13 +891,33 @@ def jev_request(job, board):
         except Exception:
             san = uci
         backed = uci in endorsed
+        # A candidate that IS checkmate outranks every other verdict
+        # (rule 16h): the game ends, so no exchange or reply matters.
+        board.push(m)
+        try:
+            mates = board.is_checkmate()
+        finally:
+            board.pop()
+        if mates:
+            criteria[uci] = (f"{san} — CHECKMATE: this move ends the game "
+                             "in your favour")
+            continue
         loss = material_loss(board, m)
         # Terse verdicts; the legend lives once in the instructions
         # (rule 16h) — repeating it per option is large-state noise.
         if loss > 0:
+            # The exchange count does not outrank being mated (rule 16h):
+            # the mate-only sweep runs here too, and its verdict wins —
+            # memory never endorses a move that walks into checkmate.
+            mate = mate_reply(board, m) if scan else None
+            if mate:
+                criteria[uci] = f"{san} — reply {mate} is CHECKMATE"
+                continue
             desc = f"{san} — loses about {loss / 100:.1f} pawns where it lands"
             if backed:
                 desc += "; memory holds a winning record with it"
+            if m.promotion:
+                desc += "; promotes this pawn"
             criteria[uci] = desc
             continue
         worst = (0, None, None)
@@ -893,6 +942,8 @@ def jev_request(job, board):
                     f"{net / 100:.1f} pawns")
             if backed:
                 desc += "; memory holds a winning record with it"
+        if m.promotion:
+            desc += "; promotes this pawn"
         criteria[uci] = desc
     state = {
         "who_you_are": _persona().strip()
@@ -910,6 +961,9 @@ def jev_request(job, board):
         "position_memory": mem_entries
         or ["no stored positions near this one"],
     }
+    if board.is_check():
+        state["you_are_in_check"] = ("yes — you must escape the check; "
+                                     "being checkmated loses the game")
     try:
         standing = standing_losses(board)
         state["pieces_of_yours_the_opponent_can_win_where_they_stand"] = (
@@ -944,9 +998,16 @@ def jev_request(job, board):
             "where it lands': the capture sequence there costs that "
             "much. 'reply <move>': the opponent's punishing answer and "
             "its cost. 'memory': the player's record with that move in "
-            "stored games at or near this position. Prefer a safe move "
-            "that improves the position; pick a losing or punished "
-            "option only when the state concretely answers the threat."),
+            "stored games at or near this position. An option marked "
+            "CHECKMATE wins the game immediately — always pick it. Never "
+            "pick an option whose named reply is CHECKMATE: that reply "
+            "loses the game. Mind the passed_pawns field: push your own "
+            "passed pawns toward promotion, and stop, blockade, or "
+            "capture the opponent's before they promote — a pawn with a "
+            "clear path is urgent for whoever owns it. Prefer a safe "
+            "move that improves the position and works toward "
+            "checkmating the opponent; pick a losing or punished option "
+            "only when the state concretely answers the threat."),
         "criteria": criteria,
     }}
     return {"state": state, "questions": questions}
@@ -1785,7 +1846,13 @@ class Mover:
             loss = material_loss(board, m)
             label = f"{board.san(m)} ({m.uci()})"
             if loss > 0:
-                if m.uci() in endorsed:
+                mate = mate_reply(board, m) if scan else None
+                if mate:
+                    # Mated is mated: the exchange count never speaks over
+                    # it, and no memory record endorses it.
+                    punished.append((MATE_LOSS,
+                                     f"{label} — {mate} is checkmate"))
+                elif m.uci() in endorsed:
                     # Rule 14c: a remembered win is never buried in the
                     # concrete-reason pile — both facts ride its own line.
                     backed.append(f"{label} loses {loss} by the count")

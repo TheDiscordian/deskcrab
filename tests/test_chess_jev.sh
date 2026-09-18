@@ -160,6 +160,46 @@ print("standing-in-state:",
       req["state"].get(
           "pieces_of_yours_the_opponent_can_win_where_they_stand") == "none")
 
+# -- 2b. mate, check, and promotion awareness (rule 16h) ---------------------
+mate_board = chess.Board(
+    "rnbqkbnr/pppp1ppp/8/4p3/6P1/5P2/PPPPP2P/RNBQKBNR b KQkq - 0 2")
+mreq = chess_mover.jev_request(dict(job, side="black",
+                                    fen=mate_board.fen()), mate_board)
+print("mate-marked:",
+      mreq["questions"]["move"]["criteria"]["d8h4"]
+      == "Qh4# — CHECKMATE: this move ends the game in your favour")
+print("mate-rule-in-instructions:",
+      "CHECKMATE wins the game immediately"
+      in mreq["questions"]["move"]["instructions"])
+print("pawn-rule-in-instructions:",
+      "passed pawns toward promotion"
+      in mreq["questions"]["move"]["instructions"])
+# The lost game: a candidate that drops a pawn AND allows mate in one used
+# to skip the reply scan and read as the cheapest option on the board.
+lost_board = chess.Board(
+    "rn1q1rk1/ppp2ppp/4pB2/3p2N1/1b1P3P/2PQP3/PP3PP1/RN2K2R b KQ - 0 11")
+lreq = chess_mover.jev_request(dict(job, side="black",
+                                    fen=lost_board.fen()), lost_board)
+lcrit = lreq["questions"]["move"]["criteria"]
+print("mate-named-on-losing-candidate:",
+      lcrit["e6e5"] == "e5 — reply Qxh7# is CHECKMATE")
+print("no-memory-endorsement-into-mate:",
+      "memory" not in lcrit["e6e5"])
+print("survivable-moves-unmarked:",
+      not any("CHECKMATE" in lcrit[u] for u in ("g7g6", "f8e8", "b4c3")))
+check_board = chess.Board(
+    "rnbqkbnr/ppppp1pp/8/5p1Q/4P3/8/PPPP1PPP/RNB1KBNR b KQkq - 1 2")
+creq = chess_mover.jev_request(dict(job, side="black",
+                                    fen=check_board.fen()), check_board)
+print("in-check-field:", "you_are_in_check" in creq["state"])
+print("no-check-field-when-quiet:", "you_are_in_check" not in req["state"])
+promo_board = chess.Board("8/5P1k/8/8/8/8/8/K7 w - - 0 1")
+preq = chess_mover.jev_request(dict(job, side="white",
+                                    fen=promo_board.fen()), promo_board)
+print("promotion-tagged:",
+      "promotes this pawn"
+      in preq["questions"]["move"]["criteria"]["f7f8q"])
+
 # -- 3. end to end through the mover ----------------------------------------
 outcome, why = m._answer(job)
 print("e2e-outcome:", outcome)
@@ -230,6 +270,38 @@ contains "$PYOUT" "note-in-state: True" \
 contains "$PYOUT" "standing-in-state: True" \
     && ok "the standing sweep renders its affirmative all-clear" \
     || fail "standing" "$(printf '%s\n' "$PYOUT" | grep standing-in-state)"
+
+echo
+echo "mate, check, and promotion awareness (rule 16h):"
+contains "$PYOUT" "mate-marked: True" \
+    && ok "a candidate that IS checkmate is marked as the immediate win" \
+    || fail "mate marking" "$(printf '%s\n' "$PYOUT" | grep mate-marked)"
+contains "$PYOUT" "mate-rule-in-instructions: True" \
+    && ok "the instructions carry the mate rule" \
+    || fail "mate rule" "$(printf '%s\n' "$PYOUT" | grep mate-rule)"
+contains "$PYOUT" "pawn-rule-in-instructions: True" \
+    && ok "the instructions carry the passed-pawn urgencies both ways" \
+    || fail "pawn rule" "$(printf '%s\n' "$PYOUT" | grep pawn-rule)"
+contains "$PYOUT" "mate-named-on-losing-candidate: True" \
+    && ok "a candidate that loses material is still swept for mating replies" \
+    || fail "mate on losing candidate" \
+        "$(printf '%s\n' "$PYOUT" | grep mate-named-on-losing)"
+contains "$PYOUT" "no-memory-endorsement-into-mate: True" \
+    && ok "and no memory record endorses a move that walks into mate" \
+    || fail "endorsement into mate" \
+        "$(printf '%s\n' "$PYOUT" | grep no-memory-endorsement)"
+contains "$PYOUT" "survivable-moves-unmarked: True" \
+    && ok "the moves that do survive carry no mate label" \
+    || fail "survivable" "$(printf '%s\n' "$PYOUT" | grep survivable-moves)"
+contains "$PYOUT" "in-check-field: True" \
+    && ok "the state says so when she stands in check" \
+    || fail "in-check" "$(printf '%s\n' "$PYOUT" | grep in-check-field)"
+contains "$PYOUT" "no-check-field-when-quiet: True" \
+    && ok "and says nothing about check on a quiet board" \
+    || fail "quiet check" "$(printf '%s\n' "$PYOUT" | grep no-check-field)"
+contains "$PYOUT" "promotion-tagged: True" \
+    && ok "a promoting candidate says so on its description" \
+    || fail "promotion tag" "$(printf '%s\n' "$PYOUT" | grep promotion-tagged)"
 
 echo
 echo "end to end through the mover:"
