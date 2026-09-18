@@ -200,6 +200,48 @@ print("promotion-tagged:",
       "promotes this pawn"
       in preq["questions"]["move"]["criteria"]["f7f8q"])
 
+# -- 2c. repetition (the drawn-won-game amendment) ---------------------------
+# The real shuffle: a queen and a rook up, the king stepping between two
+# squares while a rook checks, until the fifth repetition drew the game.
+rep_hist = ("1. d4 d5 2. Bf4 Nf6 3. e3 Nc6 4. Bd3 Bg4 5. Nf3 Ne4 6. h3 Bh5 "
+            "7. Nbd2 Nd6 8. Ng5 Bg6 9. Bb5 e6 10. c3 h6 11. Ngf3 Nxb5 "
+            "12. Qa4 Nd6 13. Nb3 Ne4 14. Nc5 Nd6 15. Nxb7 Nxb7 16. Qxc6+ Qd7 "
+            "17. Qxb7 Rc8 18. Qxa7 Be4 19. a4 f6 20. Qb7 Bd3 21. a5 Ba6 "
+            "22. Qxa6 Ra8 23. Qb7 Rc8 24. a6 c6 25. a7 Qxb7 26. O-O Ra8 "
+            "27. Rfb1 Rxa7 28. Rxa7 Qxa7 29. Nd2 c5 30. dxc5 Qxc5 31. Ra1 Qb5 "
+            "32. Ra8+ Kd7 33. Nb1 Qxb2 34. Ra7+ Kc6 35. Ra6+ Kd7 36. Ra7+ "
+            "Kc6 37. Ra6+ Kd7 38. Ra7+")
+rep_fen = "5b1r/R2k2p1/4pp1p/3p4/5B2/2P1P2P/1q3PP1/1N4K1 b - - 13 38"
+rep_board = chess.Board(rep_fen)
+rjob = dict(job, side="black", fen=rep_fen, history=rep_hist)
+rcrit = chess_mover.jev_request(rjob, rep_board)["questions"]["move"]["criteria"]
+print("repeat-named:", "REPEATS a position this game has already stood in 2"
+      in rcrit["d7c6"])
+print("repeat-costs-the-win:", "throws that away" in rcrit["d7c6"])
+print("escapes-unmarked:",
+      not any("REPEATS" in rcrit[u] for u in ("d7e8", "d7d8", "d7c8")))
+print("repeat-rule-in-instructions:",
+      "never pick a repeating option"
+      in chess_mover.jev_request(rjob,
+                                 rep_board)["questions"]["move"]["instructions"])
+# The fifth occurrence ends the game, and the option says exactly that.
+fifth_hist = rep_hist + (" Kc6 39. Ra6+ Kd7 40. Ra7+ Kc6 41. Ra6+ Kd7 "
+                         "42. Ra7+")
+fifth_fen = "5b1r/R2k2p1/4pp1p/3p4/5B2/2P1P2P/1q3PP1/1N4K1 b - - 17 42"
+fcrit = chess_mover.jev_request(
+    dict(job, side="black", fen=fifth_fen, history=fifth_hist),
+    chess.Board(fifth_fen))["questions"]["move"]["criteria"]
+print("fifth-ends-it:", "ends the game drawn on the spot" in fcrit["d7c6"])
+# A movetext that will not replay, or belongs to another game, says nothing.
+print("junk-history-silent:", not any(
+    "REPEATS" in d for d in chess_mover.jev_request(
+        dict(rjob, history="1. zz9 qq"),
+        rep_board)["questions"]["move"]["criteria"].values()))
+print("foreign-history-silent:", not any(
+    "REPEATS" in d for d in chess_mover.jev_request(
+        dict(rjob, history="1. e4 e5 2. Nf3"),
+        rep_board)["questions"]["move"]["criteria"].values()))
+
 # -- 3. end to end through the mover ----------------------------------------
 outcome, why = m._answer(job)
 print("e2e-outcome:", outcome)
@@ -302,6 +344,28 @@ contains "$PYOUT" "no-check-field-when-quiet: True" \
 contains "$PYOUT" "promotion-tagged: True" \
     && ok "a promoting candidate says so on its description" \
     || fail "promotion tag" "$(printf '%s\n' "$PYOUT" | grep promotion-tagged)"
+
+contains "$PYOUT" "repeat-named: True" \
+    && ok "an option that returns to a stood-in position says so, with the count" \
+    || fail "repeat named" "$(printf '%s\n' "$PYOUT" | grep repeat-named)"
+contains "$PYOUT" "repeat-costs-the-win: True" \
+    && ok "and says what repeating costs her while she is ahead" \
+    || fail "repeat cost" "$(printf '%s\n' "$PYOUT" | grep repeat-costs)"
+contains "$PYOUT" "escapes-unmarked: True" \
+    && ok "the moves that leave the repetition carry no such clause" \
+    || fail "escapes" "$(printf '%s\n' "$PYOUT" | grep escapes-unmarked)"
+contains "$PYOUT" "repeat-rule-in-instructions: True" \
+    && ok "the instructions forbid repeating while ahead" \
+    || fail "repeat rule" "$(printf '%s\n' "$PYOUT" | grep repeat-rule)"
+contains "$PYOUT" "fifth-ends-it: True" \
+    && ok "the fifth occurrence is named as ending the game drawn" \
+    || fail "fifth" "$(printf '%s\n' "$PYOUT" | grep fifth-ends-it)"
+contains "$PYOUT" "junk-history-silent: True" \
+    && ok "an unreplayable movetext produces no clause rather than a wrong one" \
+    || fail "junk history" "$(printf '%s\n' "$PYOUT" | grep junk-history)"
+contains "$PYOUT" "foreign-history-silent: True" \
+    && ok "and neither does a movetext from some other game" \
+    || fail "foreign history" "$(printf '%s\n' "$PYOUT" | grep foreign-history)"
 
 echo
 echo "end to end through the mover:"

@@ -138,3 +138,26 @@ blocks or guards a square on its path — a clear path is said to be clear,
 because "nothing stops it" is the fact that demands a move. The line always
 prints ("none" included), for the same reason the standing line does: an
 absent line is indistinguishable from the scan having failed.
+
+## A repeated position is named on the option that repeats it
+
+Every verdict the request carries is computed from the position alone, so a
+move back into a position the game has already stood in prices exactly as it
+did the first time — and the mover, asked the same question, gives the same
+answer forever. On 2026-09-17 that drew browser-068: a queen and a rook up
+with four times the opponent's clock, the mover answered the rook's checks by
+stepping between the same two squares nine times, with two king escapes and a
+blocking queen move legal at every one of them, until the fifth repetition
+ended the game as a draw.
+
+The request's board is built from a FEN and carries no move stack, so the
+game's movetext is replayed from the start and every position counted. Each
+option leading back into a counted position carries a clause saying so and
+how many times the game has stood there; at the fifth occurrence the clause
+says plainly that playing it ends the game drawn. The clause also carries the
+consequence, which is a matter of the material count and not of taste: ahead,
+a repetition throws the win away and is named as doing so; behind, it saves
+the game. The instructions say the rest — never repeat while ahead when a
+sound alternative exists, leave the repetition even at a small cost. A
+movetext that will not replay, or one that does not land on the position in
+hand, produces no clause at all: a missing clause, never a wrong one.

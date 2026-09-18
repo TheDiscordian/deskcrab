@@ -294,6 +294,47 @@ def material_balance(board, side=None):
                           chess.ROOK, chess.QUEEN))
 
 
+def repetition_counts(job, board):
+    """{uci: how many times this game has ALREADY stood in the position that
+    move leads to}, for the moves that lead back into one — everything else
+    is absent. The mover's board is built from a FEN and so carries no move
+    stack; the game's movetext (job['history']) is the only way in, so the
+    game is replayed from the start and every position counted. A movetext
+    that will not replay, or one that does not land on the board in hand,
+    returns {} — a missing clause, never a wrong one.
+
+    browser-068 (2026-09-17) is why this exists: a queen up, I answered
+    Ra7+/Ra6+ with Kc6/Kd7 nine times and drew a won game by fivefold
+    repetition, because nothing in the request said the square had been
+    stood on before."""
+    history = (job.get("history") or "").strip()
+    if not history:
+        return {}
+    played = chess.Board()
+    seen = {played.epd(): 1}
+    for tok in history.replace("...", " ").replace(".", ". ").split():
+        if not tok or tok[0].isdigit() or tok in {"*", "1-0", "0-1"}:
+            continue
+        try:
+            played.push_san(tok)
+        except Exception:
+            return {}  # an unreadable movetext is no repetition clause at all
+        key = played.epd()
+        seen[key] = seen.get(key, 0) + 1
+    if played.board_fen() != board.board_fen() or played.turn != board.turn:
+        return {}  # the movetext is not this position's own past
+    out = {}
+    for m in board.legal_moves:
+        played.push(m)
+        try:
+            times = seen.get(played.epd(), 0)
+        finally:
+            played.pop()
+        if times:
+            out[m.uci()] = times
+    return out
+
+
 def trade_guard_line(board):
     """The named-trades line (chess-mover-amendment.md, "Trades while ahead
     are counted, not reflexed"), or None when it is not owed. Ahead by three
@@ -945,6 +986,29 @@ def jev_request(job, board):
         if m.promotion:
             desc += "; promotes this pawn"
         criteria[uci] = desc
+    # A move back into a position already stood in prices exactly as it did
+    # the first time, so the clause has to come from the game's history, not
+    # the board (chess-mover-amendment.md, "A repeated position is named").
+    try:
+        reps = repetition_counts(job, board)
+    except Exception:
+        reps = {}
+    if reps:
+        ahead = material_balance(board)
+        for uci, times in reps.items():
+            desc = criteria.get(uci)
+            if not desc or "CHECKMATE: this move ends" in desc:
+                continue
+            clause = ("; REPEATS a position this game has already stood in "
+                      f"{times} time" + ("s" if times != 1 else ""))
+            if times + 1 >= 5:
+                clause += " — playing it ends the game drawn on the spot"
+            elif ahead >= 150:
+                clause += (f" — you are ahead by about {ahead / 100:.1f} "
+                           "pawns and a repetition draw throws that away")
+            elif ahead <= -150:
+                clause += " — a repetition draw saves this game for you"
+            criteria[uci] = desc + clause
     state = {
         "who_you_are": _persona().strip()
         or "A strong chess player making a move in a live game.",
@@ -1001,7 +1065,12 @@ def jev_request(job, board):
             "stored games at or near this position. An option marked "
             "CHECKMATE wins the game immediately — always pick it. Never "
             "pick an option whose named reply is CHECKMATE: that reply "
-            "loses the game. Mind the passed_pawns field: push your own "
+            "loses the game. 'REPEATS a position': the move returns to a "
+            "position this game has already stood in, and the fifth time a "
+            "position appears the game is drawn on the spot — while you are "
+            "ahead in material never pick a repeating option when any sound "
+            "alternative exists, and leave the repetition even at a small "
+            "cost. Mind the passed_pawns field: push your own "
             "passed pawns toward promotion, and stop, blockade, or "
             "capture the opponent's before they promote — a pawn with a "
             "clear path is urgent for whoever owns it. Prefer a safe "

@@ -480,6 +480,19 @@ cannot be changed.
       the opponent and minding the passed-pawn field both ways: push her own passed
       pawns toward promotion, stop the opponent's before they promote. A candidate
       that promotes says so on its own description.
+      Repetition is named the same way, and for the same reason the mate sweep
+      is: every other verdict is computed from the position alone, so a move
+      back into a position the game has already stood in prices exactly as it
+      did the first time and the same answer returns forever (browser-068,
+      2026-09-17, a queen up and drawn by fivefold repetition after nine
+      identical king shuffles). The movetext is replayed from the start and
+      every position counted — the request's board is a bare FEN with no move
+      stack — and each option leading back into a counted position says so,
+      with the count, the draw at the fifth occurrence, and what the material
+      balance makes of it: ahead, a repetition throws the win away; behind, it
+      saves the game. The instructions carry the rule — never repeat while
+      ahead when a sound alternative exists. An unreplayable movetext, or one
+      that does not land on the position in hand, yields no clause at all.
       The state crosses to TypeSafe's API over TLS, the sitter's typed name and the
       game facts included: the user's explicit 2026-09-17 decision, the key provided
       for exactly this.
