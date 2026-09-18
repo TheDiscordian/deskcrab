@@ -844,11 +844,11 @@ def jev_request(job, board):
                  "result": ended}
         try:
             then = chess.Board(h["fen"])
+            # No to_move field: the side to move is the side that played
+            # the move, already named in `played`.
             entry["board_it_was_played_on"] = {
                 "white": _piece_words(then, chess.WHITE),
                 "black": _piece_words(then, chess.BLACK),
-                "to_move": "white" if then.turn == chess.WHITE
-                else "black",
             }
         except Exception:
             pass  # a bad stored fen is an entry without the board
