@@ -247,6 +247,32 @@ life, and she re-reads that store every single turn.
     conduct heading alone produced 76 perfect-similarity pairs that drowned every real
     nomination). Hiding duplicates at retrieval time alone is not reconciliation, because the
     stored active set is what every future preflight measures against.
+28c. **A stored FACT must be correctable, not only a stored rule.** `crab memory supersede`
+    accepts an active `note` as well as an active `directive`, under every guard rule 28b
+    already sets — older-wins, the second-precision tie-break, full provenance on the
+    superseded row. Both rows MUST be the same kind: a note may not supersede a directive,
+    because a fact the assistant minted must never be able to retire a rule the user set.
+    `observation` and `episodic` stay excluded (rule 44) — each is one night or one asking,
+    and a later similar record is the recurrence the kind exists to accumulate.
+
+    Why this is required and not a convenience: the store's ONLY staleness instrument is the
+    rule 26 decay pass, and it is keyed on **disuse**, while rule 12's clamp binds every
+    non-similarity factor — confidence, decay, reinforcement, occurred-recency — into a
+    five-percent band. A note that is wrong and *useful* therefore resets its own retirement
+    clock every time it is served, so falsity and survival correlate wherever the false thing
+    is about something asked about often. Measured live 2026-09-17 on a store of 2,495 active
+    notes (91 ever credited as genuinely used, 75 of those asserting something time-sensitive,
+    18 naming any refresh path): a four-week-old tally with 79 credited uses ranked FIRST on
+    the question it answered, above the true count, with two standing directives already on the
+    books telling the assistant to compute that figure fresh and never store it. Both rules
+    were kept; neither could reach the row. **A directive about how to READ is not a repair for
+    a false stored fact** — retirement alone leaves no `superseded_by`, so nothing carries the
+    correction alongside the error.
+
+    Reinforcement is NOT inherited across a supersession (unlike rule 28b's merge, where the
+    family is one rule in several copies). A correction is a different claim, and by rule 12's
+    clamp the earned `use_count` is worth at most a few percent of rank — so inheriting it
+    would buy the survivor nothing and would overstate a history it did not have.
 29. **Ingest MUST NOT trim its input — it windows.** A day's journal larger than the input cap
     would lose its earliest material to a tail-clamp, so the chunk list is split into successive
     windows, each at most the cap, breaking only on whole chunk boundaries — never mid-chunk, and a

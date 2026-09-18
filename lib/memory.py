@@ -53,6 +53,7 @@ except ImportError:
 import sqlite3
 
 EMBED_DIM = 768
+SQLITE_VEC_K_MAX = 4096
 EMBED_MODEL = os.environ.get("MEMORY_EMBED_MODEL") or "nomic-embed-text"
 EMBED_URL = os.environ.get("MEMORY_EMBED_URL") or "http://localhost:11434/api/embed"
 # Retrieval knobs, from the design (13:10/13:15 revisions): notes take the
@@ -851,25 +852,41 @@ class Store:
         (memory-recall.md rule 43)."""
         # Superseded/retired rows keep their vectors (history is kept), so the
         # KNN budget must span the WHOLE vec table or low-similarity active
-        # rows fall off the end of the join filter. The corpus is small enough
-        # that fetching every vector is still sub-millisecond.
+        # rows fall off the end of the join filter. sqlite-vec caps one KNN at
+        # 4096 candidates; partition larger stores by rowid, exhaust each
+        # partition, then merge their exact results. sqlite-vec's range
+        # constraint fails on some large vec0 tables, so name each partition's
+        # rowids explicitly (the bundled sqlite allows well over 4096 binds).
         total = self.db.execute("SELECT count(*) FROM memories_vec").fetchone()[0]
         if total == 0:
             return []
-        where = "v.embedding MATCH ? AND v.k = ? AND m.status = 'active'"
-        params = [pack(vec), total]
-        if kinds:
-            where += " AND m.kind IN (%s)" % ",".join("?" * len(kinds))
-            params += list(kinds)
-        rows = self.db.execute(
-            "SELECT m.id, m.text, m.kind, m.pinned, m.source, m.topics,"
-            "       m.confidence, m.created, m.last_seen, 1.0 - v.distance AS sim,"
-            "       m.last_used_at, m.use_count, m.occurred, m.participants,"
-            "       m.opinion"
-            " FROM memories_vec v JOIN memories m ON m.id = v.rowid"
-            f" WHERE {where}"
-            " ORDER BY sim DESC",
-            params).fetchall()
+        if total <= SQLITE_VEC_K_MAX:
+            chunks = [None]
+        else:
+            rowids = [r[0] for r in self.db.execute(
+                "SELECT rowid FROM memories_vec ORDER BY rowid")]
+            chunks = [rowids[start:start + SQLITE_VEC_K_MAX]
+                      for start in range(0, len(rowids), SQLITE_VEC_K_MAX)]
+
+        rows = []
+        for chunk in chunks:
+            count = total if chunk is None else len(chunk)
+            where = "v.embedding MATCH ? AND v.k = ? AND m.status = 'active'"
+            params = [pack(vec), count]
+            if chunk is not None:
+                where += " AND v.rowid IN (%s)" % ",".join("?" * len(chunk))
+                params += chunk
+            if kinds:
+                where += " AND m.kind IN (%s)" % ",".join("?" * len(kinds))
+                params += list(kinds)
+            rows.extend(self.db.execute(
+                "SELECT m.id, m.text, m.kind, m.pinned, m.source, m.topics,"
+                "       m.confidence, m.created, m.last_seen,"
+                "       1.0 - v.distance AS sim, m.last_used_at, m.use_count,"
+                "       m.occurred, m.participants, m.opinion"
+                " FROM memories_vec v JOIN memories m ON m.id = v.rowid"
+                f" WHERE {where} ORDER BY v.distance", params).fetchall())
+        rows.sort(key=lambda row: row[9], reverse=True)
         return rows[:k] if k else rows
 
     def on_date(self, dates, cap=None):
@@ -1172,6 +1189,31 @@ class Store:
         if row != ("directive", "active"):
             raise ValueError(f"#{rec_id} is not an active directive")
 
+    def _active_correctable(self, rec_id):
+        """The kinds a stored later-correction may be linked to (rule 28c):
+        directives, and — added 2026-09-17 — notes. The store had exactly one
+        staleness instrument, `decay_pass`, and it is keyed on DISUSE, while
+        `score_row` clamps every non-similarity factor into a five-percent
+        band; so a note that is wrong AND useful resets its own retirement
+        clock every time it is served, and falsity correlates with survival.
+        Measured that night: a note asserting a running tally, credited 79
+        times and four weeks out of date, ranked FIRST on the question it
+        answered — above the true count, and two standing directives after
+        the user had diagnosed the fault. Both directives told the assistant
+        not to trust the row; neither could touch it, because a rule could be
+        corrected and a fact could not.
+
+        Observations and episodic records stay excluded BY NAME (rule 44):
+        each is one night or one asking, and a similar later one is the
+        recurrence the kind exists to accumulate. Returns the kind so the
+        caller can hold both rows to it."""
+        row = self.db.execute(
+            "SELECT kind, status FROM memories WHERE id=?", (rec_id,)).fetchone()
+        if not row or row[1] != "active" or row[0] not in ("directive", "note"):
+            raise ValueError(
+                f"#{rec_id} is not an active directive or note")
+        return row[0]
+
     def merge_directives(self, dup_ids, keep_id=None, text=None, pinned=False,
                          source="self", topics=""):
         """Reconcile a judged true-duplicate family in the STORED active set
@@ -1217,16 +1259,27 @@ class Store:
         return keep_id
 
     def link_supersede(self, new_id, old_id):
-        """Record that one STORED directive is the later correction of
-        another (rule 28b). The newer row stays authoritative and active;
+        """Record that one STORED directive or note is the later correction
+        of another (rules 28b and 28c). The newer row stays authoritative and active;
         the older keeps its text and provenance, gains the superseded_by
         link, and leaves retrieval. The survivor's own supersedes pointer is
         filled only when empty — it carries one id, and an existing link is
-        older provenance, not something to overwrite."""
+        older provenance, not something to overwrite.
+
+        Reinforcement is NOT inherited (rule 28c): unlike the merge above,
+        where a family is one rule in several copies, a correction is a
+        different claim — and under rule 12's clamp the earned use_count is
+        worth a few percent of rank at most, so inheriting it would buy the
+        survivor nothing and overstate a history it never had."""
         if new_id == old_id:
-            raise ValueError("a directive cannot supersede itself")
-        for rec_id in (new_id, old_id):
-            self._active_directive(rec_id)
+            raise ValueError("a record cannot supersede itself")
+        kinds = {rec_id: self._active_correctable(rec_id)
+                 for rec_id in (new_id, old_id)}
+        if kinds[new_id] != kinds[old_id]:
+            # A minted fact must never be able to retire a rule the user set.
+            raise ValueError(
+                f"#{new_id} is a {kinds[new_id]} and #{old_id} is a "
+                f"{kinds[old_id]} — supersession is within one kind")
         self.db.execute("UPDATE memories SET status='superseded',"
                         " superseded_by=? WHERE id=?", (new_id, old_id))
         self.db.execute("UPDATE memories SET supersedes=coalesce(supersedes,?)"

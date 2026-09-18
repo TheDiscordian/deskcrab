@@ -68,6 +68,38 @@ class TestBasics(StoreCase):
                           pinned=True)
         self.assertEqual(len(self.store.pinned_rows()), 1)
 
+    def test_knn_crosses_sqlite_vec_ceiling_without_inactive_rows_masking(self):
+        close = memory.pack([1.0] + [0.0] * (memory.EMBED_DIM - 1))
+        far = memory.pack([0.0, 1.0] + [0.0] * (memory.EMBED_DIM - 2))
+        now = memory.now_iso()
+        self.store.db.executemany(
+            "INSERT INTO memories (text, kind, status, created, last_seen)"
+            " VALUES (?, 'note', 'retired', ?, ?)",
+            ((f"retired {i}", now, now)
+             for i in range(memory.SQLITE_VEC_K_MAX)))
+        wrong_kind = self.store.db.execute(
+            "INSERT INTO memories (text, kind, created, last_seen)"
+            " VALUES ('active directive', 'directive', ?, ?)",
+            (now, now)).lastrowid
+        wanted = self.store.db.execute(
+            "INSERT INTO memories (text, kind, created, last_seen)"
+            " VALUES ('active note beyond the ceiling', 'note', ?, ?)",
+            (now, now)).lastrowid
+        self.store.db.executemany(
+            "INSERT INTO memories_vec (rowid, embedding) VALUES (?, ?)",
+            ((i, close) for i in range(1, memory.SQLITE_VEC_K_MAX + 1)))
+        self.store.db.execute(
+            "INSERT INTO memories_vec (rowid, embedding) VALUES (?, ?)",
+            (wrong_kind, close))
+        self.store.db.execute(
+            "INSERT INTO memories_vec (rowid, embedding) VALUES (?, ?)",
+            (wanted, far))
+        self.store.db.commit()
+
+        rows = self.store.knn([1.0] + [0.0] * (memory.EMBED_DIM - 1),
+                              10, kinds=("note",))
+        self.assertEqual([row[0] for row in rows], [wanted])
+
 
 class TestStoreIsolation(StoreCase):
     """A store that is not the live store has no business in the live state.
