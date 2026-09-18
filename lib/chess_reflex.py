@@ -52,6 +52,13 @@ CREATE INDEX IF NOT EXISTS moves_by_game ON moves(game_id);
 # results must have gone, before a remembered move is played without thinking.
 MIN_GAMES = int(os.environ.get("DESKCRAB_REFLEX_MIN_GAMES", "2"))
 MIN_SCORE = float(os.environ.get("DESKCRAB_REFLEX_MIN_SCORE", "0.55"))
+# A book move and a merely remembered move answer different questions. The
+# latter needs positive evidence before it may play itself; the former is
+# already theory, and experience should veto it only when the results are
+# actually bad. Using MIN_SCORE for both made balanced opening moves converge
+# toward 0.50 and eventually silence their own book entry.
+BOOK_VETO_SCORE = float(os.environ.get("DESKCRAB_REFLEX_BOOK_VETO_SCORE",
+                                      "0.45"))
 
 
 def db_path() -> Path:
@@ -249,7 +256,8 @@ def lookup(fen: str) -> list[dict]:
 
 
 def best_move(fen: str, board: chess.Board | None = None,
-              min_games: int = None, min_score: float = None) -> dict | None:
+              min_games: int = None, min_score: float = None,
+              book_veto_score: float = None) -> dict | None:
     """The move memory would play from `fen`, or None to fall through to
     normal play. The first candidate in rank order that clears the gate wins;
     a board, if given, also vetoes anything not legal on it (the key strips
@@ -260,10 +268,13 @@ def best_move(fen: str, board: chess.Board | None = None,
     her own games have gone badly with is vetoed and thought about instead."""
     min_games = MIN_GAMES if min_games is None else min_games
     min_score = MIN_SCORE if min_score is None else min_score
+    book_veto_score = (BOOK_VETO_SCORE if book_veto_score is None
+                       else book_veto_score)
     for cand in lookup(fen):
         enough = cand["n"] >= min_games
         played_ok = enough and cand["score"] >= min_score
-        book_ok = cand["book"] > 0 and not (enough and not played_ok)
+        book_ok = (cand["book"] > 0
+                   and not (enough and cand["score"] < book_veto_score))
         if not (played_ok or book_ok):
             continue
         if board is not None:

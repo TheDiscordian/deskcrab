@@ -60,9 +60,11 @@ games ended well enough. A move that kept losing is remembered too — as a reas
    2) with a score of at least `$DESKCRAB_REFLEX_MIN_SCORE` (default 0.55), and is legal on the
    live board. A move in at least one book line clears the gate on theory alone — it needs no
    played games at all — *unless* her own games contradict it: `min_games` played games at a
-   score below `min_score` veto the book, and she thinks instead. Experience always outranks
-   theory, and theory only speaks where experience is silent. Otherwise the answer is None and
-   the caller thinks as it always did.
+   score below `$DESKCRAB_REFLEX_BOOK_VETO_SCORE` (default 0.45) veto the book, and she thinks
+   instead. This is deliberately separate from the positive replay threshold: sound opening
+   moves tend toward an even 0.50 result as the sample grows, which is not evidence against
+   theory and must not eventually silence the book. Experience always outranks theory when it
+   is actually losing. Otherwise the answer is None and the caller thinks as it always did.
 8. The wiring (chessweb.md rule 16): every position the bridge's mover would answer with a model
    call first asks `chess_reflex.best_move`. A hit is played straight into the store through the
    same write path as any move, broadcast to the browser, and logged as

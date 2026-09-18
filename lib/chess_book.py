@@ -32,6 +32,7 @@ LINES = {
     "qga-main":             "d4 d5 c4 dxc4 Nf3 Nf6 e3 e6 Bxc4 c5 O-O a6",
     "slav-main":            "d4 d5 c4 c6 Nf3 Nf6 Nc3 dxc4 a4 Bf5 e3 e6",
     "london-main":          "d4 d5 Bf4 Nf6 e3 c5 c3 Nc6 Nd2 e6 Ngf3 Bd6",
+    "london-kingside":      "d4 Nf6 Bf4 g6 e3 Bg7 Bd3 d5 c3 O-O Nf3 c5",
     "sicilian-najdorf":     "e4 c5 Nf3 d6 d4 cxd4 Nxd4 Nf6 Nc3 a6 Be3 e5 Nb3 Be6",
     "sicilian-dragon":      "e4 c5 Nf3 d6 d4 cxd4 Nxd4 Nf6 Nc3 g6 Be3 Bg7 f3 O-O",
     "sicilian-sveshnikov":  "e4 c5 Nf3 Nc6 d4 cxd4 Nxd4 Nf6 Nc3 e5 Ndb5 d6",
