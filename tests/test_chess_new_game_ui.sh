@@ -133,6 +133,9 @@ print(len(re.findall(r"<option", m.group(0))) if m else -1)
 PY
 )"
 check_eq "and exactly the enabled live set — no invented control" "$n" "7"
+contains "$page" 'id="gy-w-elo"' && contains "$page" 'id="gy-b-elo"' \
+    && ok "each graveyard title carries its colour's Elo slot (rule 23e)" \
+    || fail "no Elo slots in the served page"
 
 echo "POST /new creates through the one path and syncs the joined seat:"
 PORT="$PORT" REPO="$REPO" pyrun <<'PY'

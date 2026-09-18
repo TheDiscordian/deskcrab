@@ -751,7 +751,11 @@ cannot be changed.
        a late flag settlement re-prices history correctly on the next call. One
        implementation feeds `betty-chess elo [player] [--json]` and `GET /elo` (the same
        shape as JSON, with the assistant's display name — the `/record` bargain). An active
-       game counts nowhere until it finishes.
+       game counts nowhere until it finishes. The shipped page shows each colour's rating
+       beside its graveyard title ("White took" / "Black took"), resolved client-side from
+       `GET /elo` for the loaded game's speed and sitter — refetched when the loaded game
+       or its speed changes and at each game's end — and shows NOTHING for a pool or
+       bucket with no finished game behind it: an empty corner beats an invented 1200.
 24. **The table chat.** The game window carries a real chat between the sitter and her —
     persistent, tied to the game, and a SEPARATE conversational context from the phone
     conversation: nothing in it reads or writes the conversation store, no session is booked or

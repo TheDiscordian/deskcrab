@@ -476,6 +476,13 @@ button.armed:hover:not(:disabled) {
 	gap: 0.5rem;
 }
 
+/* Rule 23e: the colour's rating, quiet beside its title. */
+.gy-elo {
+	font-size: 0.78em;
+	opacity: 0.75;
+	font-weight: normal;
+}
+
 .gy-title {
 	font-size: 0.82rem;
 	font-weight: 650;
