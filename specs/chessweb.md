@@ -493,6 +493,20 @@ cannot be changed.
       saves the game. The instructions carry the rule — never repeat while
       ahead when a sound alternative exists. An unreplayable movetext, or one
       that does not land on the position in hand, yields no clause at all.
+      The quiet-move budget rides the same channel (chess-mover-amendment.md,
+      "The quiet-move budget is counted"), and for the plainest reason: it is
+      the one thing measured about her own play, the persona sheet that used
+      to be its only route is deliberately empty, and a decision model reads
+      no prose anyway. On a ply whose full-move number is 11 to 15, the
+      movetext is replayed to count the quiet queen/pawn moves of hers already
+      played inside that window — quiet being a move that captures nothing,
+      gives no check, and is not a promotion — and every option that would be
+      another one says which one it would be and what the stored games did at
+      that count. The record is counted over real games only; the benchmark
+      self-play pool inverts the effect and is excluded. No recommendation and
+      no suppression: the same contract the declined-memory warning has. Below
+      ten decided games in a bucket, or on an unreplayable movetext, there is
+      no clause — a record of two games is not worth quoting.
       The state crosses to TypeSafe's API over TLS, the sitter's typed name and the
       game facts included: the user's explicit 2026-09-17 decision, the key provided
       for exactly this.

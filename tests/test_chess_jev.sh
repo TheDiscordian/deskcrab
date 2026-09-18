@@ -254,6 +254,151 @@ print("foreign-history-silent:", not any(
         dict(rjob, history="1. e4 e5 2. Nf3"),
         rep_board)["questions"]["move"]["criteria"].values()))
 
+# -- 2d. the quiet-move budget ----------------------------------------------
+# chess-mover-amendment.md, "The quiet-move budget is counted". A stored pool
+# is built here rather than borrowed from the live store, so the record the
+# clause quotes is known exactly: twelve games with at most one quiet
+# queen/pawn move in moves 11-15 (8 won, 4 lost) and twelve with several
+# (2 won, 10 lost). Bench self-play is written in too, with the opposite
+# results, to prove it is excluded from the count.
+import pathlib, random
+
+
+def build_game(quiet_in_window, my_side, won, bench=False, seed=0):
+    """A replayable game whose window carries (or avoids) quiet q/p moves."""
+    rng = random.Random(seed)
+    mine = chess.WHITE if my_side == "white" else chess.BLACK
+    board, moves, made = chess.Board(), [], 0
+    while board.fullmove_number <= 17 and not board.is_game_over():
+        legal = list(board.legal_moves)
+        rng.shuffle(legal)
+        want = None
+        if board.turn == mine and board.fullmove_number in range(11, 16):
+            want = made < quiet_in_window
+        pick = None
+        for m in legal:
+            quiet = chess_mover.is_quiet_qp(board, m)
+            if want is not None and quiet != want:
+                continue
+            if board.is_capture(m) or board.gives_check(m):
+                continue
+            pick = m
+            break
+        if pick is None:
+            pick = legal[0]
+        if (board.turn == mine and board.fullmove_number in range(11, 16)
+                and chess_mover.is_quiet_qp(board, pick)):
+            made += 1
+        moves.append(pick.uci())
+        board.push(pick)
+    loser = my_side if not won else ("black" if mine == chess.WHITE
+                                     else "white")
+    return {"my_side": my_side, "opponent": "bench" if bench else "browser",
+            "bench": bench, "moves": moves, "resigned_by": loser}, made
+
+
+gdir = pathlib.Path(os.environ["DESKCRAB_CHESS_DIR"]) / "games"
+gdir.mkdir(parents=True, exist_ok=True)
+built = {"low": [0, 0], "high": [0, 0]}
+plan = ([("low", True)] * 8 + [("low", False)] * 4
+        + [("high", True)] * 2 + [("high", False)] * 10)
+for i, (bucket, won) in enumerate(plan):
+    want = 1 if bucket == "low" else 3
+    side = "white" if i % 2 == 0 else "black"
+    g, made = build_game(want, side, won, seed=i)
+    if (made <= 1) != (bucket == "low"):
+        print("FIXTURE-MISBUILT:", bucket, made)
+    built[bucket][0 if won else 1] += 1
+    (gdir / f"quiet-{i:02d}.json").write_text(json.dumps(g))
+# Bench self-play, the pool that must not be counted: the results reversed.
+for i, (bucket, won) in enumerate(plan):
+    g, _ = build_game(1 if bucket == "low" else 3,
+                      "white" if i % 2 else "black", not won,
+                      bench=True, seed=100 + i)
+    (gdir / f"bench-{i:02d}.json").write_text(json.dumps(g))
+print("quiet-fixture-built:", built)
+print("quiet-tally:", chess_mover.quiet_tally(refresh=True))
+
+# A real position at full-move 13 with two quiet queen/pawn moves behind it.
+q_line = ["e2e4", "e7e5", "g1f3", "b8c6", "f1c4", "g8f6", "d2d3", "f8c5",
+          "c2c3", "d7d6", "b1d2", "e8g8", "e1g1", "a7a6", "a2a4", "b7b6",
+          "d1e2", "c8e6", "e2e1", "d8d7", "e1e2", "f8e8", "h2h3", "h7h6"]
+
+
+def movetext(ucis):
+    b, out = chess.Board(), []
+    for u in ucis:
+        mv = chess.Move.from_uci(u)
+        if b.turn == chess.WHITE:
+            out.append(f"{b.fullmove_number}.")
+        out.append(b.san(mv))
+        b.push(mv)
+    return " ".join(out), b
+
+
+q_hist, q_board = movetext(q_line)
+qjob = dict(job, side="white", fen=q_board.fen(), history=q_hist)
+qcrit = chess_mover.jev_request(qjob, q_board)["questions"]["move"]["criteria"]
+print("quiet-already:", chess_mover.quiet_already(qjob, q_board))
+print("quiet-third-named:",
+      "would be the third quiet queen/pawn move of moves 11-15"
+      in qcrit["e2e1"])
+print("quiet-record-quoted:",
+      "at most one here: 8 wins to 4 losses; with two or more: 2 to 10"
+      in qcrit["e2e1"])
+print("quiet-on-a-pawn-push:",
+      "quiet queen/pawn move" in qcrit["a4a5"])
+print("quiet-not-on-a-knight:",
+      "quiet queen/pawn move" not in qcrit["f3h4"])
+print("quiet-not-on-a-capture:",
+      "quiet queen/pawn move" not in qcrit["c4e6"])
+# A queen move that gives check is not quiet, however peaceful it looks.
+chk_fen = "r1bqkb1r/pppp1ppp/2n2n2/4p3/2B1P3/5N2/PPPP1PPP/RNBQ1RK1 w kq - 6 13"
+chk_board = chess.Board(chk_fen)
+print("quiet-check-excluded:", not chess_mover.is_quiet_qp(
+    chk_board, chess.Move.from_uci("c4f7")))
+# Outside the window there is no clause at all, the same position notwithstanding.
+early = q_line[:16]
+e_hist, e_board = movetext(early)
+ecrit = chess_mover.jev_request(
+    dict(job, side="white", fen=e_board.fen(), history=e_hist),
+    e_board)["questions"]["move"]["criteria"]
+print("quiet-before-window:", e_board.fullmove_number, not any(
+    "quiet queen/pawn move" in d for d in ecrit.values()))
+late = q_line + ["d2f1", "e6f5", "f1g3", "f5g6", "g1h2", "g8h8", "h2g1",
+                 "h8g8"]
+l_hist, l_board = movetext(late)
+lcrit = chess_mover.jev_request(
+    dict(job, side="white", fen=l_board.fen(), history=l_hist),
+    l_board)["questions"]["move"]["criteria"]
+print("quiet-after-window:", l_board.fullmove_number, not any(
+    "quiet queen/pawn move" in d for d in lcrit.values()))
+# An unreplayable or foreign movetext is a missing clause, never a wrong one.
+print("quiet-junk-history-silent:", not any(
+    "quiet queen/pawn move" in d for d in chess_mover.jev_request(
+        dict(qjob, history="1. zz9 qq"),
+        q_board)["questions"]["move"]["criteria"].values()))
+print("quiet-foreign-history-silent:", not any(
+    "quiet queen/pawn move" in d for d in chess_mover.jev_request(
+        dict(qjob, history="1. e4 e5 2. Nf3"),
+        q_board)["questions"]["move"]["criteria"].values()))
+print("quiet-legend-in-instructions:",
+      "quiet queen/pawn move of moves 11-15"
+      in chess_mover.jev_request(
+          qjob, q_board)["questions"]["move"]["instructions"])
+# Too small a pool says nothing rather than quoting a record of two games.
+thin = pathlib.Path(os.environ["DESKCRAB_CHESS_DIR"]) / "thin"
+(thin / "games").mkdir(parents=True, exist_ok=True)
+for i, (bucket, won) in enumerate(plan[:4]):
+    g, _ = build_game(1 if bucket == "low" else 3, "white", won, seed=200 + i)
+    (thin / "games" / f"g{i}.json").write_text(json.dumps(g))
+_real_dir = os.environ["DESKCRAB_CHESS_DIR"]
+os.environ["DESKCRAB_CHESS_DIR"] = str(thin)
+print("quiet-thin-pool-silent:", not any(
+    "quiet queen/pawn move" in d for d in chess_mover.jev_request(
+        qjob, q_board)["questions"]["move"]["criteria"].values()))
+os.environ["DESKCRAB_CHESS_DIR"] = _real_dir
+
 # -- 3. end to end through the mover ----------------------------------------
 outcome, why = m._answer(job)
 print("e2e-outcome:", outcome)
@@ -389,6 +534,54 @@ contains "$PYOUT" "junk-history-silent: True" \
 contains "$PYOUT" "foreign-history-silent: True" \
     && ok "and neither does a movetext from some other game" \
     || fail "foreign history" "$(printf '%s\n' "$PYOUT" | grep foreign-history)"
+
+echo
+echo "the quiet-move budget (chess-mover-amendment.md):"
+contains "$PYOUT" "FIXTURE-MISBUILT" \
+    && fail "fixture" "$(printf '%s\n' "$PYOUT" | grep FIXTURE-MISBUILT)" \
+    || ok "the fixture pool landed in the buckets it was built for"
+contains "$PYOUT" "quiet-tally: {'low': (8, 4), 'high': (2, 10)}" \
+    && ok "the tally counts real games only — the bench pool is excluded" \
+    || fail "tally" "$(printf '%s\n' "$PYOUT" | grep quiet-tally)"
+contains "$PYOUT" "quiet-already: 2" \
+    && ok "the window count comes from the movetext, not the position" \
+    || fail "already" "$(printf '%s\n' "$PYOUT" | grep quiet-already)"
+contains "$PYOUT" "quiet-third-named: True" \
+    && ok "a quiet queen move says which one of the window it would be" \
+    || fail "third" "$(printf '%s\n' "$PYOUT" | grep quiet-third-named)"
+contains "$PYOUT" "quiet-record-quoted: True" \
+    && ok "and carries the stored record at that count, both buckets" \
+    || fail "record" "$(printf '%s\n' "$PYOUT" | grep quiet-record-quoted)"
+contains "$PYOUT" "quiet-on-a-pawn-push: True" \
+    && ok "a quiet pawn push is counted the same as a queen move" \
+    || fail "pawn push" "$(printf '%s\n' "$PYOUT" | grep quiet-on-a-pawn)"
+contains "$PYOUT" "quiet-not-on-a-knight: True" \
+    && ok "a knight move carries no clause" \
+    || fail "knight" "$(printf '%s\n' "$PYOUT" | grep quiet-not-on-a-knight)"
+contains "$PYOUT" "quiet-not-on-a-capture: True" \
+    && ok "nor does a capture" \
+    || fail "capture" "$(printf '%s\n' "$PYOUT" | grep quiet-not-on-a-capture)"
+contains "$PYOUT" "quiet-check-excluded: True" \
+    && ok "nor a queen move that gives check" \
+    || fail "check" "$(printf '%s\n' "$PYOUT" | grep quiet-check-excluded)"
+contains "$PYOUT" "quiet-before-window: 9 True" \
+    && ok "before move 11 the clause is absent entirely" \
+    || fail "before window" "$(printf '%s\n' "$PYOUT" | grep quiet-before-window)"
+contains "$PYOUT" "quiet-after-window: 17 True" \
+    && ok "and after move 15 it is absent again" \
+    || fail "after window" "$(printf '%s\n' "$PYOUT" | grep quiet-after-window)"
+contains "$PYOUT" "quiet-junk-history-silent: True" \
+    && ok "an unreplayable movetext yields no budget clause" \
+    || fail "quiet junk" "$(printf '%s\n' "$PYOUT" | grep quiet-junk-history)"
+contains "$PYOUT" "quiet-foreign-history-silent: True" \
+    && ok "neither does another game's movetext" \
+    || fail "quiet foreign" "$(printf '%s\n' "$PYOUT" | grep quiet-foreign-history)"
+contains "$PYOUT" "quiet-thin-pool-silent: True" \
+    && ok "too small a pool says nothing rather than quoting four games" \
+    || fail "thin pool" "$(printf '%s\n' "$PYOUT" | grep quiet-thin-pool)"
+contains "$PYOUT" "quiet-legend-in-instructions: True" \
+    && ok "the legend is stated once, in the instructions" \
+    || fail "quiet legend" "$(printf '%s\n' "$PYOUT" | grep quiet-legend)"
 
 echo
 echo "end to end through the mover:"

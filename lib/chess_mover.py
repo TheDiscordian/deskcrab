@@ -86,6 +86,13 @@ MATE2_LOSS = MATE_LOSS - 1
 # checks-only search measures 7 ms median, 68 ms worst over 120 real boards).
 MATE2_BUDGET = 0.12
 
+# The quiet-move budget (chess-mover-amendment.md, "The quiet-move budget is
+# counted"): my move numbers 11-15, the window the finding was measured over.
+QUIET_WINDOW = range(11, 16)
+# Below this many decided games in a bucket the record is not worth quoting,
+# and no option carries the clause at all.
+QUIET_MIN_GAMES = 10
+
 
 def _swap_off(board, square, side):
     """Material won by `side` capturing on `square`, least valuable attacker
@@ -405,6 +412,185 @@ def repetition_counts(job, board):
         if times:
             out[m.uci()] = times
     return out
+
+
+def is_quiet_qp(board, move):
+    """Whether `move` is a quiet queen or pawn move, judged on the board
+    BEFORE it is played: the piece is a queen or a pawn, it captures
+    nothing, it gives no check, and it is not a promotion."""
+    piece = board.piece_at(move.from_square)
+    if piece is None or piece.piece_type not in (chess.QUEEN, chess.PAWN):
+        return False
+    if move.promotion or board.is_capture(move):
+        return False
+    return not board.gives_check(move)
+
+
+def _games_dir():
+    return Path(os.environ.get(
+        "DESKCRAB_CHESS_DIR",
+        str(Path.home() / ".local/share/deskcrab/chess"))) / "games"
+
+
+def _game_outcome(d):
+    """'win' / 'loss' / 'draw' / None for a stored game, from the side that
+    resigned, flagged or agreed, or failing all three from the final board.
+    A game file carries no result field — that is the trap here."""
+    side = d.get("my_side")
+    if side not in ("white", "black"):
+        return None
+    loser = d.get("resigned_by") or d.get("flag_fell")
+    if loser in ("white", "black"):
+        return "loss" if loser == side else "win"
+    if d.get("draw_agreed"):
+        return "draw"
+    board = chess.Board()
+    for uci in d.get("moves") or []:
+        try:
+            mv = chess.Move.from_uci(uci)
+        except ValueError:
+            return None
+        if mv not in board.legal_moves:
+            return None
+        board.push(mv)
+    if board.is_checkmate():
+        mated = "white" if board.turn == chess.WHITE else "black"
+        return "loss" if mated == side else "win"
+    if board.is_stalemate() or board.is_insufficient_material():
+        return "draw"
+    return None
+
+
+_QUIET_TALLY = {"key": None, "value": None}
+
+
+def quiet_tally(refresh=False):
+    """{'low': (wins, losses), 'high': (wins, losses)} over the stored REAL
+    games — decided, and reaching the end of the window — split on whether
+    at most one quiet queen/pawn move of hers stands in her moves 11-15, or
+    two and more. None when the files cannot be read at all.
+
+    The benchmark self-play pool is excluded and that exclusion is the whole
+    finding: it is several times larger than the real pool and the effect
+    INVERTS inside it — the same engine plays both sides there, so a wasted
+    move costs nothing. Counting the two pools as one lot is how the first
+    version of this record came out diluted.
+
+    Rebuilt at most once per process (about a hundred milliseconds over five
+    hundred files), keyed on the number of game files and the newest mtime
+    among them, so a game finished mid-session is picked up without the
+    count being paid again on every move of a blitz game."""
+    games = _games_dir()
+    try:
+        paths = sorted(games.glob("*.json"))
+        key = (str(games), len(paths),
+               max((p.stat().st_mtime for p in paths), default=0.0))
+    except OSError:
+        return None
+    if not refresh and _QUIET_TALLY["key"] == key:
+        return _QUIET_TALLY["value"]
+    tally = {"low": [0, 0], "high": [0, 0]}
+    for path in paths:
+        try:
+            with open(path, encoding="utf-8") as fh:
+                d = json.load(fh)
+        except (OSError, ValueError):
+            continue
+        if d.get("bench") or d.get("opponent") != "browser":
+            continue
+        side = d.get("my_side")
+        if side not in ("white", "black"):
+            continue
+        res = _game_outcome(d)
+        if res is None or res == "draw":
+            continue
+        mine = chess.WHITE if side == "white" else chess.BLACK
+        board = chess.Board()
+        reached = quiet = 0
+        try:
+            for uci in d.get("moves") or []:
+                move = chess.Move.from_uci(uci)
+                if move not in board.legal_moves:
+                    raise ValueError(uci)
+                if board.turn == mine and board.fullmove_number in QUIET_WINDOW:
+                    reached = max(reached, board.fullmove_number)
+                    if is_quiet_qp(board, move):
+                        quiet += 1
+                board.push(move)
+        except ValueError:
+            continue  # an unreplayable game is no evidence either way
+        if reached < QUIET_WINDOW[-1]:
+            continue
+        bucket = tally["low" if quiet <= 1 else "high"]
+        bucket[0 if res == "win" else 1] += 1
+    value = {k: tuple(v) for k, v in tally.items()}
+    _QUIET_TALLY["key"], _QUIET_TALLY["value"] = key, value
+    return value
+
+
+def quiet_already(job, board):
+    """How many quiet queen/pawn moves of hers already stand in her moves
+    11-15 of THIS game, or None when the movetext will not replay onto the
+    position in hand. The count is a property of the game and not of the
+    position, and the request's board is a bare FEN with no move stack, so
+    the movetext is the only way in — the same route rule 16h's repetition
+    clause takes, and the same failure: no clause rather than a wrong one."""
+    history = (job.get("history") or "").strip()
+    if not history:
+        return None
+    mine = board.turn
+    played = chess.Board()
+    n = 0
+    for tok in history.replace("...", " ").replace(".", ". ").split():
+        if not tok or tok[0].isdigit() or tok in {"*", "1-0", "0-1", "1/2-1/2"}:
+            continue
+        try:
+            move = played.parse_san(tok)
+        except Exception:
+            return None
+        if (played.turn == mine
+                and played.fullmove_number in QUIET_WINDOW
+                and is_quiet_qp(played, move)):
+            n += 1
+        played.push(move)
+    if played.board_fen() != board.board_fen() or played.turn != board.turn:
+        return None
+    return n
+
+
+_ORDINALS = {1: "first", 2: "second", 3: "third", 4: "fourth", 5: "fifth"}
+
+
+def quiet_clauses(job, board, tally=None):
+    """{uci: the clause naming the quiet-move budget}, for the options that
+    would be another quiet queen/pawn move inside the window — everything
+    else is absent, and so is everything when the window, the movetext or
+    the pool will not support a clause.
+
+    The clause names which one the move would be and what the stored games
+    did at that count. It recommends nothing and suppresses nothing: the
+    counting is the machine's, the judgement stays the model's."""
+    if board.fullmove_number not in QUIET_WINDOW:
+        return {}
+    options = [m for m in board.legal_moves if is_quiet_qp(board, m)]
+    if not options:
+        return {}
+    already = quiet_already(job, board)
+    if already is None:
+        return {}
+    tally = quiet_tally() if tally is None else tally
+    if not tally:
+        return {}
+    low, high = tally["low"], tally["high"]
+    if sum(low) < QUIET_MIN_GAMES or sum(high) < QUIET_MIN_GAMES:
+        return {}  # a record of two games is not worth quoting
+    nth = already + 1
+    ordinal = _ORDINALS.get(nth, f"{nth}th")
+    record = (f"stored games with at most one here: {low[0]} wins to "
+              f"{low[1]} losses; with two or more: {high[0]} to {high[1]}")
+    clause = (f"; would be the {ordinal} quiet queen/pawn move of moves "
+              f"11-15 — {record}")
+    return {m.uci(): clause for m in options}
 
 
 def trade_guard_line(board):
@@ -1098,6 +1284,19 @@ def jev_request(job, board):
             elif ahead <= -150:
                 clause += " — a repetition draw saves this game for you"
             criteria[uci] = desc + clause
+    # The quiet-move budget (chess-mover-amendment.md, "The quiet-move budget
+    # is counted"): the one measured thing about her own play, and since the
+    # persona sheet is empty by decision, the option line is its only channel
+    # to the hand that plays.
+    try:
+        quiets = quiet_clauses(job, board)
+    except Exception:
+        quiets = {}
+    for uci, clause in quiets.items():
+        desc = criteria.get(uci)
+        if not desc or "CHECKMATE" in desc:
+            continue  # mate, either way, is the whole of that option's verdict
+        criteria[uci] = desc + clause
     state = {
         "who_you_are": _persona().strip()
         or "A strong chess player making a move in a live game.",
@@ -1164,7 +1363,13 @@ def jev_request(job, board):
             "position appears the game is drawn on the spot — while you are "
             "ahead in material never pick a repeating option when any sound "
             "alternative exists, and leave the repetition even at a small "
-            "cost. Mind the passed_pawns field: push your own "
+            "cost. 'quiet queen/pawn move of moves 11-15': a counted "
+            "record from her own finished games, not a rule — the moves "
+            "11 to 15 in which she made at most one quiet queen or pawn "
+            "move she mostly won, and past one she mostly lost. The "
+            "numbers are hers and the choice is yours; weigh it against "
+            "what the position actually demands. Mind the passed_pawns "
+            "field: push your own "
             "passed pawns toward promotion, and stop, blockade, or "
             "capture the opponent's before they promote — a pawn with a "
             "clear path is urgent for whoever owns it. Prefer a safe "

@@ -189,3 +189,32 @@ the game. The instructions say the rest — never repeat while ahead when a
 sound alternative exists, leave the repetition even at a small cost. A
 movetext that will not replay, or one that does not land on the position in
 hand, produces no clause at all: a missing clause, never a wrong one.
+
+## The quiet-move budget is counted
+
+The one thing measured about her own play that the request never carried. Over
+the real games only — the benchmark self-play pool is four times larger and the
+effect INVERTS in it, which is how the first version of this finding got
+diluted — games decided and reaching move 15 split on a single count: quiet
+queen/pawn moves of her own on her move numbers 11-15, where quiet means the
+move captures nothing, gives no check, and is not a promotion. At most one in
+that window she wins well over half; at two or more it collapses to under a
+fifth. Recounted 2026-09-17 and again 2026-09-18, the direction has held across
+every recount, and only the magnitudes move.
+
+The sheet is no place for it. The persona file is deliberately empty and the
+timed routes reach a decision-only model that emits no prose, so a measured
+finding written as advice reaches nothing. It belongs where every other count
+already lives: on the option itself. On plies whose full-move number falls in
+the window, each option that would be another quiet queen/pawn move carries a
+clause naming which one it would be and the stored record at that count — the
+count in code, the judgement left to the model, no recommendation and no
+suppression, exactly the contract the declined-memory warning has.
+
+The window count is a property of the game, not of the position, so it comes
+from replaying the movetext, and a movetext that will not replay onto the
+position in hand produces no clause at all. Neither does a pool too small to
+quote: below ten decided games in a bucket the clause is silent rather than
+citing a record of two games. The tally is rebuilt from the game files at most
+once per mover process and keyed on the files themselves, because a hundred
+milliseconds of counting must not be spent again on every move of a blitz game.
