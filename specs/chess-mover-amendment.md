@@ -97,7 +97,21 @@ comes to under a pawn. The rest move to their own bucket, worst reply named
 with its cost in centipawns, least-losing entry first, under words that rule
 them out absent a concrete tactical answer to the reply shown. A remembered
 win (rule 14c) is still never buried: an endorsed candidate the scan reads
-against rides the memory-backed line with both facts on it. The whole scan
+against rides the memory-backed line with both facts on it.
+
+A candidate the destination-square test has already priced skips the full
+scan — but never the mate half of it. Losing material and being mated are not
+on one scale, so a candidate that loses material is swept for mating replies
+only (no standing sweep, no fork hunt), and a mate found there outranks the
+exchange count, moves the candidate into the punished bucket at mate cost,
+and revokes any memory endorsement: no remembered win survives a move that
+walks into checkmate. Without that half-sweep a move which drops a pawn AND
+allows mate in one is printed as the cheapest line on the board — which is
+how browser-066 was lost in twelve moves on 2026-09-17, its 11...e5 labelled
+"loses about 1.0 pawns where it lands; memory holds a winning record with
+it", the `Qxh7#` behind it never looked for.
+
+The whole scan
 must stay under 150 ms per position (measured 2–9 ms over the three incident
 boards, 14–47 candidates each, 2026-08-24); a scan failure is a prompt with
 the old two-bucket shape, never a lost move.
