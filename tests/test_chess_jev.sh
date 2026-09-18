@@ -186,7 +186,19 @@ print("mate-named-on-losing-candidate:",
 print("no-memory-endorsement-into-mate:",
       "memory" not in lcrit["e6e5"])
 print("survivable-moves-unmarked:",
-      not any("CHECKMATE" in lcrit[u] for u in ("g7g6", "f8e8", "b4c3")))
+      not any("CHECKMATE" in lcrit[u] for u in ("g7g6", "b4c3")))
+# The second ply (browser-064): 11...Re8 loses nothing where it lands and has
+# no mating reply one ply deep, but 12.Qxh7+ Kf8 13.Qh8# is forced, so it is
+# named as a mate in two rather than printed safe.
+print("mate-in-two-named:",
+      lcrit["f8e8"] == ("Re8 — reply Qxh7+ FORCES CHECKMATE next move, "
+                        "whatever you answer"))
+print("no-memory-endorsement-into-mate-in-two:", "memory" not in lcrit["f8e8"])
+# A quiet opening position has no forced mate in it, so the label stays off
+# the board entirely when nothing is there.
+print("no-mate-in-two-in-a-quiet-position:",
+      not any("FORCES CHECKMATE" in d
+              for d in req["questions"]["move"]["criteria"].values()))
 check_board = chess.Board(
     "rnbqkbnr/ppppp1pp/8/5p1Q/4P3/8/PPPP1PPP/RNB1KBNR b KQkq - 1 2")
 creq = chess_mover.jev_request(dict(job, side="black",
@@ -335,6 +347,17 @@ contains "$PYOUT" "no-memory-endorsement-into-mate: True" \
 contains "$PYOUT" "survivable-moves-unmarked: True" \
     && ok "the moves that do survive carry no mate label" \
     || fail "survivable" "$(printf '%s\n' "$PYOUT" | grep survivable-moves)"
+contains "$PYOUT" "mate-in-two-named: True" \
+    && ok "a forced mate one move further out is named, not printed safe" \
+    || fail "mate in two" "$(printf '%s\n' "$PYOUT" | grep mate-in-two-named)"
+contains "$PYOUT" "no-memory-endorsement-into-mate-in-two: True" \
+    && ok "and no memory record endorses a move mated in two" \
+    || fail "endorsement into mate in two" \
+        "$(printf '%s\n' "$PYOUT" | grep no-memory-endorsement-into-mate-in-two)"
+contains "$PYOUT" "no-mate-in-two-in-a-quiet-position: True" \
+    && ok "a quiet position carries no forced-mate label at all" \
+    || fail "quiet position mate label" \
+        "$(printf '%s\n' "$PYOUT" | grep no-mate-in-two-in-a-quiet)"
 contains "$PYOUT" "in-check-field: True" \
     && ok "the state says so when she stands in check" \
     || fail "in-check" "$(printf '%s\n' "$PYOUT" | grep in-check-field)"

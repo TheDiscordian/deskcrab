@@ -296,6 +296,26 @@ echo "$out" | grep "^e4 " | grep -q "book " \
   && ok "and a move theory also knows says so separately" \
   || fail "book count missing: $out"
 
+# An even result is not a contradiction of opening theory. The ordinary
+# positive-memory gate is 0.55, but applying that same threshold as the book
+# veto makes every sound move approaching 0.50 eventually silence its book.
+seed_draw() { # <id> <ucis...> — the game ends by agreement
+  local id="$1"; shift
+  cat > "$DESKCRAB_CHESS_DIR/games/$id.json" <<JSON
+{"id": "$id", "opponent": "import", "my_side": "white",
+ "moves": [$(printf '"%s",' "$@" | sed 's/,$//')],
+ "resigned_by": null, "draw_agreed": true, "engine_level": null,
+ "created": "2026-01-01T00:00:00+00:00", "updated": "2026-01-01T00:00:00+00:00"}
+JSON
+}
+NAJDORF_LINE="e2e4 c7c5 g1f3 d7d6 d2d4 c5d4 f3d4 g8f6 b1c3 a7a6 c1e3"
+for i in 1 2 3; do seed_draw "book-draw-$i" $NAJDORF_LINE; done
+chess reflex --backfill >/dev/null
+out="$(chess reflex "$NAJDORF")"
+echo "$out" | grep -q "would play" \
+  && ok "balanced experience does not silence sound opening theory" \
+  || fail "balanced results vetoed the book: $out"
+
 # Experience outranks theory: three lost games with the Najdorf's 6.Be3 must
 # shut the book's mouth in the very position it was seeded for.
 seed_lost() { # <id> <ucis...> — white plays them, then resigns
@@ -307,7 +327,6 @@ seed_lost() { # <id> <ucis...> — white plays them, then resigns
  "created": "2026-01-01T00:00:00+00:00", "updated": "2026-01-01T00:00:00+00:00"}
 JSON
 }
-NAJDORF_LINE="e2e4 c7c5 g1f3 d7d6 d2d4 c5d4 f3d4 g8f6 b1c3 a7a6 c1e3"
 for i in 1 2 3; do seed_lost "book-veto-$i" $NAJDORF_LINE; done
 chess reflex --backfill >/dev/null
 out="$(chess reflex "$NAJDORF")"

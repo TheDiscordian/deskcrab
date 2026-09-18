@@ -111,6 +111,34 @@ how browser-066 was lost in twelve moves on 2026-09-17, its 11...e5 labelled
 "loses about 1.0 pawns where it lands; memory holds a winning record with
 it", the `Qxh7#` behind it never looked for.
 
+## The mate sweep sees two plies, not one
+
+A mate one move further out was read as "safe", and that is how browser-064
+was lost on 2026-09-17. At the mover's move 26 all 41 legal moves were
+survivable; after the opponent's next move exactly three were, and the other
+38 lost to a forced mate in two. All 38 printed "safe", because the first
+move of the mate was a check and not a mate, and nothing in the prompt looked
+past one ply.
+
+So every candidate that is not already labelled mated in one is swept a
+second ply: the opponent's **checking** replies only, each answered by every
+legal escape, each escape answered by any mate. A candidate for which some
+check leaves no unmated escape is named `reply <check> FORCES CHECKMATE next
+move, whatever you answer`, and that verdict behaves exactly as the mate in
+one does — it outranks the exchange count, it revokes any memory
+endorsement, and it sorts into the punished bucket just behind a mate in one.
+The instruction legend says what the label means and that such an option
+loses the game however much material it appears to win.
+
+The restriction to checking first moves is what keeps this inside the scan
+budget: measured over 120 real positions from the game files (2026-09-17) it
+missed none of the 29 mated candidates an unrestricted search found, at 7 ms
+per position against 280 ms. The blind spot it buys is a quiet mating net,
+which is real and accepted. The whole second-ply sweep also carries its own
+deadline, 120 ms across all candidates in a position; past it the sweep stops
+and the remaining candidates keep their one-ply verdicts, so an unusually
+expensive board degrades in depth and never in speed.
+
 The whole scan
 must stay under 150 ms per position (measured 2–9 ms over the three incident
 boards, 14–47 candidates each, 2026-08-24); a scan failure is a prompt with

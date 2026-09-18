@@ -78,6 +78,13 @@ PIECE_NAME = {chess.PAWN: "pawn", chess.KNIGHT: "knight",
 
 # A reply that is checkmate outranks every material number.
 MATE_LOSS = 100000
+# The second ply of the mate sweep sorts just behind a mate in one — both
+# lose the game, and the sooner one is the plainer warning.
+MATE2_LOSS = MATE_LOSS - 1
+# Seconds the whole mate-in-two sweep may spend on one position before it
+# stops looking (chess-mover-amendment.md holds the scan to 150 ms; the
+# checks-only search measures 7 ms median, 68 ms worst over 120 real boards).
+MATE2_BUDGET = 0.12
 
 
 def _swap_off(board, square, side):
@@ -282,6 +289,71 @@ def mate_reply(board, move):
     finally:
         board.pop()
     return None
+
+
+def mate_in_two(board, move, budget=None):
+    """The SAN of a CHECKING opponent reply that forces mate next move, or
+    None — the second ply of the mate sweep.
+
+    `mate_reply` sees one ply and so reads a move as "safe" when the mate is
+    one move further out, which is how browser-064 was lost on 2026-09-17.
+    At my move 26 every one of the 41 legal moves had been fine a move
+    earlier; after 26.Rxg6 exactly three (Rxg6, Bg5, Bg3) survived and the
+    other 38 lost to a forced mate in two. All 38 printed "safe", because the
+    first move of the mate, 27.Rg7+, is a check and not a mate.
+
+    The opponent's first move is restricted to checks. Measured over 120 real
+    positions from the game files (2026-09-17) that restriction missed none
+    of the 29 mated candidates an unrestricted search found, and it is the
+    difference between 7 ms per position and 280 ms — the amendment's 150 ms
+    scan budget is what makes the restriction worth its small blind spot (a
+    quiet mating net is not seen). `budget`, when given, is a
+    `time.monotonic` deadline for the whole sweep; past it the search returns
+    None, so an expensive position degrades to the one-ply verdict rather
+    than to a slow move.
+    """
+    if budget is not None and time.monotonic() > budget:
+        return None
+    board.push(move)
+    try:
+        if board.is_game_over():
+            return None
+        for reply in list(board.legal_moves):
+            if not board.gives_check(reply):
+                continue
+            san = board.san(reply)
+            board.push(reply)
+            try:
+                if board.is_game_over():
+                    continue
+                forced = True
+                for escape in list(board.legal_moves):
+                    board.push(escape)
+                    try:
+                        mated = any(
+                            self_mate(board, kill)
+                            for kill in list(board.legal_moves))
+                    finally:
+                        board.pop()
+                    if not mated:
+                        forced = False
+                        break
+            finally:
+                board.pop()
+            if forced:
+                return san
+    finally:
+        board.pop()
+    return None
+
+
+def self_mate(board, move):
+    """Whether `move` is checkmate, without leaving the board changed."""
+    board.push(move)
+    try:
+        return board.is_checkmate()
+    finally:
+        board.pop()
 
 
 def material_balance(board, side=None):
@@ -924,6 +996,8 @@ def jev_request(job, board):
             pass  # a bad stored fen is an entry without the board
         mem_entries.append(entry)
     scan = os.environ.get("DESKCRAB_CHESS_REPLY_SCAN", "1") != "0"
+    deep = scan and os.environ.get("DESKCRAB_CHESS_MATE2", "1") != "0"
+    budget = time.monotonic() + MATE2_BUDGET
     criteria = {}
     for m in board.legal_moves:
         uci = m.uci()
@@ -954,6 +1028,11 @@ def jev_request(job, board):
             if mate:
                 criteria[uci] = f"{san} — reply {mate} is CHECKMATE"
                 continue
+            mate2 = mate_in_two(board, m, budget) if deep else None
+            if mate2:
+                criteria[uci] = (f"{san} — reply {mate2} FORCES CHECKMATE "
+                                 "next move, whatever you answer")
+                continue
             desc = f"{san} — loses about {loss / 100:.1f} pawns where it lands"
             if backed:
                 desc += "; memory holds a winning record with it"
@@ -972,6 +1051,16 @@ def jev_request(job, board):
         if m.promotion:
             comp += PIECE_VALUE[m.promotion] - PIECE_VALUE[chess.PAWN]
         net = worst[0] - comp
+        mate2 = None
+        if deep and not (worst[1] is not None and worst[0] >= MATE_LOSS):
+            mate2 = mate_in_two(board, m, budget)
+        if mate2:
+            # One ply short is how browser-064 was lost: 38 of 41 options
+            # read "safe" while every one of them was mated in two. A forced
+            # mate outranks the exchange count and revokes the endorsement.
+            criteria[uci] = (f"{san} — reply {mate2} FORCES CHECKMATE next "
+                             "move, whatever you answer")
+            continue
         if worst[1] is None or net < 100:
             desc = f"{san} — safe"
             if backed:
@@ -1065,7 +1154,12 @@ def jev_request(job, board):
             "stored games at or near this position. An option marked "
             "CHECKMATE wins the game immediately — always pick it. Never "
             "pick an option whose named reply is CHECKMATE: that reply "
-            "loses the game. 'REPEATS a position': the move returns to a "
+            "loses the game. 'FORCES CHECKMATE next move' is the same "
+            "verdict one move further out — the reply named is a check, "
+            "and every answer to it is mated, so such an option loses the "
+            "game just as surely: never pick one while any option without "
+            "that label exists, however much material it appears to win. "
+            "'REPEATS a position': the move returns to a "
             "position this game has already stood in, and the fifth time a "
             "position appears the game is drawn on the spot — while you are "
             "ahead in material never pick a repeating option when any sound "
@@ -1910,17 +2004,26 @@ class Mover:
         # square alone. A scan failure is a prompt with the old two-bucket
         # shape, never a lost move.
         scan = os.environ.get("DESKCRAB_CHESS_REPLY_SCAN", "1") != "0"
+        deep = scan and os.environ.get("DESKCRAB_CHESS_MATE2", "1") != "0"
+        budget = time.monotonic() + MATE2_BUDGET
         safe, hangs, backed, punished = [], [], [], []
         for m in board.legal_moves:
             loss = material_loss(board, m)
             label = f"{board.san(m)} ({m.uci()})"
             if loss > 0:
                 mate = mate_reply(board, m) if scan else None
+                mate2 = None
+                if not mate and deep:
+                    mate2 = mate_in_two(board, m, budget)
                 if mate:
                     # Mated is mated: the exchange count never speaks over
                     # it, and no memory record endorses it.
                     punished.append((MATE_LOSS,
                                      f"{label} — {mate} is checkmate"))
+                elif mate2:
+                    punished.append(
+                        (MATE2_LOSS,
+                         f"{label} — {mate2} forces mate next move"))
                 elif m.uci() in endorsed:
                     # Rule 14c: a remembered win is never buried in the
                     # concrete-reason pile — both facts ride its own line.
@@ -1942,7 +2045,18 @@ class Mover:
             if m.promotion:
                 comp += PIECE_VALUE[m.promotion] - PIECE_VALUE[chess.PAWN]
             net = worst[0] - comp
-            if worst[1] is None or net < 100:
+            mate2 = None
+            if deep and not (worst[1] is not None
+                             and worst[0] >= MATE_LOSS):
+                mate2 = mate_in_two(board, m, budget)
+            if mate2:
+                # browser-064: 38 of 41 options here read "safe" while every
+                # one lost to a forced mate in two, the first move of it a
+                # check and so invisible one ply deep. No endorsement
+                # survives it.
+                punished.append(
+                    (MATE2_LOSS, f"{label} — {mate2} forces mate next move"))
+            elif worst[1] is None or net < 100:
                 safe.append(label)
             elif worst[0] >= MATE_LOSS:
                 if m.uci() in endorsed:
