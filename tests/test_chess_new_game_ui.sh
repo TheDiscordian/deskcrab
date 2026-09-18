@@ -121,7 +121,7 @@ page="$(http_get /)"
 contains "$page" 'id="timecontrol"' \
     && ok "the served markup carries the clock selector (rule 22h)" \
     || fail "no clock selector in the served page"
-for c in untimed 1+0 2+1 3+2 5+0 10+0 15+10; do
+for c in untimed 1+0 2+1 3+2 5+0 10+5 15+10; do
     contains "$page" "value=\"$c\"" \
         && ok "the selector offers $c" \
         || fail "the selector does not offer $c"

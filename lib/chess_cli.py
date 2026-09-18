@@ -178,7 +178,7 @@ TIME_CONTROLS = {  # name -> (speed, base ms, Fischer increment ms per move)
     "2+1": ("bullet", 120_000, 1_000),
     "3+2": ("blitz", 180_000, 2_000),
     "5+0": ("blitz", 300_000, 0),
-    "10+0": ("rapid", 600_000, 0),
+    "10+5": ("rapid", 600_000, 5_000),
     "15+10": ("rapid", 900_000, 10_000),
 }
 
@@ -489,6 +489,79 @@ def record_tally(games: list[dict]) -> list[dict]:
         b[mine][outcome] += 1
     out = sorted(buckets.values(),
                  key=lambda b: (-b["games"], b["player"].lower()))
+    return out
+
+
+ELO_START = 1200
+ELO_K = 32
+
+
+def elo_tally(games: list[dict] | None = None) -> dict:
+    """Elo per player and per game type (specs/chessweb.md rule 23e),
+    computed from the store on every call and never stored: every finished
+    non-self-play game replays in one deterministic order (`updated` stamp,
+    then id), one rating pool per speed — a bullet rating and a rapid
+    rating are different skills — with her rating and each player bucket's
+    moving together per game. Buckets are rule 23d's identity exactly;
+    self-play never enters, because a grind is not an opponent. No rating
+    state on disk means an undo, a relabel, or a late flag settlement
+    re-prices history correctly on the next call."""
+    if games is None:
+        games = load_all()
+    finished = []
+    for g in games:
+        if (str(g.get("id", "")).startswith("selfplay-")
+                or g.get("opponent") == "selfplay"):
+            continue
+        try:
+            board = build_board(g)
+        except CliError:
+            continue  # a corrupt record rates nothing
+        key_, _desc, result = compute_state(g, board)
+        if key_ == "active" or result not in ("1-0", "0-1", "1/2-1/2"):
+            continue
+        finished.append((g.get("updated") or "", g.get("id", ""), g, result))
+    finished.sort(key=lambda t: (t[0], t[1]))
+    pools: dict[str, dict] = {}
+    for _, _, g, result in finished:
+        speed = (g.get("time_control") or {}).get("speed") or "untimed"
+        pool = pools.setdefault(speed, {
+            "her": {"rating": float(ELO_START), "games": 0},
+            "players": {}})
+        label = player_label(g)
+        labeled = bool((g.get("player") or "").strip())
+        b = pool["players"].setdefault(slugify(label), {
+            "player": label, "labeled": labeled,
+            "rating": float(ELO_START), "games": 0,
+            "wins": 0, "draws": 0, "losses": 0})
+        if labeled:
+            b["player"] = label
+            b["labeled"] = True
+        if result == "1/2-1/2":
+            hers = 0.5
+        else:
+            hers = 1.0 if (result == "1-0") == (g["my_side"] == "white") \
+                else 0.0
+        ra, rb = pool["her"]["rating"], b["rating"]
+        expected = 1.0 / (1.0 + 10.0 ** ((rb - ra) / 400.0))
+        pool["her"]["rating"] = ra + ELO_K * (hers - expected)
+        b["rating"] = rb + ELO_K * ((1.0 - hers) - (1.0 - expected))
+        pool["her"]["games"] += 1
+        b["games"] += 1
+        # Wins are HER wins, rule 23d's own convention — readers on the
+        # other side of the table flip the view themselves.
+        b["wins" if hers == 1.0 else "losses" if hers == 0.0
+          else "draws"] += 1
+    out = {}
+    for speed, pool in pools.items():
+        out[speed] = {
+            "her": {"rating": round(pool["her"]["rating"]),
+                    "games": pool["her"]["games"]},
+            "players": sorted(
+                ({**b, "rating": round(b["rating"])}
+                 for b in pool["players"].values()),
+                key=lambda b: (-b["games"], b["player"].lower())),
+        }
     return out
 
 
@@ -1033,6 +1106,41 @@ def cmd_record(args):
         print(line)
 
 
+def cmd_elo(args):
+    """Elo per player and per game type (specs/chessweb.md rule 23e).
+    Derived from the game files on every call, never from memory — the
+    record's own discipline."""
+    games = load_all()
+    if not games:
+        print("no games — betty-chess new <opponent>")
+        return
+    pools = elo_tally(games)
+    if args.player:
+        want = slugify(args.player)
+        pools = {speed: {**pool, "players": [
+            b for b in pool["players"] if slugify(b["player"]) == want]}
+            for speed, pool in pools.items()}
+        pools = {s: p for s, p in pools.items() if p["players"]}
+        if not pools:
+            raise CliError(f"no finished games against '{args.player}'")
+    if not pools:
+        print("no finished games yet — Elo needs a result")
+        return
+    if getattr(args, "json", False):
+        print(json.dumps(pools, indent=2))
+        return
+    order = {"bullet": 0, "blitz": 1, "rapid": 2, "untimed": 3}
+    for speed in sorted(pools, key=lambda s: (order.get(s, 9), s)):
+        pool = pools[speed]
+        print(f"{speed}: her rating {pool['her']['rating']} "
+              f"({pool['her']['games']} game(s))")
+        for b in pool["players"]:
+            label = b["player"] + ("" if b["labeled"] else " (unlabeled)")
+            print(f"  {label:<24} {b['rating']:>5}  "
+                  f"({b['games']} game(s), you "
+                  f"{b['wins']}-{b['draws']}-{b['losses']})")
+
+
 # ---------------------------------------------------------------- chat
 # The table chat (specs/chessweb.md rule 24): messages live on the game
 # record, written through save_game like every other fact. One appender for
@@ -1258,6 +1366,16 @@ def main(argv=None):
                     help="the tally as JSON, the same shape GET /record "
                          "serves")
     sp.set_defaults(func=cmd_record)
+
+    sp = sub.add_parser("elo",
+                        help="Elo per player and game type, computed from "
+                             "the games on disk — never from memory")
+    sp.add_argument("player", nargs="?", default=None,
+                    help="one player's ratings (default: everyone)")
+    sp.add_argument("--json", action="store_true",
+                    help="the pools as JSON, the same shape GET /elo "
+                         "serves")
+    sp.set_defaults(func=cmd_elo)
 
     sp = sub.add_parser("engine", help="let stockfish move for the side to play")
     sp.add_argument("game", nargs="?")

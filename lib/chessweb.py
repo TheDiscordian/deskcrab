@@ -1607,6 +1607,9 @@ def make_handler(hub, client_dir):
             if path == "/record":
                 self.record_get()
                 return
+            if path == "/elo":
+                self.elo_get()
+                return
             if path == "/browser_voice_queue.js":
                 self.shared_voice_queue()
                 return
@@ -1833,6 +1836,16 @@ def make_handler(hub, client_dir):
                 self.json_body({"error": f"tally failed: {e}"}, 500)
                 return
             self.json_body({"records": rows, "name": ASSISTANT_NAME})
+
+        def elo_get(self):
+            """GET /elo (rule 23e): the computed per-speed rating pools,
+            the same one implementation the CLI prints."""
+            try:
+                pools = chess_cli.elo_tally(chess_cli.load_all())
+            except Exception as e:
+                self.json_body({"error": f"tally failed: {e}"}, 500)
+                return
+            self.json_body({"pools": pools, "name": ASSISTANT_NAME})
 
         def thinking_state(self):
             with hub.lock:

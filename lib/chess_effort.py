@@ -31,7 +31,7 @@ SHARP = os.environ.get("DESKCRAB_CHESS_EFFORT_SHARP", "medium")
 # Exact controls may have different winners even when they share a speed
 # label, so a control table wins over the broader speed default. The pair
 # table is still bucket-shaped and ships empty; the model table now carries
-# the one decided exact-control override (10+0, below).
+# the one decided exact-control override (10+5, below).
 CONTROL_PAIRS = {}
 
 SPEED_PAIRS = {
@@ -59,7 +59,7 @@ SPEED_PAIRS = {
 #       is the judge. The empty gate stays
 #       (chess_cli.DISABLED_LIVE_TIME_CONTROLS).
 #   blitz (3+2, 5+0)  jev-latest
-#   rapid, split by exact control: 10+0  jev-latest (CONTROL_MODELS —
+#   rapid, split by exact control: 10+5  jev-latest (CONTROL_MODELS —
 #       the exact-control door, which wins over the speed row);
 #       15+10  opus  low/low — the matrix's measured reliable winner
 #       (pooled rate 0.75, zero failure events), kept by the user's
@@ -74,7 +74,7 @@ SPEED_PAIRS = {
 # same-model Claude accounts, but a routed model that is unavailable,
 # refusing, or cooling leaves the move unplayed with the failure exposed —
 # never a silent substitute.
-CONTROL_MODELS = {"10+0": "jev-latest"}
+CONTROL_MODELS = {"10+5": "jev-latest"}
 
 SPEED_MODELS = {
     "bullet": "jev-latest",

@@ -394,8 +394,8 @@ check_eq "an unknown speed keeps it too" "$(pairfor correspondence -)" "low medi
 check_eq "bullet reads its dormant speed fallback" "$(pairfor bullet 1+0)" "low low"
 check_eq "blitz reads its speed fallback" "$(pairfor blitz -)" "low low"
 check_eq "rapid reads its speed fallback" "$(pairfor rapid -)" "low low"
-check_eq "10+0 rides the rapid bucket's low/low pair" \
-    "$(pairfor rapid 10+0)" "low low"
+check_eq "10+5 rides the rapid bucket's low/low pair" \
+    "$(pairfor rapid 10+5)" "low low"
 check_eq "15+10 rides the same rapid low/low pair (the user's 2026-09-01 table)" \
     "$(pairfor rapid 15+10)" "low low"
 check_eq "a per-speed knob overrides by env alone" \
@@ -427,7 +427,7 @@ MM="$("$PY" -B - <<EOF
 import sys, os; sys.path.insert(0, "$REPO/lib")
 import chessweb
 timed = {"time_control": {"name": "1+0", "speed": "bullet"}}
-rapid10 = {"time_control": {"name": "10+0", "speed": "rapid"}}
+rapid10 = {"time_control": {"name": "10+5", "speed": "rapid"}}
 rapid15 = {"time_control": {"name": "15+10", "speed": "rapid"}}
 print("unset:", chessweb.mover_model_for(timed))
 print("rapid:", chessweb.mover_model_for(rapid10),
@@ -447,7 +447,7 @@ contains "$MM" "set: haiku" \
     && ok "the per-speed knob rides the job for its speed" \
     || fail "mover_model_for: $MM"
 contains "$MM" "rapid: jev-latest opus" \
-    && ok "10+0 rides the exact-control jev override; 15+10 keeps the rapid winner" \
+    && ok "10+5 rides the exact-control jev override; 15+10 keeps the rapid winner" \
     || fail "mover_model_for: $MM"
 contains "$MM" "rapid-override: sonnet" \
     && ok "the per-speed knob overrides the routed default" \
@@ -464,7 +464,7 @@ import chess_effort, chessweb
 timed = {"time_control": {"name": "1+0", "speed": "bullet"}}
 print("shipped:", chess_effort.model_for("bullet"),
       chess_effort.model_for("blitz", "3+2"),
-      chess_effort.model_for("rapid", "10+0"),
+      chess_effort.model_for("rapid", "10+5"),
       chess_effort.model_for("rapid", "15+10"),
       chess_effort.model_for("untimed"))
 chess_effort.SPEED_MODELS["bullet"] = "sonnet"

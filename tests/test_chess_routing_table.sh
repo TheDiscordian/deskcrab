@@ -13,7 +13,7 @@
 #      chessweb.mover_model_for + chess_effort.pair_for, the exact calls
 #      answer_position/move_effort make): every timed control except 15+10
 #      rides TypeSafe's jev-latest; 15+10 keeps the measured rapid winner
-#      (Opus low/low); untimed keeps Fable low/medium. The 10+0 route is
+#      (Opus low/low); untimed keeps Fable low/medium. The 10+5 route is
 #      the exact-control door (CONTROL_MODELS) splitting rapid.
 #   2. A routed model is exact. A routed jev offer with no TYPESAFE_API_KEY
 #      yields NO attempt at all with the refusal named out loud; a routed
@@ -43,7 +43,7 @@ RES="$("$PY" -B - <<PYEOF
 import sys
 sys.path.insert(0, "$REPO/lib")
 import chess_cli, chess_effort, chessweb
-for name in ("1+0", "2+1", "3+2", "5+0", "10+0", "15+10"):
+for name in ("1+0", "2+1", "3+2", "5+0", "10+5", "15+10"):
     tc, clock = chess_cli.make_time_control(name)
     g = {"time_control": tc, "clock": clock}
     model = chessweb.mover_model_for(g)
@@ -65,9 +65,9 @@ contains "$RES" "3+2: jev-latest low/low" \
 contains "$RES" "5+0: jev-latest low/low" \
     && ok "5+0 resolves jev-latest" \
     || fail "5+0 resolution" "$(printf '%s\n' "$RES" | grep '^5+0:')"
-contains "$RES" "10+0: jev-latest low/low" \
-    && ok "10+0 resolves jev-latest through the exact-control door" \
-    || fail "10+0 resolution" "$(printf '%s\n' "$RES" | grep '^10+0:')"
+contains "$RES" "10+5: jev-latest low/low" \
+    && ok "10+5 resolves jev-latest through the exact-control door" \
+    || fail "10+5 resolution" "$(printf '%s\n' "$RES" | grep '^10+5:')"
 contains "$RES" "15+10: opus low/low" \
     && ok "15+10 keeps the measured rapid winner, Opus low/low" \
     || fail "15+10 resolution" "$(printf '%s\n' "$RES" | grep '^15+10:')"

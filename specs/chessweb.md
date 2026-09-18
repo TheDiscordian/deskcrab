@@ -365,7 +365,7 @@ cannot be changed.
     | 2+1 | bullet | `jev-latest` | `low` | `low` |
     | 3+2 | blitz | `jev-latest` | `low` | `low` |
     | 5+0 | blitz | `jev-latest` | `low` | `low` |
-    | 10+0 | rapid | `jev-latest` | `low` | `low` |
+    | 10+5 | rapid | `jev-latest` | `low` | `low` |
     | 15+10 | rapid | `opus` | `low` | `low` |
     | untimed | — | `fable` | `low` | `medium` |
 
@@ -373,7 +373,7 @@ cannot be changed.
     `SPEED_PAIRS` carry the speed routes (untimed's model rides the table's `untimed`
     row; its pair is the uniform `DESKCRAB_CHESS_EFFORT_QUIET` /
     `DESKCRAB_CHESS_EFFORT_SHARP` pair, defaults `low`/`medium`), and `CONTROL_MODELS`
-    carries the one exact-control override — `10+0` onto `jev-latest`, splitting rapid —
+    carries the one exact-control override — `10+5` onto `jev-latest`, splitting rapid —
     which wins over the speed tables exactly as that door was built to. `CONTROL_PAIRS`
     still ships empty. Jev takes no reasoning-effort knob, so on its rows the pair
     prices only the pre-check's own stamp (rule 17's `effort` metric), never the call.
@@ -604,7 +604,7 @@ cannot be changed.
 22. **The clock.** A game MAY carry a time control, chosen when the game is created and never
     changed after: `--time-control` on `betty-chess new` and on `betty-chessweb serve`
     (`$DESKCRAB_CHESSWEB_TIME_CONTROL` is the serve flag's default), naming one of the standard
-    set — bullet `1+0` and `2+1`, blitz `3+2` and `5+0`, rapid `10+0` and `15+10`, base minutes
+    set — bullet `1+0` and `2+1`, blitz `3+2` and `5+0`, rapid `10+5` and `15+10`, base minutes
     plus Fischer increment seconds per move — or `untimed`, the default, which is exactly the
     old behaviour: no clock fields at all. A record without the fields IS an untimed game, so
     every game recorded before this rule keeps its meaning unread. Three fields on the game
@@ -738,6 +738,20 @@ cannot be changed.
        unfinished (measured 2026-08-20). One implementation (`chess_cli.record_tally`) feeds the
        CLI, `GET /record` (the same tally as JSON, so the page can show the standing score), and
        the chat prompt's record line (rule 24). Prose memory is not a source for any of it.
+    e. **Elo, computed the same way** (the user's 2026-09-17 ask). `chess_cli.elo_tally`
+       replays every finished non-self-play game from the store in one deterministic order —
+       the `updated` stamp, then the id — and keeps ONE rating pool per speed (bullet, blitz,
+       rapid, untimed): the chess-site convention, because a bullet rating and a rapid rating
+       are different skills. Within a pool her rating and each bucket's rating move together
+       per game: everyone starts at 1200, K is 32, a draw is half a point. Buckets are rule
+       23d's identity exactly — the player label, slug-folded; unlabeled browser games in
+       their own visible bucket — and self-play never enters: a grind is not an opponent,
+       and its models' results would poison her real ratings. Like the record, the ratings
+       are counted, never stored: no rating state exists on disk, so an undo, a relabel, or
+       a late flag settlement re-prices history correctly on the next call. One
+       implementation feeds `betty-chess elo [player] [--json]` and `GET /elo` (the same
+       shape as JSON, with the assistant's display name — the `/record` bargain). An active
+       game counts nowhere until it finishes.
 24. **The table chat.** The game window carries a real chat between the sitter and her —
     persistent, tied to the game, and a SEPARATE conversational context from the phone
     conversation: nothing in it reads or writes the conversation store, no session is booked or
