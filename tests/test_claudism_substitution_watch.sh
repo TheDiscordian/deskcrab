@@ -273,3 +273,23 @@ refute "the same two catches no longer read as holding" \
 check "they read as the rise they are" contains "$V2" "did not hold: the family grew"
 check "and the note carries the denominator that decided it" \
     contains "$V2" "in 73 spoken words"
+
+echo
+echo "(h) a move the size of counting noise is a lean, not a finding:"
+# The fault found 2026-09-18, reading the 09-17 review: the band is a fraction
+# of the expectation and counting noise is not, so at an expectation near 1 a
+# total of 3 cleared the band and drew "the move got louder" — which a Poisson
+# at the standing rate throws up about 8 nights in 100 with nothing changed.
+# Case (c)'s own family is exactly that shape, so it is re-read here.
+check "the noise-sized growth is still reported, direction and size" \
+    contains "$PERF" "grew 3.0x against its own rate"
+refute "but it is not stated as a finding" contains "$PERF" "the move got louder"
+check "it is named a lean" contains "$PERF" "a lean and not a finding"
+check "and the note prints how often chance alone reaches tonight's total" \
+    contains "$PERF" "3 or more comes up about 8 in 100 by chance"
+check "a total that genuinely beats the noise keeps the finding's words" \
+    contains "$V2" "the move got louder"
+check "with its own odds beside it" \
+    contains "$V2" "comes up under 1 in 100 by chance"
+check "a held total says it is inside the noise, not merely near the number" \
+    contains "$VOUCH" "inside the counting noise"

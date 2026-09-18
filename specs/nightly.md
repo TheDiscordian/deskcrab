@@ -554,7 +554,16 @@ which fails silently is worse than one that does not exist.
     denominator and the watch MUST stay silent rather than guess. Outside the band the note MUST state the direction and the size of the move
     instead — a total materially down is the family going quieter while its residue changes
     words, a weaker claim than substitution; a total up is the move growing even as it changes
-    words — and MUST NOT print a premise it did not measure. Churn at a family total of one is
+    words — and MUST NOT print a premise it did not measure. Every verdict MUST carry its own
+    strength: the band of rule 48 is a fraction of the expectation, and counting noise is not, so
+    the band alone states a move as a finding when chance alone would produce it. Measured
+    2026-09-18 against a Poisson at the standing rate: the "grew louder" verdict fires on between
+    8 and 27 nights in 100 across the whole range of expectations the watch sees, worst at an
+    expectation near 2, where a total of 3 draws "the move got louder" and comes up by chance
+    better than one night in four. So the note MUST print how often chance alone reaches tonight's
+    total at the standing rate, and MUST state a move as a finding only when that is below one
+    night in twenty; above it the direction and size are still reported, named a lean and not a
+    finding. Churn at a family total of one is
     arithmetic, not evidence: no note below a total of two tonight. A member first counted
     tonight MUST NOT stand as the risen side — an entry has counts only from the night it was
     created, so an empty history is absence of measurement, not absence of the habit. A

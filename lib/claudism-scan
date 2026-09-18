@@ -82,6 +82,10 @@ SIGNATURES_PATH = os.environ.get("CLAUDISM_SIGNATURES") or os.path.join(
     STATE_DIR, "persona-signatures.md")
 CRAB = os.environ.get("CRAB_BIN") or os.path.expanduser("~/.local/bin/crab")
 WAKE_AT = os.environ.get("CLAUDISM_WAKE_AT") or "09:30"
+# How unlikely a family's total must be, under the standing rate, before a
+# move in it is stated as a finding rather than a lean — specs/nightly.md
+# rule 48a.
+NOISE_P = 0.05
 
 # The delimiter, anchored to its own line and tolerant of surrounding
 # whitespace — specs/speech-output.md rules 3 and 4. The journal holds the
@@ -521,6 +525,39 @@ def update_functions(day, phrases, hits, words):
     return tonight, history
 
 
+def poisson_tail_at_least(k, lam):
+    """P(X >= k) for X Poisson(lam) — the chance a night this size carries k
+    catches or more when nothing about the habit has changed."""
+    if lam <= 0:
+        return 0.0 if k > 0 else 1.0
+    below, term = 0.0, math.exp(-lam)
+    for i in range(int(k)):
+        below += term
+        term *= lam / (i + 1)
+    return max(0.0, min(1.0, 1.0 - below))
+
+
+def poisson_tail_at_most(k, lam):
+    """P(X <= k), the other tail."""
+    if lam <= 0:
+        return 1.0
+    out, term = 0.0, math.exp(-lam)
+    for i in range(int(k) + 1):
+        out += term
+        term *= lam / (i + 1)
+    return max(0.0, min(1.0, out))
+
+
+def chance_clause(total, p, direction):
+    """How often chance alone would reach tonight's total, in words — so a
+    verdict carries its own strength instead of leaving the reader to guess
+    whether six catches beat two."""
+    pct = round(100 * p)
+    odds = "about %d in 100" % pct if pct >= 1 else "under 1 in 100"
+    return ("%d %s comes up %s by chance at the standing rate"
+            % (total, direction, odds))
+
+
 def substitution_watch(day, phrases, history, fn_history=None, words=0):
     """The churn test of rule 48, from the per-member history: inside a
     function, a member that went quiet tonight beside a sibling that rose is
@@ -542,6 +579,17 @@ def substitution_watch(day, phrases, history, fn_history=None, words=0):
     the verdict holds tonight's total against that. Same fault as
     clean_night_power was built for, one layer up. Without prior words the
     watch says nothing rather than guessing.
+
+    The band is not the whole verdict. Found 2026-09-18, reading the 09-17
+    review: the tolerance is a FRACTION of the expectation and counting noise
+    is not, so at an expectation near 2 a total of 3 clears the band and gets
+    "the move got louder" — which a Poisson at the standing rate produces by
+    chance better than one night in four, and between 8 and 27 times in 100
+    across the whole range of expectations this watch sees. The direction is
+    still reported either way; what changes is the weight put on it, and
+    every note now prints how often chance alone reaches tonight's total.
+    Below one night in twenty it is a finding, above it a lean. The same
+    Poisson clean_night_power already uses, one layer in.
 
     Churn at a family total of one is arithmetic, not evidence: no note
     below two. A member first counted tonight cannot be the risen side —
@@ -598,20 +646,41 @@ def substitution_watch(day, phrases, history, fn_history=None, words=0):
                 "size) — "
                 % (fn, ", ".join(quiet), ", ".join(risen), total, words,
                    1000.0 * total / words, rate, before))
-        if abs(total - before) <= max(1.0, before / 4.0):
-            notes.append(head + "the total holds: the move changed words, "
-                         "it did not die.")
-        elif total < before:
-            notes.append(head + "the total did not hold: the family fell "
-                         "by %d%% against its own rate tonight — quieter is "
-                         "the finding, and the weight that remains moved to "
-                         "%s, a weaker claim than substitution."
-                         % (int(round(100 * (1 - total / before))),
-                            ", ".join(risen)))
+        close = abs(total - before) <= max(1.0, before / 4.0)
+        if total >= before:
+            p = poisson_tail_at_least(total, before)
         else:
-            notes.append(head + "the total did not hold: the family grew "
-                         "%.1fx against its own rate tonight — the move got "
-                         "louder even as it changed words." % (total / before))
+            p = poisson_tail_at_most(total, before)
+        strong = p < NOISE_P
+        if close and not strong:
+            notes.append(head + "the total holds: the move changed words, it "
+                         "did not die (%d against %.1f expected, inside the "
+                         "counting noise for a night this size)."
+                         % (total, before))
+        elif total < before:
+            body = ("the total did not hold: the family fell by %d%% against "
+                    "its own rate tonight"
+                    % int(round(100 * (1 - total / before))))
+            body += (" — quieter, and the weight that remains moved to %s, a "
+                     "weaker claim than substitution" % ", ".join(risen))
+            if strong:
+                notes.append(head + body + " (%s), so quieter is the finding."
+                             % chance_clause(total, p, "or fewer"))
+            else:
+                notes.append(head + body + " — but %s, so it is a lean and "
+                             "not a finding." % chance_clause(total, p,
+                                                              "or fewer"))
+        else:
+            body = ("the total did not hold: the family grew %.1fx against "
+                    "its own rate tonight" % (total / before))
+            if strong:
+                notes.append(head + body + " — the move got louder even as "
+                             "it changed words (%s)."
+                             % chance_clause(total, p, "or more"))
+            else:
+                notes.append(head + body + " — but %s, so it is a lean and "
+                             "not a finding." % chance_clause(total, p,
+                                                              "or more"))
     return notes
 
 
