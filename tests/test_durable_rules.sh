@@ -96,5 +96,40 @@ newstat="$(sqlite3 "$DESKCRAB_MEMORY_DIR/memory.db" \
   && ok 'memory supersede keeps the newer correction authoritative and refuses swapped arguments' \
   || bad 'memory supersede keeps the newer correction authoritative and refuses swapped arguments'
 
+# Rule 28c: a stored FACT is correctable too, within its own kind. The decay
+# pass is keyed on disuse and rule 12 clamps every other factor into a
+# five-percent band, so a note that is wrong and useful outlives every rule
+# written about how to read it.
+"$PY" "$ROOT/lib/memory.py" add --kind note \
+  'The running tally stands at five wins to eight losses.' >/dev/null
+oldnote="$(sqlite3 "$DESKCRAB_MEMORY_DIR/memory.db" "select max(id) from memories;")"
+"$PY" "$ROOT/lib/memory.py" add --kind note \
+  'Recounted from the source files: the running tally is twenty-nine to thirty-seven.' \
+  >/dev/null
+newnote="$(sqlite3 "$DESKCRAB_MEMORY_DIR/memory.db" "select max(id) from memories;")"
+"$PY" "$ROOT/lib/memory.py" supersede "$newnote" "$oldnote" >/dev/null
+noterow="$(sqlite3 "$DESKCRAB_MEMORY_DIR/memory.db" \
+  "select status || ':' || superseded_by from memories where id=$oldnote;")"
+[ "$noterow" = "superseded:$newnote" ] \
+  && ok 'memory supersede corrects a stored note, not only a stored rule' \
+  || bad 'memory supersede corrects a stored note, not only a stored rule'
+
+# ... but never across kinds: a fact the assistant minted must not be able to
+# retire a rule the user set.
+set +e
+"$PY" "$ROOT/lib/memory.py" supersede "$newnote" "$new" >/dev/null 2>&1
+crosskind=$?
+"$PY" "$ROOT/lib/memory.py" add --kind observation \
+  'One night of unusually quiet autonomous work.' >/dev/null
+obs="$(sqlite3 "$DESKCRAB_MEMORY_DIR/memory.db" "select max(id) from memories;")"
+"$PY" "$ROOT/lib/memory.py" supersede "$obs" "$newnote" >/dev/null 2>&1
+obsrc=$?
+set -e
+obsstat="$(sqlite3 "$DESKCRAB_MEMORY_DIR/memory.db" \
+  "select status from memories where id=$newnote;")"
+[ "$crosskind" != 0 ] && [ "$obsrc" != 0 ] && [ "$obsstat" = active ] \
+  && ok 'memory supersede refuses across kinds and refuses observations outright' \
+  || bad 'memory supersede refuses across kinds and refuses observations outright'
+
 echo "$pass passed, $fail failed"
 [ "$fail" = 0 ]

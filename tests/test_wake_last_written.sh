@@ -123,16 +123,16 @@ refute "and nothing commands her to choose another want" \
     contains "$BODY" "choose another want"
 
 echo
-echo "a wake that carries a reason never gets the line or the question:"
+echo "every wake that offers the shelf carries the line and question:"
 BODY="$(run 'WAKE_REASON="the arrangement needs finishing" build_system_prompt --profile wake')"
-refute "a reasoned wake's prompt has no last-written line" \
+check "a reasoned wake carries the last-written line" \
     contains "$BODY" 'Last written in:'
-refute "and no conscious-return question" contains "$BODY" "$QUESTION"
+check "and carries the conscious-return question" contains "$BODY" "$QUESTION"
 check "and its shelf is otherwise intact" contains "$BODY" 'YOUR WANTS'
 BODY="$(run 'WAKE_OWN_TIME=0 build_system_prompt --profile wake')"
-refute "an ordinary reason-less wake without the own-time flag has none either" \
+check "an ordinary wake without the own-time flag also carries the line" \
     contains "$BODY" 'Last written in:'
-refute "nor its question" contains "$BODY" "$QUESTION"
+check "and also carries its question" contains "$BODY" "$QUESTION"
 BODY="$(run 'WAKE_OWN_TIME=1 build_system_prompt --profile turn')"
 refute "a desk turn never carries it, whatever the environment says" \
     contains "$BODY" 'Last written in:'

@@ -3203,15 +3203,16 @@ $WANTS_TITLES"
         elif [ -n "${WANTS_FILE:-}" ]; then
             SHELVES="YOUR WANTS — the shelf at $WANTS_FILE is empty; nothing is recorded yet."
         fi
-        # The last-written line, specs/wake-queue.md rule 40g: on the own-time
-        # wake ONLY, one line of sense-data above the shelf — which documents
-        # the recent free hours actually landed in — and directly beneath it
+        # The last-written line, specs/wake-queue.md rule 40g: on every wake
+        # profile, one line of sense-data above the shelf — which documents
+        # the recent shelf choices actually landed in — and directly beneath it
         # the conscious-return question, verbatim. The question reads the
         # line's evidence and never stands without it: repetition is evidence
         # inviting a conscious choice, never a command to choose another want.
-        # A wake carrying a reason gets neither, and a broken or empty drawer
-        # costs both, never the prompt.
-        if [ "$PROMPT_PROFILE" = wake ] && [ "${WAKE_OWN_TIME:-0}" = "1" ]; then
+        # A desk turn gets neither; a broken or empty drawer costs both, never
+        # the prompt. Every wake profile offers the shelf after its agenda, so
+        # why the wake began is not the boundary for the later choice.
+        if [ "$PROMPT_PROFILE" = wake ]; then
             local LAST_WRITTEN=""
             LAST_WRITTEN="$(wants_last_written 2>/dev/null)" || LAST_WRITTEN=""
             [ -n "$LAST_WRITTEN" ] && SHELVES="$LAST_WRITTEN

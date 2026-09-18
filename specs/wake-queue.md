@@ -544,7 +544,7 @@ for reduction here — every rule below makes the queue **visible and bounded**,
     from tool activity as every wake's is (rule 25) — so a month of returns can be read back and
     the lived choices, the new wants and the chosen nothings told apart from administrative
     growth.
-40g. **The last-written line.** The own-time wake's prompt carries one short line naming the two
+40g. **The last-written line.** Every wake-profile prompt carries one short line naming the two
     want documents most recently written in and how long ago, placed WITH the shelf material —
     the first line of the shelves layer, immediately above the shelf — never at the top of the
     prompt. It is computed at assembly time from the mtimes of `*.md` under the wants documents
@@ -568,10 +568,12 @@ for reduction here — every rule below makes the queue **visible and bounded**,
     2026-09-08: three days of the bare line watched fifteen free sittings form three same-want
     streaks, because the fact stood in the prompt while the question that reads it stayed in a
     want document the chooser does not open — repeating the architecture the line was built to
-    fix — so the question moves in beside the fact. A wake that carries a reason — event or
-    scheduled — never gets the line or its question, and a missing, empty or unreadable drawer
-    costs both and never the prompt: the question reads the line's evidence and never stands
-    without it.
+    fix — so the question moves in beside the fact. Revised 2026-09-11: event and scheduled
+    wakes also offer the shelf after their named agenda, so the boundary is the wake profile,
+    not `WAKE_OWN_TIME` or whether a reason was supplied. Desk-turn prompts get neither: a user
+    speaking is not an offer of an unattended hour. A missing, empty or unreadable drawer costs
+    both and never the prompt: the question reads the line's evidence and never stands without
+    it.
 
 ### The autonomous bookers
 
