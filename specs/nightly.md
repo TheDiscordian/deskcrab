@@ -563,7 +563,22 @@ which fails silently is worse than one that does not exist.
     better than one night in four. So the note MUST print how often chance alone reaches tonight's
     total at the standing rate, and MUST state a move as a finding only when that is below one
     night in twenty; above it the direction and size are still reported, named a lean and not a
-    finding. Churn at a family total of one is
+    finding. The churn claim itself MUST carry its own strength on the same terms, and it is a
+    separate test from the total's: a member at zero beside a sibling above its own average is two
+    raw counts, and a family with more members than the night has occurrences has members at zero
+    whatever it is doing. Measured 2026-09-18 over every eligible family-night in the record, by
+    holding tonight's total fixed and redistributing it across the members at their standing
+    shares: the quiet/risen gate fires on 62 family-nights in 100 with the shares unchanged, on 91
+    in 100 of the nights it actually fired, and six of the nine churn notes ever emitted fire with
+    a chance of 0.98 or better — not one of the nine survives its own test. So the report MUST
+    compute how often unchanged shares alone produce tonight's split, by exact enumeration over
+    every way tonight's total could fall across the members, with add-one smoothing so a member
+    never counted before is treated as unmeasured rather than impossible. Below one night in
+    twenty the note MAY name the quiet and risen members as churn; above it the note MUST NOT
+    assert substitution, MUST say instead that the split at this total is arithmetic rather than
+    evidence, and MUST NOT carry any clause resting on the churn premise — but the family-total
+    verdict, which does not depend on the split, MUST still be printed with its own numbers.
+    Churn at a family total of one is
     arithmetic, not evidence: no note below a total of two tonight. A member first counted
     tonight MUST NOT stand as the risen side — an entry has counts only from the night it was
     created, so an empty history is absence of measurement, not absence of the habit. A

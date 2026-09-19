@@ -548,14 +548,72 @@ def poisson_tail_at_most(k, lam):
     return max(0.0, min(1.0, out))
 
 
+def churn_chance(keys, prior_uses, prior_avg, seen, total):
+    """How often unchanged shares alone produce tonight's quiet/risen split.
+
+    The family-total verdict was given its own strength on 2026-09-18. The
+    GATE that decides a note claims churn at all was not: it is two raw
+    counts — a member at zero against a positive prior average, a sibling
+    above its own. At these volumes that is arithmetic. Measured 2026-09-18
+    over every eligible family-night in the record: hold tonight's total
+    fixed, redistribute it over the members at their standing shares, and
+    the gate still fires on 62 family-nights in 100 overall and on 91 in 100
+    of the nights it actually fired — six of the nine churn notes ever
+    emitted fire with a chance of 0.98 or better, because a six-member
+    family sharing two occurrences has four members at zero whatever it is
+    doing, and not one of the nine survives this test. So the split gets the same test
+    the total already has: exact enumeration over every way tonight's total
+    could fall across the members, with add-one smoothing so a member never
+    counted before is not treated as impossible (a zero cell is absence of
+    occasions, not a forbidden word). Returns P(gate fires | shares held).
+    """
+    n = len(keys)
+    if n < 2 or total < 1:
+        return 1.0
+    grand = sum(prior_uses.values()) + n           # add-one
+    share = [(prior_uses[k] + 1.0) / grand for k in keys]
+    quiet_able = [k for k in keys if prior_avg[k] > 0]
+    rise_able = [k for k in keys if seen[k]]
+    if not quiet_able or not rise_able:
+        return 1.0
+    hit = 0.0
+
+    def walk(i, left, counts, logw):
+        nonlocal hit
+        if i == n - 1:
+            counts.append(left)
+            w = math.exp(logw + left * math.log(share[i])
+                         - math.lgamma(left + 1))
+            c = dict(zip(keys, counts))
+            if (any(c[k] == 0 for k in quiet_able)
+                    and any(c[k] > prior_avg[k] for k in rise_able)):
+                hit += w
+            counts.pop()
+            return
+        for v in range(left + 1):
+            counts.append(v)
+            walk(i + 1, left - v, counts,
+                 logw + v * math.log(share[i]) - math.lgamma(v + 1))
+            counts.pop()
+
+    walk(0, total, [], math.lgamma(total + 1))
+    return max(0.0, min(1.0, hit))
+
+
+def odds_words(p):
+    """A probability as something sayable, never a bare decimal."""
+    pct = round(100 * p)
+    if pct >= 100:
+        return "all but always"
+    return "about %d in 100" % pct if pct >= 1 else "under 1 in 100"
+
+
 def chance_clause(total, p, direction):
     """How often chance alone would reach tonight's total, in words — so a
     verdict carries its own strength instead of leaving the reader to guess
     whether six catches beat two."""
-    pct = round(100 * p)
-    odds = "about %d in 100" % pct if pct >= 1 else "under 1 in 100"
     return ("%d %s comes up %s by chance at the standing rate"
-            % (total, direction, odds))
+            % (total, direction, odds_words(p)))
 
 
 def substitution_watch(day, phrases, history, fn_history=None, words=0):
@@ -640,12 +698,27 @@ def substitution_watch(day, phrases, history, fn_history=None, words=0):
                          for k in keys for d in prev_days)
         rate = 1000.0 * prior_uses / prior_words     # the standing rate
         before = rate * words / 1000.0               # what it predicts tonight
-        head = ("inside **%s**: %s went quiet while %s rose (family total "
-                "%d tonight in %d spoken words, %.2f per 1000 against a "
-                "standing %.2f — about %.1f expected for a night this "
-                "size) — "
-                % (fn, ", ".join(quiet), ", ".join(risen), total, words,
-                   1000.0 * total / words, rate, before))
+        prior_by_key = {k: sum(history.get(k, {}).get(d, 0)
+                               for d in prev_days) for k in keys}
+        churn_p = churn_chance(keys, prior_by_key,
+                               {k: prev_avg(k) for k in keys},
+                               {k: measured_before(k) for k in keys}, total)
+        churn = churn_p < NOISE_P
+        numbers = ("family total %d tonight in %d spoken words, %.2f per "
+                   "1000 against a standing %.2f — about %.1f expected for "
+                   "a night this size"
+                   % (total, words, 1000.0 * total / words, rate, before))
+        if churn:
+            head = ("inside **%s**: %s went quiet while %s rose (%s; that "
+                    "split comes up %s by chance at unchanged shares) — "
+                    % (fn, ", ".join(quiet), ", ".join(risen), numbers,
+                       odds_words(churn_p)))
+        else:
+            head = ("inside **%s**: %s at zero beside %s is not evidence of "
+                    "churn — %d members sharing %d occurrences fall that way "
+                    "%s at unchanged shares (%s) — "
+                    % (fn, ", ".join(quiet), ", ".join(risen), len(keys),
+                       total, odds_words(churn_p), numbers))
         close = abs(total - before) <= max(1.0, before / 4.0)
         if total >= before:
             p = poisson_tail_at_least(total, before)
@@ -653,16 +726,21 @@ def substitution_watch(day, phrases, history, fn_history=None, words=0):
             p = poisson_tail_at_most(total, before)
         strong = p < NOISE_P
         if close and not strong:
-            notes.append(head + "the total holds: the move changed words, it "
-                         "did not die (%d against %.1f expected, inside the "
-                         "counting noise for a night this size)."
-                         % (total, before))
+            tail = ("the move changed words, it did not die" if churn
+                    else "the family is steady at its own rate")
+            notes.append(head + "the total holds: %s (%d against %.1f "
+                         "expected, inside the counting noise for a night "
+                         "this size)." % (tail, total, before))
         elif total < before:
             body = ("the total did not hold: the family fell by %d%% against "
                     "its own rate tonight"
                     % int(round(100 * (1 - total / before))))
-            body += (" — quieter, and the weight that remains moved to %s, a "
-                     "weaker claim than substitution" % ", ".join(risen))
+            if churn:
+                body += (" — quieter, and the weight that remains moved to "
+                         "%s, a weaker claim than substitution"
+                         % ", ".join(risen))
+            else:
+                body += " — quieter, and where the residue sits is not measurable at this total"
             if strong:
                 notes.append(head + body + " (%s), so quieter is the finding."
                              % chance_clause(total, p, "or fewer"))
@@ -674,9 +752,9 @@ def substitution_watch(day, phrases, history, fn_history=None, words=0):
             body = ("the total did not hold: the family grew %.1fx against "
                     "its own rate tonight" % (total / before))
             if strong:
-                notes.append(head + body + " — the move got louder even as "
-                             "it changed words (%s)."
-                             % chance_clause(total, p, "or more"))
+                notes.append(head + body + " — the move got louder%s (%s)."
+                             % (" even as it changed words" if churn else "",
+                                chance_clause(total, p, "or more")))
             else:
                 notes.append(head + body + " — but %s, so it is a lean and "
                              "not a finding." % chance_clause(total, p,

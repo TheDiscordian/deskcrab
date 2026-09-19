@@ -110,6 +110,26 @@ cat > "$LIST" <<'LIST'
 - pattern: `\bsteady two\b`
 - why: its equally steady sibling.
 - function: steady
+
+## "alpha tick" — a wide family, thinly spread
+- pattern: `\balpha tick\b`
+- why: a wide family, thinly spread.
+- function: spread
+
+## "beta tick" — the second of four
+- pattern: `\bbeta tick\b`
+- why: the second of four.
+- function: spread
+
+## "gamma tick" — the third of four
+- pattern: `\bgamma tick\b`
+- why: the third of four.
+- function: spread
+
+## "delta tick" — the fourth of four
+- pattern: `\bdelta tick\b`
+- why: the fourth of four.
+- function: spread
 LIST
 
 # Two prior nights of counts, seeded the way update_counts writes them: every
@@ -134,6 +154,10 @@ cat > "$OUT/counts.tsv" <<'COUNTS'
 2026-03-01	old-friend	2
 2026-03-01	steady-one	1
 2026-03-01	steady-two	1
+2026-03-01	alpha-tick	1
+2026-03-01	beta-tick	1
+2026-03-01	gamma-tick	1
+2026-03-01	delta-tick	1
 2026-03-02	honestly	2
 2026-03-02	frankly	0
 2026-03-02	to-be-fair	4
@@ -145,29 +169,35 @@ cat > "$OUT/counts.tsv" <<'COUNTS'
 2026-03-02	old-friend	2
 2026-03-02	steady-one	1
 2026-03-02	steady-two	1
+2026-03-02	alpha-tick	0
+2026-03-02	beta-tick	0
+2026-03-02	gamma-tick	0
+2026-03-02	delta-tick	0
 COUNTS
 
 # The prior nights' SIZE, the way update_functions writes it: day, function,
 # uses, mentions, the night's spoken words. The watch's baseline is a rate, so
-# the fixture's two prior nights are the same size as tonight (73 spoken words,
+# the fixture's two prior nights are the same size as tonight (85 spoken words,
 # pinned below) — at equal size the standing rate predicts exactly the old
 # nightly averages, and cases (a)(b)(c) keep their arithmetic.
 cat > "$OUT/functions.tsv" <<'FUNCS'
-2026-03-01	vouching	2	0	73
-2026-03-01	conceding	4	0	73
-2026-03-01	performing	1	0	73
-2026-03-01	noise	1	0	73
-2026-03-01	fresh	2	0	73
-2026-03-01	steady	2	0	73
-2026-03-02	vouching	2	0	73
-2026-03-02	conceding	4	0	73
-2026-03-02	performing	1	0	73
-2026-03-02	noise	1	0	73
-2026-03-02	fresh	2	0	73
-2026-03-02	steady	2	0	73
+2026-03-01	vouching	2	0	85
+2026-03-01	conceding	4	0	85
+2026-03-01	performing	1	0	85
+2026-03-01	noise	1	0	85
+2026-03-01	fresh	2	0	85
+2026-03-01	steady	2	0	85
+2026-03-01	spread	4	0	85
+2026-03-02	vouching	2	0	85
+2026-03-02	conceding	4	0	85
+2026-03-02	performing	1	0	85
+2026-03-02	noise	1	0	85
+2026-03-02	fresh	2	0	85
+2026-03-02	steady	2	0	85
+2026-03-02	spread	0	0	85
 FUNCS
 
-printf '{"epoch": 1772550000, "time": "2026-03-03T10:00:00-0500", "kind": "desktop", "user": "?", "reply": "Frankly the kettle is on. Frankly the toast is done. In fairness the tray went up. In fairness the jam is out. If I may the pot is empty. If I may the lid is cracked. If I may the spoon is bent. Two tick the cup is chipped. New tonight the milk is cold. New tonight the butter is soft. Steady one the plate is warm. Steady two the bowl is dry."}\n' \
+printf '{"epoch": 1772550000, "time": "2026-03-03T10:00:00-0500", "kind": "desktop", "user": "?", "reply": "Frankly the kettle is on. Frankly the toast is done. In fairness the tray went up. In fairness the jam is out. If I may the pot is empty. If I may the lid is cracked. If I may the spoon is bent. Two tick the cup is chipped. New tonight the milk is cold. New tonight the butter is soft. Steady one the plate is warm. Steady two the bowl is dry. Gamma tick the door is shut. Delta tick the light is on."}\n' \
     > "$J/2026-03-03.jsonl"
 
 echo "the scan runs and the watch section exists:"
@@ -178,8 +208,8 @@ R="$OUT/2026-03-03.md"
 WATCH="$(awk '/## The substitution watch/{f=1;next} /^## /{f=0} f' "$R")"
 [ -n "$WATCH" ] && ok "the substitution-watch section is present" \
     || die "no substitution-watch section at all" "$(cat "$R")"
-check "tonight is the 73 spoken words the seeded prior nights assume" \
-    grep -q "73 spoken words" "$R"
+check "tonight is the 85 spoken words the seeded prior nights assume" \
+    grep -q "85 spoken words" "$R"
 
 echo
 echo "(a) a total that genuinely holds says so, numbers beside the claim:"
@@ -189,7 +219,7 @@ VOUCH="$(printf '%s\n' "$WATCH" | grep -F 'inside **vouching**' | head -1)"
 check "the quiet and risen members are named" \
     contains "$VOUCH" "honestly went quiet while frankly rose"
 check "the measured totals are printed, with the denominator" \
-    contains "$VOUCH" "family total 2 tonight in 73 spoken words"
+    contains "$VOUCH" "family total 2 tonight in 85 spoken words"
 check "and the rate the verdict is actually made against" \
     contains "$VOUCH" "about 2.0 expected for a night this size"
 check "and the substitution claim is made" contains "$VOUCH" "the total holds"
@@ -260,7 +290,7 @@ echo "(g) the same counts on a much smaller night are not the same habit:"
 # hundred times the size: the verdict must move.
 OUT2="$T/claudisms-out-small"; mkdir -p "$OUT2"
 cp "$OUT/counts.tsv" "$OUT2/counts.tsv"
-sed 's/\t73$/\t7300/' "$OUT/functions.tsv" | grep -v '^2026-03-03' > "$OUT2/functions.tsv"
+sed 's/\t85$/\t8500/' "$OUT/functions.tsv" | grep -v '^2026-03-03' > "$OUT2/functions.tsv"
 CRAB_BIN="$T/crab" DAY_JOURNAL_DIR="$J" CLAUDISM_LIST="$LIST" \
     CLAUDISM_DIR="$OUT2" CLAUDISM_FLAGS_DIR="$FLAGS" CLAUDISM_REWRITES=0 \
     "$REPO/lib/claudism-scan" run 2026-03-03 >/dev/null 2>&1
@@ -272,7 +302,7 @@ refute "the same two catches no longer read as holding" \
     contains "$V2" "the total holds"
 check "they read as the rise they are" contains "$V2" "did not hold: the family grew"
 check "and the note carries the denominator that decided it" \
-    contains "$V2" "in 73 spoken words"
+    contains "$V2" "in 85 spoken words"
 
 echo
 echo "(h) a move the size of counting noise is a lean, not a finding:"
@@ -293,3 +323,31 @@ check "with its own odds beside it" \
     contains "$V2" "comes up under 1 in 100 by chance"
 check "a held total says it is inside the noise, not merely near the number" \
     contains "$VOUCH" "inside the counting noise"
+
+echo
+echo "(i) a split that unchanged shares produce anyway is not churn:"
+# The fault found 2026-09-18, reading the 09-17 review: the family TOTAL had
+# been given its own strength, but the quiet/risen gate deciding a note claims
+# churn at all was still two raw counts. A family with more members than the
+# night has occurrences has members at zero whatever it is doing. Measured over
+# every eligible family-night in the record, the gate fires on 62 in 100 with
+# the shares held fixed. The "spread" fixture is that shape exactly: four
+# members, two occurrences, so two members sit at zero and the split carries no
+# information at all.
+SPREAD="$(printf '%s\n' "$WATCH" | grep -F 'inside **spread**' | head -1)"
+[ -n "$SPREAD" ] && ok "the wide family still draws a note" \
+    || fail "no spread note" "$WATCH"
+refute "but it does not say a member went quiet while a sibling rose" \
+    contains "$SPREAD" "went quiet while"
+check "it says the split is not evidence" \
+    contains "$SPREAD" "is not evidence of churn"
+check "and names the arithmetic that makes it so" \
+    contains "$SPREAD" "4 members sharing 2 occurrences"
+check "with how often unchanged shares fall that way" \
+    contains "$SPREAD" "at unchanged shares"
+check "the family-total verdict survives the suppressed churn claim" \
+    contains "$SPREAD" "the total holds"
+refute "but carries no clause resting on the churn premise" \
+    contains "$SPREAD" "changed words"
+check "the strong-churn note still prints its own odds" \
+    contains "$VOUCH" "at unchanged shares"
