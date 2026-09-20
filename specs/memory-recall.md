@@ -273,6 +273,33 @@ life, and she re-reads that store every single turn.
     family is one rule in several copies). A correction is a different claim, and by rule 12's
     clamp the earned `use_count` is worth at most a few percent of rank — so inheriting it
     would buy the survivor nothing and would overstate a history it did not have.
+28d. **A moving claim MAY carry an explicit source-freshness lease.** Watches belong only to
+    active `note` rows and live in the separate `memory_watches` table; directives are withdrawn,
+    and observations and episodic moments remain true of their occasion. A watch is created by an
+    explicit CLI action, carries one sentence saying what a source change means for the claim, and
+    captures its baseline successfully in the same action. Several watches on one note are ORed.
+    The first vocabulary is: an exact canonical path fingerprint; a sorted directory manifest under
+    one explicit relative glob; an engineering-record slug read through `crab eng field` as state,
+    last-touched and settlement stamp; or an argv probe, never a shell string. Probe executables
+    MUST be owned regular executable files beneath an allowlisted owned root, with their content
+    digest pinned before the first run; a changed executable is nominated as `probe-changed` and is
+    not run. Probe runs use a fixed environment, five-second timeout, and sixty-four-kibibyte stdout
+    and stderr caps.
+
+    The nightly checker compares active watches after key backfill. A changed or unavailable source
+    writes one durable pending nomination with its first-seen and last-seen times and preserves the
+    old baseline; repeated nights update the nomination rather than multiplying it. Missing paths,
+    parse/read failures, probe timeout, excess output and nonzero exit are unknown and nominate
+    `watch-unavailable`, never "unchanged". The one exception is a file watch deliberately baselined
+    while missing, which exists to notice later creation. A new nomination books one aggregated
+    judgement sitting. Until judgement, retrieval keeps the note at its ordinary rank but appends
+    `SOURCE CHANGED; VERIFY BEFORE USE` to it.
+
+    There are exactly three judged exits: supersede the note with a corrected note carrying its own
+    baseline, `watch rearm` after verification with a written reason and a fresh baseline, or retire
+    the note. Supersession and retirement close the old note's watches. There is no dismiss operation
+    and the checker never advances a baseline by itself: source change revokes unquestioned freshness;
+    it does not decide that the claim is false.
 29. **Ingest MUST NOT trim its input — it windows.** A day's journal larger than the input cap
     would lose its earliest material to a tail-clamp, so the chunk list is split into successive
     windows, each at most the cap, breaking only on whole chunk boundaries — never mid-chunk, and a

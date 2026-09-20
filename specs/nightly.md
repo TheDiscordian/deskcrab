@@ -81,9 +81,9 @@ which fails silently is worse than one that does not exist.
     (rule 9) — the stamp MUST NOT be stricter than the night it records.
 
 14b. A phase that cannot start MUST NOT look like a phase with nothing to do. Each post-ingest
-    phase — the key backfill, the claudism review, the promise sweep, the twin-merge pass, the
+    phase — the key backfill, the memory source-watch pass, the claudism review, the promise sweep, the twin-merge pass, the
     want reflection, the night's work — owes
-    the night log at least one line opening with its own name (`backfill-keys:`, `claudism-scan:`,
+    the night log at least one line opening with its own name (`backfill-keys:`, `watch:`, `claudism-scan:`,
     `promise-check:`, `eng-merge:`, `want-reflect:`,
     `night-work:`); sleep watches each phase's stretch of the log, and when a phase exits
     leaving no such line there, sleep MUST say so loudly — `PHASE SILENT`, naming the phase and

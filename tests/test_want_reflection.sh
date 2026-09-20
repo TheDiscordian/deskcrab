@@ -184,6 +184,7 @@ cat > "$T/crab-ok" <<'CRAB'
 case "$*" in
     "memory ingest") echo "ingest: 1 added, 0 superseded, 0 duplicates, 0 rejected" ;;
     "memory backfill-keys") echo "backfill-keys: stub — nothing to key" ;;
+    "memory watch check --wake") echo "watch: checked=0 pending=0 new=0" ;;
 esac
 exit 0
 CRAB

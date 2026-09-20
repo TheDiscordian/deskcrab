@@ -2886,5 +2886,104 @@ class TestCommitmentSurvivesTheNight(StoreCase):
         self.assertEqual(count, 1)
 
 
+class TestSourceWatches(StoreCase):
+    def note(self, text="a moving claim"):
+        return self.store.insert(text, kind="note",
+                                 vec=[0.0] * memory.EMBED_DIM)
+
+    def prompt_row(self, rec_id):
+        return self.store.db.execute(
+            "SELECT id,text,kind,pinned,source,topics,confidence,created,"
+            "last_seen,1.0,last_used_at,use_count,occurred,participants,opinion"
+            " FROM memories WHERE id=?", (rec_id,)).fetchone()
+
+    def test_file_change_nominates_once_warns_and_rearms_deliberately(self):
+        path = os.path.join(self.dir, "count.txt")
+        with open(path, "w") as f:
+            f.write("one\n")
+        rec_id = self.note()
+        wid = self.store.add_watch(rec_id, "file", {"path": path},
+                                   "the measured count may have changed")
+        self.assertEqual(self.store.check_watches(), (1, 0, 0))
+        with open(path, "w") as f:
+            f.write("two\n")
+        self.assertEqual(self.store.check_watches(), (1, 1, 1))
+        self.assertEqual(self.store.check_watches(), (1, 1, 0))
+        block, _ = memory.build_block([self.prompt_row(rec_id)],
+                                      pending_note_ids=self.store.pending_watch_notes())
+        self.assertIn("SOURCE CHANGED; VERIFY BEFORE USE", block)
+        self.store.rearm_watch(wid, "recounted it against the game files")
+        self.assertEqual(self.store.check_watches(), (1, 0, 0))
+        self.assertNotIn(rec_id, self.store.pending_watch_notes())
+
+    def test_missing_existing_file_is_unknown_but_missing_baseline_can_notice_creation(self):
+        path = os.path.join(self.dir, "artefact")
+        rec_id = self.note("the artefact does not exist")
+        wid = self.store.add_watch(rec_id, "file", {"path": path},
+                                   "its creation changes the claim")
+        self.assertEqual(self.store.check_watches(), (1, 0, 0))
+        with open(path, "w") as f:
+            f.write("built")
+        self.assertEqual(self.store.check_watches(), (1, 1, 1))
+        reason = self.store.db.execute(
+            "SELECT pending_reason FROM memory_watches WHERE id=?", (wid,)).fetchone()[0]
+        self.assertEqual(reason, "source-changed")
+
+        path2 = os.path.join(self.dir, "existing")
+        with open(path2, "w") as f:
+            f.write("here")
+        rec2 = self.note("the existing file says here")
+        wid2 = self.store.add_watch(rec2, "file", {"path": path2}, "it vanished")
+        os.remove(path2)
+        self.store.check_watches()
+        reason = self.store.db.execute(
+            "SELECT pending_reason FROM memory_watches WHERE id=?", (wid2,)).fetchone()[0]
+        self.assertEqual(reason, "watch-unavailable")
+
+    def test_tree_manifest_hashes_contents_and_supersession_closes_watch(self):
+        root = os.path.join(self.dir, "games")
+        os.mkdir(root)
+        game = os.path.join(root, "one.json")
+        with open(game, "w") as f:
+            f.write("{}")
+        old = self.note("there is one game")
+        self.store.add_watch(old, "tree", {"root": root, "glob": "*.json"},
+                             "the tally must be recounted")
+        with open(game, "w") as f:
+            f.write('{"winner":"Betty"}')
+        self.assertEqual(self.store.check_watches(), (1, 1, 1))
+        new = self.note("the tally was recounted")
+        self.store.link_supersede(new, old)
+        status = self.store.db.execute(
+            "SELECT status FROM memory_watches WHERE memory_id=?", (old,)).fetchone()[0]
+        self.assertEqual(status, "closed")
+
+    def test_probe_pins_executable_and_changed_executable_is_not_run(self):
+        probe = os.path.join(self.dir, "probe")
+        marker = os.path.join(self.dir, "ran")
+        with open(probe, "w") as f:
+            f.write("#!/bin/sh\nprintf first\n")
+        os.chmod(probe, 0o700)
+        old = os.environ.get("MEMORY_WATCH_PROBE_ROOTS")
+        os.environ["MEMORY_WATCH_PROBE_ROOTS"] = self.dir
+        try:
+            rec_id = self.note("probe says first")
+            wid = self.store.add_watch(rec_id, "probe", {"argv": [probe]},
+                                       "its result feeds the claim")
+            with open(probe, "w") as f:
+                f.write(f"#!/bin/sh\ntouch {marker!s}\nprintf second\n")
+            os.chmod(probe, 0o700)
+            self.assertEqual(self.store.check_watches(), (1, 1, 1))
+            self.assertFalse(os.path.exists(marker))
+            reason = self.store.db.execute(
+                "SELECT pending_reason FROM memory_watches WHERE id=?", (wid,)).fetchone()[0]
+            self.assertEqual(reason, "probe-changed")
+        finally:
+            if old is None:
+                os.environ.pop("MEMORY_WATCH_PROBE_ROOTS", None)
+            else:
+                os.environ["MEMORY_WATCH_PROBE_ROOTS"] = old
+
+
 if __name__ == "__main__":
     unittest.main()

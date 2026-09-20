@@ -35,6 +35,7 @@ import time
 import urllib.error
 import urllib.request
 from datetime import datetime
+from pathlib import Path
 
 # The sqlite-vec extension lives in the store's own venv (a PyPI wheel; the
 # pacman repos have no sqlite-vec). Re-exec into it when invoked with a bare
@@ -339,6 +340,11 @@ MEMORIES_COLUMNS_SQL = """
     lookup_key TEXT NOT NULL DEFAULT ''
 """
 
+WATCH_KINDS = ("file", "tree", "eng", "probe")
+WATCH_TIMEOUT = 5
+WATCH_OUTPUT_MAX = 65536
+WATCH_ENV = {"PATH": "/usr/bin:/bin", "LANG": "C.UTF-8", "LC_ALL": "C.UTF-8"}
+
 
 def default_dir():
     return os.environ.get("DESKCRAB_MEMORY_DIR") or os.path.expanduser(
@@ -347,6 +353,181 @@ def default_dir():
 
 def now_iso():
     return datetime.now().astimezone().isoformat(timespec="seconds")
+
+
+class WatchUnavailable(RuntimeError):
+    pass
+
+
+class WatchNomination(RuntimeError):
+    def __init__(self, reason, observation):
+        super().__init__(reason)
+        self.reason = reason
+        self.observation = observation
+
+
+def _stable_json(value):
+    return json.dumps(value, sort_keys=True, separators=(",", ":"))
+
+
+def _sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as f:
+        while True:
+            chunk = f.read(1024 * 1024)
+            if not chunk:
+                return h.hexdigest()
+            h.update(chunk)
+
+
+def _canonical(path):
+    return os.path.realpath(os.path.abspath(os.path.expanduser(path)))
+
+
+def _file_observation(path, allow_missing=False):
+    try:
+        st = os.stat(path)
+    except FileNotFoundError:
+        if allow_missing:
+            return {"type": "missing"}
+        raise WatchUnavailable(f"path is missing: {path}")
+    except OSError as exc:
+        raise WatchUnavailable(f"cannot stat {path}: {exc}")
+    if os.path.isfile(path):
+        try:
+            digest = _sha256(path)
+        except OSError as exc:
+            raise WatchUnavailable(f"cannot read {path}: {exc}")
+        return {"type": "file", "size": st.st_size, "sha256": digest}
+    if os.path.isdir(path):
+        return {"type": "dir"}
+    return {"type": "other", "size": st.st_size}
+
+
+def _tree_observation(root, pattern):
+    if os.path.isabs(pattern) or ".." in Path(pattern).parts:
+        raise WatchUnavailable("tree glob must be relative and stay below its root")
+    if not os.path.isdir(root):
+        raise WatchUnavailable(f"tree root is unavailable: {root}")
+    entries = []
+    try:
+        for path in sorted(Path(root).glob(pattern), key=lambda p: str(p)):
+            resolved = _canonical(str(path))
+            if os.path.commonpath((root, resolved)) != root:
+                raise WatchUnavailable("tree glob escaped its root")
+            st = os.stat(resolved)
+            rel = os.path.relpath(resolved, root)
+            if os.path.isfile(resolved):
+                entries.append([rel, "file", st.st_size, st.st_mtime_ns,
+                                _sha256(resolved)])
+            elif os.path.isdir(resolved):
+                entries.append([rel, "dir", st.st_size, st.st_mtime_ns, ""])
+            else:
+                entries.append([rel, "other", st.st_size, st.st_mtime_ns, ""])
+    except WatchUnavailable:
+        raise
+    except OSError as exc:
+        raise WatchUnavailable(f"cannot read tree {root}: {exc}")
+    return {"manifest": entries}
+
+
+def _eng_observation(slug):
+    if not re.fullmatch(r"[a-z0-9][a-z0-9-]*", slug):
+        raise WatchUnavailable("invalid engineering record slug")
+    crab = os.environ.get("CRAB_BIN") or os.path.expanduser("~/.local/bin/crab")
+    values = {}
+    for field in ("state", "last_touched", "settled_at"):
+        try:
+            got = subprocess.run([crab, "eng", "field", slug, field],
+                                 text=True, capture_output=True, timeout=WATCH_TIMEOUT,
+                                 env={**WATCH_ENV, "HOME": os.path.expanduser("~")})
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise WatchUnavailable(f"engineering record read failed: {exc}")
+        if got.returncode:
+            raise WatchUnavailable("engineering record is unavailable")
+        values[field] = got.stdout.rstrip("\n")
+    return values
+
+
+def _probe_roots():
+    configured = os.environ.get("MEMORY_WATCH_PROBE_ROOTS", "")
+    roots = configured.split(os.pathsep) if configured else [
+        os.path.expanduser("~/Beatrice"),
+        os.path.expanduser("~/.local/lib/deskcrab"),
+        os.path.dirname(os.path.dirname(os.path.realpath(__file__))),
+    ]
+    return [_canonical(root) for root in roots]
+
+
+def _validate_probe(argv, expected_digest=""):
+    if not argv or not isinstance(argv, list) or not all(isinstance(x, str) for x in argv):
+        raise WatchUnavailable("probe needs an argv array")
+    exe = _canonical(argv[0])
+    try:
+        st = os.stat(exe)
+    except OSError as exc:
+        raise WatchUnavailable(f"probe executable is unavailable: {exc}")
+    if not os.path.isfile(exe) or st.st_uid != os.getuid() or not os.access(exe, os.X_OK):
+        raise WatchUnavailable("probe executable must be an owned executable file")
+    if not any(os.path.commonpath((root, exe)) == root for root in _probe_roots()):
+        raise WatchUnavailable("probe executable is outside the allowed owned roots")
+    digest = _sha256(exe)
+    if expected_digest and digest != expected_digest:
+        raise WatchNomination("probe-changed", {"executable_sha256": digest})
+    return [exe] + argv[1:], digest
+
+
+def _probe_observation(config):
+    argv, _ = _validate_probe(config["argv"], config.get("executable_sha256", ""))
+    env = dict(WATCH_ENV)
+    env["HOME"] = os.path.expanduser("~")
+    try:
+        got = subprocess.run(argv, stdin=subprocess.DEVNULL, capture_output=True,
+                             timeout=WATCH_TIMEOUT, env=env)
+    except subprocess.TimeoutExpired:
+        raise WatchUnavailable("probe timed out")
+    except OSError as exc:
+        raise WatchUnavailable(f"probe could not run: {exc}")
+    if len(got.stdout) > WATCH_OUTPUT_MAX or len(got.stderr) > WATCH_OUTPUT_MAX:
+        raise WatchUnavailable("probe output exceeded its cap")
+    if got.returncode:
+        raise WatchUnavailable(f"probe exited {got.returncode}")
+    return {"exit": got.returncode,
+            "stdout_sha256": hashlib.sha256(got.stdout).hexdigest(),
+            "stdout": got.stdout.decode("utf-8", "replace")}
+
+
+def watch_capture(kind, config):
+    if kind not in WATCH_KINDS:
+        raise WatchUnavailable(f"unknown watch kind {kind!r}")
+    config = dict(config)
+    if kind == "file":
+        config = {"path": _canonical(config["path"])}
+        baseline = _file_observation(config["path"], allow_missing=True)
+        config["missing_baseline"] = baseline["type"] == "missing"
+    elif kind == "tree":
+        config = {"root": _canonical(config["root"]), "glob": config["glob"]}
+        baseline = _tree_observation(config["root"], config["glob"])
+    elif kind == "eng":
+        config = {"slug": config["slug"]}
+        baseline = _eng_observation(config["slug"])
+    else:
+        argv, digest = _validate_probe(config["argv"])
+        config = {"argv": argv, "executable_sha256": digest}
+        baseline = _probe_observation(config)
+    return config, baseline
+
+
+def watch_observe(kind, config):
+    if kind == "file":
+        return _file_observation(config["path"], config.get("missing_baseline", False))
+    if kind == "tree":
+        return _tree_observation(config["root"], config["glob"])
+    if kind == "eng":
+        return _eng_observation(config["slug"])
+    if kind == "probe":
+        return _probe_observation(config)
+    raise WatchUnavailable(f"unknown watch kind {kind!r}")
 
 
 def parse_iso(ts):
@@ -735,6 +916,24 @@ class Store:
             CREATE VIRTUAL TABLE IF NOT EXISTS memories_vec USING vec0(
                 embedding float[{EMBED_DIM}] distance_metric=cosine
             );
+            CREATE TABLE IF NOT EXISTS memory_watches (
+                id INTEGER PRIMARY KEY,
+                memory_id INTEGER NOT NULL REFERENCES memories(id),
+                kind TEXT NOT NULL CHECK (kind IN ('file','tree','eng','probe')),
+                config TEXT NOT NULL,
+                because TEXT NOT NULL,
+                baseline TEXT NOT NULL,
+                status TEXT NOT NULL DEFAULT 'active'
+                    CHECK (status IN ('active','pending','closed')),
+                pending_reason TEXT,
+                pending_observation TEXT,
+                first_seen TEXT,
+                last_seen TEXT,
+                rearm_reason TEXT,
+                created TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS memory_watches_note_status
+                ON memory_watches(memory_id, status);
         """)
         # Stores born before temporal grounding: add the column in place.
         cols = {r[1] for r in self.db.execute("PRAGMA table_info(memories)")}
@@ -770,6 +969,95 @@ class Store:
                             " TEXT NOT NULL DEFAULT ''")
             self.db.commit()
         self._widen_kind_check()
+
+    def pending_watch_notes(self):
+        return {r[0] for r in self.db.execute(
+            "SELECT DISTINCT memory_id FROM memory_watches"
+            " WHERE status='pending'")}
+
+    def close_watches(self, memory_id):
+        self.db.execute("UPDATE memory_watches SET status='closed'"
+                        " WHERE memory_id=? AND status!='closed'", (memory_id,))
+
+    def add_watch(self, memory_id, kind, config, because):
+        row = self.db.execute("SELECT kind,status FROM memories WHERE id=?",
+                              (memory_id,)).fetchone()
+        if not row:
+            raise ValueError(f"no record #{memory_id}")
+        if row != ("note", "active"):
+            raise ValueError("watches belong only to active notes")
+        if not because.strip():
+            raise ValueError("--because must say what a source change means")
+        config, baseline = watch_capture(kind, config)
+        cur = self.db.execute(
+            "INSERT INTO memory_watches"
+            " (memory_id,kind,config,because,baseline,created)"
+            " VALUES (?,?,?,?,?,?)",
+            (memory_id, kind, _stable_json(config), because.strip(),
+             _stable_json(baseline), now_iso()))
+        self.db.commit()
+        return cur.lastrowid
+
+    def check_watches(self):
+        checked = new = 0
+        rows = self.db.execute(
+            "SELECT w.id,w.memory_id,w.kind,w.config,w.baseline,w.status"
+            " FROM memory_watches w JOIN memories m ON m.id=w.memory_id"
+            " WHERE w.status IN ('active','pending') AND m.status='active'"
+            " AND m.kind='note' ORDER BY w.id").fetchall()
+        now = now_iso()
+        for wid, memory_id, kind, config_s, baseline_s, status in rows:
+            checked += 1
+            config, baseline = json.loads(config_s), json.loads(baseline_s)
+            try:
+                observation = watch_observe(kind, config)
+                reason = "source-changed" if observation != baseline else ""
+            except WatchNomination as exc:
+                observation = exc.observation
+                reason = exc.reason
+            except WatchUnavailable as exc:
+                observation = {"error": str(exc)}
+                reason = "watch-unavailable"
+            if not reason:
+                continue
+            if status == "active":
+                new += 1
+                self.db.execute(
+                    "UPDATE memory_watches SET status='pending',"
+                    " pending_reason=?,pending_observation=?,first_seen=?,last_seen=?"
+                    " WHERE id=?", (reason, _stable_json(observation), now, now, wid))
+            else:
+                self.db.execute(
+                    "UPDATE memory_watches SET last_seen=? WHERE id=?", (now, wid))
+        # A note closed through any route closes its watches; history remains.
+        self.db.execute(
+            "UPDATE memory_watches SET status='closed' WHERE status!='closed'"
+            " AND memory_id IN (SELECT id FROM memories WHERE status!='active')")
+        self.db.commit()
+        pending = self.db.execute(
+            "SELECT count(*) FROM memory_watches WHERE status='pending'").fetchone()[0]
+        return checked, pending, new
+
+    def rearm_watch(self, watch_id, reason):
+        row = self.db.execute(
+            "SELECT kind,config,status,memory_id FROM memory_watches WHERE id=?",
+            (watch_id,)).fetchone()
+        if not row:
+            raise ValueError(f"no watch #{watch_id}")
+        kind, config_s, status, memory_id = row
+        note = self.db.execute("SELECT kind,status FROM memories WHERE id=?",
+                               (memory_id,)).fetchone()
+        if status != "pending" or note != ("note", "active"):
+            raise ValueError("only a pending watch on an active note can be rearmed")
+        if not reason.strip():
+            raise ValueError("rearm requires a written verification reason")
+        config, baseline = watch_capture(kind, json.loads(config_s))
+        self.db.execute(
+            "UPDATE memory_watches SET config=?,baseline=?,status='active',"
+            " pending_reason=NULL,pending_observation=NULL,first_seen=NULL,"
+            " last_seen=NULL,rearm_reason=? WHERE id=?",
+            (_stable_json(config), _stable_json(baseline), reason.strip(), watch_id))
+        self.db.commit()
 
     def _widen_kind_check(self):
         """Stores born before the observation/miss kinds carry the two-kind
@@ -1004,6 +1292,7 @@ class Store:
                         abstained = "low-signal"
         now = datetime.now().astimezone()
         picked, seen = [], set()
+        pending_note_ids = self.pending_watch_notes()
 
         def take(row):
             if row[0] in seen or (terms and not row_matches_scope(row, terms)):
@@ -1011,7 +1300,8 @@ class Store:
             if self._near_dup(row, picked):
                 return False
             candidate = picked + [row]
-            if max_chars and len(build_block(candidate)[0]) > max_chars:
+            if max_chars and len(build_block(
+                    candidate, pending_note_ids=pending_note_ids)[0]) > max_chars:
                 return False
             picked.append(row)
             seen.add(row[0])
@@ -1082,7 +1372,8 @@ class Store:
             if row[0] in seen or (terms and not row_matches_scope(row, terms)):
                 continue
             candidate = picked + [row]
-            if max_chars and len(build_block(candidate)[0]) > max_chars:
+            if max_chars and len(build_block(
+                    candidate, pending_note_ids=pending_note_ids)[0]) > max_chars:
                 continue
             picked.append(row)
             seen.add(row[0])
@@ -1151,6 +1442,7 @@ class Store:
             self.db.execute(
                 "UPDATE memories SET status='superseded', superseded_by=?"
                 " WHERE id=?", (new_id, best[0]))
+            self.close_watches(best[0])
             self.db.execute(
                 "UPDATE memories SET supersedes=? WHERE id=?", (best[0], new_id))
             self.db.commit()
@@ -1177,6 +1469,7 @@ class Store:
                              occurred=occurred)
         self.db.execute("UPDATE memories SET status='superseded',"
                         " superseded_by=? WHERE id=?", (new_id, old_id))
+        self.close_watches(old_id)
         self.db.execute("UPDATE memories SET supersedes=? WHERE id=?",
                         (old_id, new_id))
         self.db.commit()
@@ -1282,6 +1575,7 @@ class Store:
                 f"{kinds[old_id]} — supersession is within one kind")
         self.db.execute("UPDATE memories SET status='superseded',"
                         " superseded_by=? WHERE id=?", (new_id, old_id))
+        self.close_watches(old_id)
         self.db.execute("UPDATE memories SET supersedes=coalesce(supersedes,?)"
                         " WHERE id=?", (old_id, new_id))
         self.db.commit()
@@ -1484,6 +1778,7 @@ class Store:
                 self.db.execute(
                     "UPDATE memories SET confidence=?, status='retired'"
                     " WHERE id=?", (conf, rec_id))
+                self.close_watches(rec_id)
                 retired += 1
             else:
                 self.db.execute("UPDATE memories SET confidence=? WHERE id=?",
@@ -1789,7 +2084,7 @@ def relative_when(ts, now=None):
     return f"about {_num_word(max(2, round(days / 365.25)))} years ago"
 
 
-def build_block(rows, warning=""):
+def build_block(rows, warning="", pending_note_ids=()):
     """The recall block, whole, plus the rows in it — which is ALL of them:
     nothing here drops a row, so the reinforcement judge's sidecar and the
     block state the same records by construction. A ~800-token cap used to
@@ -1818,9 +2113,14 @@ def build_block(rows, warning=""):
         rel = relative_when(r[7], now)
         return f"recorded {rel}" if rel else ""
 
+    pending_note_ids = set(pending_note_ids)
+
     def line(r, directive=False):
         stamp = when(r, directive)
-        return f"- {r[1]} ({stamp})" if stamp else f"- {r[1]}"
+        rendered = f"- {r[1]} ({stamp})" if stamp else f"- {r[1]}"
+        if r[2] == "note" and r[0] in pending_note_ids:
+            rendered += " — SOURCE CHANGED; VERIFY BEFORE USE"
+        return rendered
 
     directives = [r for r in rows if r[2] == "directive"]
     notes = [r for r in rows if r[2] == "note"]
@@ -1902,7 +2202,7 @@ def cmd_recall_block(store, args):
     if not query:
         rows = select_prompt_rows(store.pinned_rows(), args.scope,
                                   args.max_chars)
-        block, kept = build_block(rows)
+        block, kept = build_block(rows, pending_note_ids=store.pending_watch_notes())
         write_ids_out(args.ids_out, kept)
         print(block, end="" if not rows else "\n")
         return 0
@@ -1918,7 +2218,7 @@ def cmd_recall_block(store, args):
                    "records are shown. 'crab memory list' still works.")
         rows = select_prompt_rows(store.pinned_rows(), args.scope,
                                   args.max_chars, warning)
-        block, kept = build_block(rows, warning)
+        block, kept = build_block(rows, warning, store.pending_watch_notes())
         write_ids_out(args.ids_out, kept)
         if block:
             print(block)
@@ -1927,7 +2227,7 @@ def cmd_recall_block(store, args):
     # under the header says the similarity retrieval found nothing relevant,
     # while pinned rows and rule-48 date rows still render beneath it.
     marker = "(nothing relevant retrieved)" if abstained else ""
-    block, kept = build_block(rows, marker)
+    block, kept = build_block(rows, marker, store.pending_watch_notes())
     write_ids_out(args.ids_out, kept)
     if block:
         print(block)
@@ -3110,6 +3410,23 @@ def cmd_add(store, args):
     if args.kind == "directive" and args.no_dedup:
         sys.exit("memory add: directives cannot bypass durable-rule preflight; "
                  "use --distinct after judging the overlap")
+    try:
+        watch_spec = _watch_spec(args)
+    except WatchUnavailable as exc:
+        sys.exit(f"memory add: {exc}")
+    if args.watch_because and not watch_spec:
+        sys.exit("memory add: --watch-because needs a source watch")
+    captured_watch = None
+    if watch_spec:
+        if args.kind != "note":
+            sys.exit("memory add: source watches belong only to notes")
+        if not args.watch_because:
+            sys.exit("memory add: a source watch requires --watch-because")
+        try:
+            config, baseline = watch_capture(*watch_spec)
+            captured_watch = (watch_spec[0], config, baseline)
+        except (WatchUnavailable, WatchNomination, KeyError) as exc:
+            sys.exit(f"memory add: watch baseline refused: {exc}")
     if args.supersedes:
         try:
             rec_id = store.supersede_directive(
@@ -3133,6 +3450,17 @@ def cmd_add(store, args):
                                            occurred=occurred,
                                            participants=participants,
                                            opinion=opinion)
+    if captured_watch:
+        if action not in ("added", "added-distinct", "superseded"):
+            sys.exit("memory add: watched notes must be a new record; the note "
+                     "was not added")
+        kind, config, baseline = captured_watch
+        store.db.execute(
+            "INSERT INTO memory_watches"
+            " (memory_id,kind,config,because,baseline,created) VALUES (?,?,?,?,?,?)",
+            (rec_id, kind, _stable_json(config), args.watch_because.strip(),
+             _stable_json(baseline), now_iso()))
+        store.db.commit()
     print(f"{action} #{rec_id} [{args.kind}]"
           + (f" occurred={occurred}" if occurred else ""))
     if action == "overlap":
@@ -3448,9 +3776,89 @@ def cmd_reinforce(store, args):
 def cmd_forget(store, args):
     n = store.db.execute("UPDATE memories SET status='retired' WHERE id=?",
                          (args.id,)).rowcount
+    if n:
+        store.close_watches(args.id)
     store.db.commit()
     print(f"retired #{args.id}" if n else f"no record #{args.id}")
     return 0 if n else 1
+
+
+def _watch_spec(args):
+    if getattr(args, "watch_file", None) is not None:
+        return "file", {"path": args.watch_file}
+    if getattr(args, "watch_tree", None) is not None:
+        return "tree", {"root": args.watch_tree[0], "glob": args.watch_tree[1]}
+    if getattr(args, "watch_eng", None) is not None:
+        return "eng", {"slug": args.watch_eng}
+    if getattr(args, "watch_probe", None) is not None:
+        try:
+            argv = json.loads(args.watch_probe)
+        except json.JSONDecodeError as exc:
+            raise WatchUnavailable(f"probe argv must be a JSON array: {exc}")
+        return "probe", {"argv": argv}
+    return None
+
+
+def cmd_watch_add(store, args):
+    try:
+        spec = _watch_spec(args)
+        watch_id = store.add_watch(args.memory_id, spec[0], spec[1], args.because)
+    except (ValueError, WatchUnavailable, WatchNomination, KeyError) as exc:
+        sys.exit(f"memory watch add: {exc}")
+    print(f"watch: added #{watch_id} to note #{args.memory_id}")
+    return 0
+
+
+def cmd_watch_list(store, args):
+    q = ("SELECT id,memory_id,kind,status,because,pending_reason,first_seen,last_seen,"
+         "config,baseline,pending_observation"
+         " FROM memory_watches")
+    params = []
+    if args.memory_id is not None:
+        q += " WHERE memory_id=?"
+        params.append(args.memory_id)
+    q += " ORDER BY id"
+    rows = store.db.execute(q, params).fetchall()
+    for (wid, mid, kind, status, because, pending, first, last,
+         config, baseline, observation) in rows:
+        suffix = f" {pending} first={first} last={last}" if pending else ""
+        print(f"watch: #{wid} note=#{mid} {kind} {status}{suffix} — {because}")
+        print(f"  source: {config}")
+        print(f"  baseline: {baseline}")
+        if observation:
+            print(f"  observed: {observation}")
+    print(f"watch: {len(rows)} total")
+    return 0
+
+
+def cmd_watch_check(store, args):
+    checked, changed, new = store.check_watches()
+    print(f"watch: checked={checked} pending={changed} new={new}")
+    if new and args.wake:
+        crab = os.environ.get("CRAB_BIN") or os.path.expanduser("~/.local/bin/crab")
+        reason = (f"Judge {new} newly nominated memory source change(s): inspect "
+                  "`crab memory watch list`, then supersede with a corrected watched "
+                  "note, rearm after verification, or retire the stale note.")
+        try:
+            got = subprocess.run([crab, "wake-now", reason], timeout=20,
+                                 capture_output=True, text=True)
+        except (OSError, subprocess.SubprocessError) as exc:
+            print(f"watch: judgement sitting could not be booked: {exc}", file=sys.stderr)
+            return 1
+        if got.returncode:
+            print("watch: judgement sitting could not be booked", file=sys.stderr)
+            return 1
+        print("watch: judgement sitting booked")
+    return 0
+
+
+def cmd_watch_rearm(store, args):
+    try:
+        store.rearm_watch(args.watch_id, args.reason)
+    except (ValueError, WatchUnavailable, WatchNomination, KeyError) as exc:
+        sys.exit(f"memory watch rearm: {exc}")
+    print(f"watch: rearmed #{args.watch_id}")
+    return 0
 
 
 def main():
@@ -3479,8 +3887,38 @@ def main():
     p.add_argument("--supersedes", type=int, metavar="ID",
                    help="after inspecting a nominated overlap, replace this "
                         "active directive and preserve its provenance")
+    wg = p.add_mutually_exclusive_group()
+    wg.add_argument("--watch-file", metavar="PATH")
+    wg.add_argument("--watch-tree", nargs=2, metavar=("ROOT", "GLOB"))
+    wg.add_argument("--watch-eng", metavar="SLUG")
+    wg.add_argument("--watch-probe", metavar="ARGV_JSON")
+    p.add_argument("--watch-because", default="",
+                   help="what a change in the watched source means for this note")
     p.add_argument("text", nargs="+")
     p.set_defaults(fn=cmd_add)
+
+    p = sub.add_parser("watch", help="source freshness watches for active notes")
+    wsp = p.add_subparsers(dest="watch_cmd", required=True)
+    wp = wsp.add_parser("add", help="capture a baseline for an existing note")
+    wp.add_argument("memory_id", type=int)
+    wkind = wp.add_mutually_exclusive_group(required=True)
+    wkind.add_argument("--watch-file", metavar="PATH")
+    wkind.add_argument("--watch-tree", nargs=2, metavar=("ROOT", "GLOB"))
+    wkind.add_argument("--watch-eng", metavar="SLUG")
+    wkind.add_argument("--watch-probe", metavar="ARGV_JSON")
+    wp.add_argument("--because", required=True)
+    wp.set_defaults(fn=cmd_watch_add)
+    wp = wsp.add_parser("list", help="list watches and durable nominations")
+    wp.add_argument("memory_id", type=int, nargs="?")
+    wp.set_defaults(fn=cmd_watch_list)
+    wp = wsp.add_parser("check", help="compare active watches with their baselines")
+    wp.add_argument("--wake", action="store_true",
+                    help="book one judgement sitting when new nominations appear")
+    wp.set_defaults(fn=cmd_watch_check)
+    wp = wsp.add_parser("rearm", help="verify a pending note and capture a new baseline")
+    wp.add_argument("watch_id", type=int)
+    wp.add_argument("--reason", required=True)
+    wp.set_defaults(fn=cmd_watch_rearm)
 
     p = sub.add_parser("on", help="what happened on a day: the moments "
                                   "themselves, episodic first")

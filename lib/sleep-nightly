@@ -149,6 +149,12 @@ cmd_run() {
     # as every phase below: never the night's verdict.
     run_phase backfill-keys "key backfill" "$CRAB" memory backfill-keys
 
+    # Moving-source leases on notes are checked after ingest/keying. A change
+    # nominates; it never rewrites, retires, or re-baselines the claim. New
+    # nominations book one aggregated judgement sitting, while recall marks
+    # every pending note in the meantime (memory-recall.md rule 28d).
+    run_phase watch "memory source-watch pass" "$CRAB" memory watch check --wake
+
     # The claudism review, over the day that just ended — detection and
     # review only, never a gate (specs/nightly.md rules 39-45). Never the
     # night's verdict: it surfaces its own failures through its own wake,

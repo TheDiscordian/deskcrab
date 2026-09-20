@@ -27,6 +27,7 @@ case "$*" in
         echo "ingest: model refused — usage limit reached" >&2
         exit 3 ;;
     "memory backfill-keys") echo "backfill-keys: stub — nothing to key" ;;
+    "memory watch check --wake") echo "watch: checked=0 pending=0 new=0" ;;
 esac
 exit 0
 CRAB
@@ -37,6 +38,7 @@ cat > "$T/crab-ok" <<'CRAB'
 case "$*" in
     "memory ingest") echo "ingest: 2 added, 0 superseded, 0 duplicates, 0 rejected" ;;
     "memory backfill-keys") echo "backfill-keys: stub — nothing to key" ;;
+    "memory watch check --wake") echo "watch: checked=0 pending=0 new=0" ;;
 esac
 exit 0
 CRAB
@@ -83,6 +85,7 @@ for n in claudism-scan promise-check eng-merge want-reflect night-work; do
 done
 LOG="$(night_log "$T/data-bad")"
 [ -n "$LOG" ] || die "no night log written" "$out"
+check "the memory source-watch phase still ran" grep -q '^watch:' "$LOG"
 check "the night log says plainly it runs on a FAILED ingest" \
     grep -q "FAILED ingest" "$LOG"
 notice_ln="$(grep -n 'FAILED ingest' "$LOG" | head -1 | cut -d: -f1)"
@@ -127,6 +130,7 @@ for n in claudism-scan promise-check eng-merge want-reflect night-work; do
 done
 LOG="$(night_log "$T/data-ok")"
 [ -n "$LOG" ] || die "no night log written" "$out"
+check "the memory source-watch phase ran" grep -q '^watch:' "$LOG"
 check_eq "no FAILED-ingest notice on a good night" \
     "$(sandbox_count_in 'FAILED ingest' "$LOG")" "0"
 check_eq "no PHASE SILENT in the log" "$(sandbox_count_in 'PHASE SILENT' "$LOG")" "0"
