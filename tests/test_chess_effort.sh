@@ -446,7 +446,7 @@ contains "$MM" "unset: jev-latest" \
 contains "$MM" "set: haiku" \
     && ok "the per-speed knob rides the job for its speed" \
     || fail "mover_model_for: $MM"
-contains "$MM" "rapid: jev-latest opus" \
+contains "$MM" "rapid: jev-latest claude-opus-5-5" \
     && ok "10+5 rides the exact-control jev override; 15+10 keeps the rapid winner" \
     || fail "mover_model_for: $MM"
 contains "$MM" "rapid-override: sonnet" \
@@ -482,7 +482,7 @@ chess_effort.SPEED_MODELS.clear()
 print("cleared:", chessweb.mover_model_for(timed))
 EOF
 )"
-contains "$RT" "shipped: jev-latest jev-latest jev-latest opus fable" \
+contains "$RT" "shipped: jev-latest jev-latest jev-latest claude-opus-5-5 fable" \
     && ok "the shipped tables carry the user's decided route for every bucket" \
     || fail "SPEED_MODELS: $RT"
 contains "$RT" "routed: sonnet" \

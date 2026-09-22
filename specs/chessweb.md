@@ -366,7 +366,7 @@ cannot be changed.
     | 3+2 | blitz | `jev-latest` | `low` | `low` |
     | 5+0 | blitz | `jev-latest` | `low` | `low` |
     | 10+5 | rapid | `jev-latest` | `low` | `low` |
-    | 15+10 | rapid | `opus` | `low` | `low` |
+    | 15+10 | rapid | `claude-opus-5-5` | `low` | `low` |
     | untimed | — | `fable` | `low` | `medium` |
 
     The decision is bucket-shaped except at rapid, so `chess_effort.SPEED_MODELS` and

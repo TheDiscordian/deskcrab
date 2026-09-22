@@ -68,7 +68,7 @@ contains "$RES" "5+0: jev-latest low/low" \
 contains "$RES" "10+5: jev-latest low/low" \
     && ok "10+5 resolves jev-latest through the exact-control door" \
     || fail "10+5 resolution" "$(printf '%s\n' "$RES" | grep '^10+5:')"
-contains "$RES" "15+10: opus low/low" \
+contains "$RES" "15+10: claude-opus-5-5 low/low" \
     && ok "15+10 keeps the measured rapid winner, Opus low/low" \
     || fail "15+10 resolution" "$(printf '%s\n' "$RES" | grep '^15+10:')"
 contains "$RES" "untimed: fable low/medium" \
@@ -163,7 +163,7 @@ echo "$PYOUT" | sed 's/^/    /'
 contains "$PYOUT" "blitz-routed-model: jev-latest" \
     && ok "the blitz offer under test is the live table's own jev-latest" \
     || fail "blitz routed model" "$(printf '%s\n' "$PYOUT" | grep blitz-routed-model)"
-contains "$PYOUT" "rapid-routed-model: opus" \
+contains "$PYOUT" "rapid-routed-model: claude-opus-5-5" \
     && ok "the 15+10 offer under test is the live table's own Opus" \
     || fail "rapid routed model" "$(printf '%s\n' "$PYOUT" | grep rapid-routed-model)"
 
@@ -200,7 +200,7 @@ contains "$PYOUT" "rotation-played: [('rotate-1', 'e2e4')]" \
 check_eq "the Claude stub ran exactly twice (both rotation accounts)" \
     "$(sandbox_count_in . "$CLAUDE_WITNESS")" "2"
 check_eq "both Claude attempts carried the routed model, never a substitute" \
-    "$(sandbox_count_in "--model opus" "$CLAUDE_WITNESS")" "2"
+    "$(sandbox_count_in "--model claude-opus-5-5" "$CLAUDE_WITNESS")" "2"
 check_eq "both Claude attempts carried the routed low effort" \
     "$(sandbox_count_in "--effort low" "$CLAUDE_WITNESS")" "2"
 

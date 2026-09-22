@@ -61,9 +61,10 @@ SPEED_PAIRS = {
 #   blitz (3+2, 5+0)  jev-latest
 #   rapid, split by exact control: 10+5  jev-latest (CONTROL_MODELS —
 #       the exact-control door, which wins over the speed row);
-#       15+10  opus  low/low — the matrix's measured reliable winner
-#       (pooled rate 0.75, zero failure events), kept by the user's
-#       explicit exclusion.
+#       15+10  claude-opus-5-5  low/low — the matrix's measured reliable
+#       winner (pooled rate 0.75, zero failure events), kept by the user's
+#       explicit exclusion. Pinned to the exact model ID, never the moving
+#       `opus` alias, so the route names the Opus it plays.
 #   untimed  fable  low/medium — the user's decision: the configured Fable
 #       model at the module (QUIET, SHARP) pair above.
 #
@@ -79,7 +80,7 @@ CONTROL_MODELS = {"10+5": "jev-latest"}
 SPEED_MODELS = {
     "bullet": "jev-latest",
     "blitz": "jev-latest",
-    "rapid": "opus",
+    "rapid": "claude-opus-5-5",
     "untimed": "fable",
 }
 
