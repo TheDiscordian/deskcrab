@@ -454,6 +454,21 @@ ledger.
      hit would nor accuses as NOT FOUND — and the pre-judge path acquittal of rule 32b MUST
      NOT treat it as backing. A token that resolves nowhere is still reported NOT found and
      judged exactly as before: the search loosens nothing.
+32be. The window has a far edge, and silence past it is not evidence. Rule 32b's records reach
+     back `PROMISE_CHECK_EVIDENCE_WINDOW` minutes (default 30) for sessions and jobs, plus the
+     files the reply names and the recent commits — so a claim of completed work that DATES
+     ITSELF to an earlier day ("I fixed it last night", "the entry I wrote on the 17th") is
+     about a stretch of time no section can see. Judging it against them turns a true sentence
+     into an accusation: on 2026-09-26 at 09:44 the checker fired on "I fixed the missing
+     denominator in the table above it the night before", and the work was real — done in the
+     09:44 sitting of the day before, journalled, on disk, and carried into a commit the next
+     morning. The judge MUST therefore classify such a claim `PASTDATED` and judge it no
+     further. Only an explicit earlier date qualifies: an undated claim, or one dated to this
+     turn, just now, today or this morning, is in reach and judged as before, and a claim whose
+     named file the disk record holds is KEPT on that evidence whatever its date. A PASTDATED
+     line books NO wake; it lands one ledger row of its own type so a habit of citing
+     yesterday's work is countable, and the night sweep sees it labelled as unscored rather
+     than as a catch.
 32c. Every UNKEPT verdict MUST land in two places: one JSON line appended to the durable
      ledger — timestamp, the promise quoted exactly, why the record shows nothing did it, the
      turn's journal identity, and what became of the wake — and one event wake through the

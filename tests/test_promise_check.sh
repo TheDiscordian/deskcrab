@@ -435,6 +435,39 @@ check "the missing artefact is named as not found" \
 check_eq "and the flag lands: one ledger line, one wake" "$(ledger_n)$(records)" "11"
 
 echo
+echo "a claim the reply dates to an earlier night is out of the records' reach — ledgered, never accused:"
+# The evidence spans half an hour of sessions plus the named files and the
+# recent commits, so a true sentence about the previous morning's work has
+# nothing under it that could speak either way. On 2026-09-26 at 09:44 such a
+# sentence was booked as a lie while the work sat on disk, journalled the day
+# before. Rule 32be gives the judge a third verdict for it: one labelled
+# ledger row so the habit stays countable, and no wake.
+reset
+sandbox_stub claude <<STUB
+#!/bin/bash
+printf '%s\n' "\$*" >> "${SANDBOX_CLAUDE_LOG}"
+cat > "$T/model-stdin"
+printf '%s\n' '{"type":"assistant","message":{"model":"stub","content":[{"type":"text","text":"PASTDATED: I fixed the missing denominator in the table | \"the night before\" dates it outside the window"}]}}'
+printf '%s\n' '{"type":"result","result":"ok"}'
+STUB
+"$T/repo/lib/promise-check" turn wake "$(date +%s)" 4257 "$(snap "$SNAP_EMPTY")" \
+    "$T/ledger.jsonl" "I fixed the missing denominator in the table the night before." >/dev/null 2>&1
+check "the judge is told the window has a far edge" \
+    grep -q "OUTSIDE" "$T/model-stdin"
+check "and given the third verdict to answer with" \
+    grep -q "PASTDATED:" "$T/model-stdin"
+check "with today's and this morning's claims held in reach" \
+    grep -q "today" "$T/model-stdin"
+check_eq "one ledger row, and no wake — silence past the edge is not evidence" \
+    "$(ledger_n)$(records)" "10"
+check "the row wears its own type, so the night can tell it from a catch" \
+    grep -q '"type": "pastdated"' "$T/ledger.jsonl"
+check "it carries the judge's own dating phrase" \
+    grep -q "dates it outside the window" "$T/ledger.jsonl"
+check "and the trace counts it apart from the kept and the unkept" \
+    grep -q "0 kept, 0 unkept, 1 past-dated" "$CHECK_LOG"
+
+echo
 echo "a negative commitment — a promise to REFRAIN — is never flagged on an empty record:"
 # "I'm leaving the game alone entirely now." wears the commitment shape
 # (I'm VERBing), so the pre-check hands it to the judge — and the judge used
