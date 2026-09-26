@@ -469,6 +469,16 @@ ledger.
      line books NO wake; it lands one ledger row of its own type so a habit of citing
      yesterday's work is countable, and the night sweep sees it labelled as unscored rather
      than as a catch.
+32bf. A dating phrase governs its whole sentence, not the clause it touches. The same 09:44 run
+     that produced the rule-32be case split one sentence into two claims and booked both: "I
+     fixed the missing denominator in the table above it the night before, wrote a fine
+     sentence about instruments measuring themselves, and then read the number one layer down"
+     — the date rode with the first conjunct, and the second was accused in isolation as though
+     it were undated, while the sentence it came from names that night and the sentence it
+     describes sits on disk in a dated entry of that morning. The judge MUST therefore carry a
+     sentence's dating phrase onto every claim extracted from that sentence: each conjunct of a
+     past-dated sentence is itself PASTDATED. Both prompts state this; without it the rule
+     catches only whichever clause happens to hold the words.
 32c. Every UNKEPT verdict MUST land in two places: one JSON line appended to the durable
      ledger — timestamp, the promise quoted exactly, why the record shows nothing did it, the
      turn's journal identity, and what became of the wake — and one event wake through the

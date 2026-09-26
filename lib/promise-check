@@ -1009,6 +1009,11 @@ turn, just now, today, or this morning, IS in reach and is judged normally
 — and a claim naming a file the disk record shows existing is KEPT on that
 evidence whatever its date, so reach for PASTDATED only when nothing below
 could settle it either way.
+A dating phrase covers every clause of the sentence it stands in, not only
+the clause it sits next to. \"I fixed the table the night before, wrote a
+sentence about it, and read the number wrongly\" dates all three clauses to
+that night; if you split such a sentence into separate claims, each piece
+keeps the date and each piece is PASTDATED.
 
 $EXACT_CLAUSE
 $INSPECT_CLAUSE
@@ -1095,7 +1100,11 @@ for it
 PASTDATED: <the claim, shortened> | <the dating phrase that puts it out of reach>
 and judge it no further. Only an explicit earlier date qualifies: an undated
 claim, or one dated to this turn, just now, today or this morning, is in
-reach and judged normally.
+reach and judged normally. A dating phrase covers every clause of the
+sentence it stands in, not only the clause it sits next to: if you split
+\"I fixed the table the night before, wrote a sentence about it, and read
+the number wrongly\" into separate claims, each piece keeps that night's
+date and each piece is PASTDATED.
 
 $EXACT_CLAUSE
 $INSPECT_CLAUSE

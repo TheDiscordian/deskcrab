@@ -466,6 +466,15 @@ check "it carries the judge's own dating phrase" \
     grep -q "dates it outside the window" "$T/ledger.jsonl"
 check "and the trace counts it apart from the kept and the unkept" \
     grep -q "0 kept, 0 unkept, 1 past-dated" "$CHECK_LOG"
+# Rule 32bf: the same 09:44 run split one sentence into two claims and booked
+# both. "the night before" rode with the first conjunct, so the second — "wrote
+# a fine sentence about instruments measuring themselves" — was judged as
+# though undated, while the sentence it described sat on disk in a dated entry
+# of that same morning. A dating phrase governs its whole sentence.
+check "the dating phrase is said to cover every clause of its sentence" \
+    grep -q "covers every clause of the sentence it stands in" "$T/model-stdin"
+check "so a split conjunct keeps the date instead of being judged alone" \
+    grep -q "keeps the date and each piece is PASTDATED" "$T/model-stdin"
 
 echo
 echo "a negative commitment — a promise to REFRAIN — is never flagged on an empty record:"
