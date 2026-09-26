@@ -220,6 +220,19 @@ check "and the caught sentence is still quoted for the resay" \
 check "an -ly adverb in the same sentence still comes away clean" \
     contains "$(cat "$R")" "instead (deletion): “I put the kettle on late.”"
 
+# Rule 46: the night-over-night rate table carries its own denominator, so a
+# run of single hits on short nights cannot be read as a climb.
+check "the multi-night rate table prints each night's spoken words" \
+    contains "$(cat "$R")" "| **spoken words** |"
+check "and the rate a single use would print on that night" \
+    contains "$(cat "$R")" "| **one hit reads as** |"
+check "with the resolution named in words, not left to be inferred" \
+    contains "$(cat "$R")" "the rate a single use prints"
+check_eq "the resolution is 1000 / that night's words" \
+    "$(grep 'one hit reads as' "$R" | awk -F'|' '{ print $(NF-1) }' | tr -d ' ')" \
+    "$(grep '\*\*spoken words\*\*' "$R" | awk -F'|' '{ print $(NF-1) }' | tr -d ' ' \
+        | awk '{ printf "%.2f", 1000 / $1 }')"
+
 echo
 echo "the live mirror's log and call (speech-output rules 51-52):"
 # The nightly reads what the mirror wrote, so the writer's shape is held
