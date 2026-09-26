@@ -674,12 +674,19 @@ def substitution_watch(day, phrases, history, fn_history=None, words=0):
         if not prev_days:
             continue
 
+        def own_days(k):
+            # Only the nights this member existed to be counted on. A key
+            # added mid-record has no row before its first night, and
+            # borrowing the family's nights for its denominator is the
+            # instrument counting itself.
+            return [d for d in history.get(k, {}) if d < day]
+
         def prev_avg(k):
-            return sum(history.get(k, {}).get(d, 0) for d in prev_days) \
-                / float(len(prev_days))
+            kd = own_days(k)
+            return sum(history[k][d] for d in kd) / float(len(kd)) if kd else 0.0
 
         def measured_before(k):
-            return any(d < day for d in history.get(k, {}))
+            return bool(own_days(k))
 
         quiet = [k for k in keys
                  if history.get(k, {}).get(day, 0) == 0 and prev_avg(k) > 0]
@@ -694,19 +701,37 @@ def substitution_watch(day, phrases, history, fn_history=None, words=0):
         prior_words = sum(words_by_day.get(d, 0) for d in prev_days)
         if not (words and prior_words):
             continue  # no denominator, no verdict
-        prior_uses = sum(history.get(k, {}).get(d, 0)
-                         for k in keys for d in prev_days)
-        rate = 1000.0 * prior_uses / prior_words     # the standing rate
-        before = rate * words / 1000.0               # what it predicts tonight
-        prior_by_key = {k: sum(history.get(k, {}).get(d, 0)
-                               for d in prev_days) for k in keys}
+        # The standing rate is the SUM of each member's own-lifetime rate,
+        # not the family's uses over the family's nights. Found 2026-09-26,
+        # reading the 09-25 review: the vouching note there put 3 catches
+        # against 0.33 per 1000 and called the family 8.5x louder, one
+        # night in 100 — but two of its seven members (the-status-upgrade,
+        # added 09-22; genuinely-around-my-own-claims, added 09-14) carry
+        # most of the family's current rate while the pooled denominator
+        # charged them all 43 nights of words they never existed for.
+        # Member by member the expectation is 0.81, not 0.35: 3.7x and one
+        # night in twenty — a lean, not a finding. Same disease as the
+        # totals row measuring the list rather than me, one layer in: a
+        # baseline pooled across entries of different ages is an average
+        # over two different instruments.
+        before = 0.0
+        for k in keys:
+            kd = own_days(k)
+            kw = sum(words_by_day.get(d, 0) for d in kd)
+            if kw:
+                before += words * sum(history[k][d] for d in kd) / float(kw)
+        if before <= 0:
+            continue
+        rate = 1000.0 * before / words               # the standing rate
+        prior_by_key = {k: sum(history[k][d] for d in own_days(k))
+                        for k in keys}
         churn_p = churn_chance(keys, prior_by_key,
                                {k: prev_avg(k) for k in keys},
                                {k: measured_before(k) for k in keys}, total)
         churn = churn_p < NOISE_P
         numbers = ("family total %d tonight in %d spoken words, %.2f per "
-                   "1000 against a standing %.2f — about %.1f expected for "
-                   "a night this size"
+                   "1000 against a standing %.2f, each member over its own "
+                   "nights — about %.1f expected for a night this size"
                    % (total, words, 1000.0 * total / words, rate, before))
         if churn:
             head = ("inside **%s**: %s went quiet while %s rose (%s; that "
@@ -1079,6 +1104,25 @@ def write_report(day, turns, bad, phrases, broken, uses, mentions, words,
                     u, _m, w = fn_history[fn].get(d, (0, 0, 0))
                     cells.append("%.2f" % (u * 1000.0 / w) if w else "")
                 lines.append("| %s | %s |" % (fn, " | ".join(cells)))
+            # The denominator, printed under its own rates. A short night
+            # has coarse resolution — on 843 words the smallest non-zero
+            # rate is 1.19, so one hit reads as a spike and a row of them
+            # is not a trend. Rule 46 says weigh the move, not the tally.
+            night_words = {}
+            for row in fn_history.values():
+                for d, (_u, _m, w) in row.items():
+                    if w:
+                        night_words[d] = w
+            wcells, rcells = [], []
+            for d in nights:
+                w = night_words.get(d)
+                wcells.append(str(w) if w else "")
+                rcells.append("%.2f" % (1000.0 / w) if w else "")
+            lines.append("| **spoken words** | %s |" % " | ".join(wcells))
+            lines.append("| **one hit reads as** | %s |" % " | ".join(rcells))
+            lines += ["", "*The last row is each night's resolution: the rate a "
+                      "single use prints. A row that only ever shows 0.00 or "
+                      "that figure is counting to one, not trending.*"]
 
     watch = substitution_watch(day, phrases, history, fn_history, words)
     if watch:

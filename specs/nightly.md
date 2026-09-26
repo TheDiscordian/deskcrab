@@ -522,7 +522,13 @@ which fails silently is worse than one that does not exist.
     moving to a sibling word is the same habit in a new coat, not a cure. An untagged entry
     stands as its own function. The function table counts a caught sentence once per function
     and classification (use or mention): when two sibling patterns fire on the same sentence,
-    that is one observed move, while two different functions in the sentence remain two.
+    that is one observed move, while two different functions in the sentence remain two. The
+    night-over-night rate table MUST carry its own denominator: a row of each night's spoken
+    word count, and a row of the rate a single use prints on that night (1000 / words). A short
+    night has coarse resolution — on 843 spoken words no rate between 0.00 and 1.19 can exist —
+    so a rate printed without the denominator beside it invites a run of single hits to be read
+    as a climb. This is rule 48a's principle applied to the one table that had escaped it: a
+    total, a rate or a verdict is stated only against the exposure that produced it.
 47. A mention is not a use. A hit whose matched words are quoted, inside a code span, or in a
     sentence that is about the list itself — naming an entry, a ban, a flag, a pattern, a
     rewrite, the review — MUST be classed a mention: never scored as a use, never handed to the
@@ -538,17 +544,27 @@ which fails silently is worse than one that does not exist.
 48. The substitution watch. The report MUST place a function's members side by side across the
     recent nights and say plainly when the family's total holds while its members churn — a
     member gone quiet beside a sibling that rose is the habit changing words, not dying. The
-    verdict on the total is COMPUTED, never a fixed tail, and it is computed against a RATE: the
-    family's uses across all prior nights over those nights' spoken words gives a standing rate,
-    the rate gives the count expected for a night of tonight's size, and the note may say the
-    total holds only when tonight's total and that expectation agree within one occurrence or a
+    verdict on the total is COMPUTED, never a fixed tail, and it is computed against a RATE: each
+    member's own uses over the spoken words of the nights THAT MEMBER existed for gives its
+    standing rate, the members' rates sum to the count expected for a night of tonight's size,
+    and the note may say the total holds only when tonight's total and that expectation agree
+    within one occurrence or a
     quarter of the expectation, whichever is larger — an integer total against a fractional
     expectation never lands exactly, and the notes of 2026-08-20..23 that printed "holds" over a
     family down by half or more are the fault this band closes. A mean of nightly COUNTS is not
     an acceptable baseline: nightly volume has moved by two orders of magnitude (25,559 spoken
     words in a day to 174), so an unchanged count is not an unchanged habit. The 2026-09-16 note
     called a vouching family holding at 2 against ~1.5 a night when per thousand words it had
-    risen more than fivefold, two lines under its own table of zeros. The note MUST print the
+    risen more than fivefold, two lines under its own table of zeros. Neither may the baseline be
+    pooled across entries of different ages, and a member's nightly average MUST be taken over its
+    own nights alone: an entry added last week did not exist to be counted before it, so charging
+    it the whole record's spoken words deflates the family's standing rate and inflates every
+    verdict made against it. The 2026-09-25 vouching note put 3 catches against a pooled 0.33 per
+    thousand and called the family 8.5x louder at one night in 100, when two of its seven members
+    were days old and member by member the expectation was 0.81 — 3.7x at about one night in
+    twenty, a finding over the line by a hair rather than one in a hundred. A baseline averaged
+    over entries of different ages is an average over two different instruments, the same fault
+    as a totals row measuring the list rather than the habit. The note MUST print the
     denominator it used — tonight's spoken words, tonight's rate, the standing rate — so the
     verdict can be re-measured from the line itself. Without prior spoken words there is no
     denominator and the watch MUST stay silent rather than guess. Outside the band the note MUST state the direction and the size of the move

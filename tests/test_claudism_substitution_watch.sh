@@ -351,3 +351,55 @@ refute "but carries no clause resting on the churn premise" \
     contains "$SPREAD" "changed words"
 check "the strong-churn note still prints its own odds" \
     contains "$VOUCH" "at unchanged shares"
+
+echo
+echo "(j) the baseline is each member over its OWN nights, not the family's:"
+# The fault found 2026-09-26, reading the 09-25 review: the standing rate was
+# the family's uses over the union of the family's nights, so an entry added
+# last week was charged every night of words since the record began. Two of
+# that night's seven vouching members were days old; member by member the
+# expectation was 0.81 and the note printed 0.35, turning a lean into "8.5x
+# louder, one night in 100". The same disease as a totals row measuring the
+# list instead of the habit, one layer in. Fixture: eight prior nights, an
+# elder member counted on all of them and a young one that exists only on the
+# last — pooled, the family's rate is a fifteenth of the young member's own.
+J3="$T/journal-ages"; OUT3="$T/out-ages"; LIST3="$T/claudisms-ages.md"
+mkdir -p "$J3" "$OUT3"
+cat > "$LIST3" <<'LIST'
+## "elder tick" — on the list since the record began
+- pattern: `\belder tick\b`
+- why: on the list since the record began.
+- function: ages
+
+## "young tick" — added yesterday, measured for one night
+- pattern: `\byoung tick\b`
+- why: added yesterday, measured for one night.
+- function: ages
+LIST
+: > "$OUT3/counts.tsv"; : > "$OUT3/functions.tsv"
+for d in 01 02 03 04 05 06 07 08; do
+    printf '2026-03-%s\telder-tick\t0\n' "$d" >> "$OUT3/counts.tsv"
+    printf '2026-03-%s\tages\t0\t0\t100\n' "$d" >> "$OUT3/functions.tsv"
+done
+# the elder's one use, and the young entry's only measured night
+sed -i 's/^2026-03-04\telder-tick\t0$/2026-03-04\telder-tick\t1/' "$OUT3/counts.tsv"
+printf '2026-03-08\tyoung-tick\t2\n' >> "$OUT3/counts.tsv"
+printf '{"epoch": 1772550000, "time": "2026-03-09T10:00:00-0500", "kind": "desktop", "user": "?", "reply": "Young tick the kettle is on. Young tick the toast is done. Young tick the tray went up. The lamp on the table is still burning. The lamp on the table is still burning. The lamp on the table is still burning. The lamp on the table is still burning. The lamp on the table is still burning. The lamp on the table is still burning. The lamp on the table is still burning. The lamp on the table is still burning. The lamp on the table is still burning. The lamp on the table is still burning."}\n' \
+    > "$J3/2026-03-09.jsonl"
+CRAB_BIN="$T/crab" DAY_JOURNAL_DIR="$J3" CLAUDISM_LIST="$LIST3" \
+    CLAUDISM_DIR="$OUT3" CLAUDISM_FLAGS_DIR="$FLAGS" CLAUDISM_REWRITES=0 \
+    "$REPO/lib/claudism-scan" run 2026-03-09 >/dev/null 2>&1
+W3="$(awk '/## The substitution watch/{f=1;next} /^## /{f=0} f' "$OUT3/2026-03-09.md")"
+A3="$(printf '%s\n' "$W3" | grep -F 'inside **ages**' | head -1)"
+[ -n "$A3" ] && ok "the mixed-age family draws its note" \
+    || fail "no ages note" "$(cat "$OUT3/2026-03-09.md")"
+check "the young member is credited only the nights it existed for" \
+    contains "$A3" "about 2.1 expected for a night this size"
+refute "not the family's whole history (which would predict 0.4)" \
+    contains "$A3" "about 0.4 expected"
+check "so the standing rate is the members' own, and says so" \
+    contains "$A3" "each member over its own nights"
+refute "and three catches are no longer a finding of a louder move" \
+    contains "$A3" "the move got louder"
+check "they are what they are: the family at its own rate" \
+    contains "$A3" "the total holds"
