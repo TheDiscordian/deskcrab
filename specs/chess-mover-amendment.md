@@ -218,3 +218,40 @@ quote: below ten decided games in a bucket the clause is silent rather than
 citing a record of two games. The tally is rebuilt from the game files at most
 once per mover process and keyed on the files themselves, because a hundred
 milliseconds of counting must not be spent again on every move of a blitz game.
+
+## A rook-sized loss names the passer it stops
+
+browser-070 (2026-09-17) was lost with both halves of the refutation already
+in the prompt. 57...Rb1?? was labelled "loses about 5.0 pawns where it lands",
+and the passed-pawn line said, separately, that their rook guards b1 — and
+nothing joined the two, so the rook was given up for a promotion the capture
+itself had just parked a piece in front of: a pawn does not capture forwards,
+so a capturer standing on the path is not a trade offer, it is a wall.
+
+So the loss verdict joins them. When a candidate is already flagged as losing
+at least a rook by the exchange on its own landing square, and the cheapest
+legal capture on that square — the same first exchange the loss was priced
+by — would leave the capturing piece standing on the promotion path of one of
+the mover's own passed pawns, the option's existing loss verdict carries the
+consequence: "the capturing rook would then sit on b1, where it stops your
+b-pawn". Both verdict builders carry it, the option description and the
+prompt's loss bucket alike.
+
+The bounds, all of them load-bearing:
+
+- **Only on a loss already worth a rook.** Below `PIECE_VALUE[ROOK]` on the
+  destination-square count the clause never fires, so it cannot add a word to
+  a quiet move or to an ordinary pawn-sized inaccuracy.
+- **Only the landing square, only the mover's own passers.** The passed pawns
+  are read from the board before the candidate, the moving piece itself
+  excluded; the square must lie on a passer's promotion path (its promotion
+  square included). A capture elsewhere, or a path of the opponent's pawn, is
+  not this clause's business.
+- **Informational only.** No recommendation, no suppression, no reordering:
+  the same contract the declined-memory warning and the quiet-move budget
+  hold. Whether a rook-sized loss should ever be vetoable outright is left
+  unresolved on purpose — real sacrifices exist, and browser-070's record
+  says so in as many words.
+- **Silence over error.** A loss priced only by a pinned, illegal capture has
+  no capturer to name; a failed join is a verdict without the clause. A
+  missing clause, never a wrong one.

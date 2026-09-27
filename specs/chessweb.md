@@ -507,6 +507,22 @@ cannot be changed.
       no suppression: the same contract the declined-memory warning has. Below
       ten decided games in a bucket, or on an unreplayable movetext, there is
       no clause — a record of two games is not worth quoting.
+      A rook-sized loss names the passer it stops (chess-mover-amendment.md,
+      "A rook-sized loss names the passer it stops"): an option already
+      flagged as losing at least a rook on its own landing square, where the
+      cheapest legal capture there — the same first exchange the loss was
+      priced by — would leave the capturing piece standing on the promotion
+      path of one of her own passed pawns, carries the consequence on its
+      loss verdict: "the capturing rook would then sit on b1, where it stops
+      your b-pawn". browser-070 (2026-09-17) had the loss and the guarded
+      path both in the request as separate facts, joined by neither, and the
+      rook went for a promotion the capture itself blocks. The clause fires
+      only at a rook or more, so it adds no words to quiet moves or
+      pawn-sized inaccuracies; it recommends nothing and vetoes nothing —
+      whether such a loss should ever be vetoable stays deliberately
+      unresolved, because real sacrifices exist. A loss priced only by a
+      pinned, illegal capture names no capturer and carries no clause: a
+      missing clause, never a wrong one.
       The state crosses to TypeSafe's API over TLS, the sitter's typed name and the
       game facts included: the user's explicit 2026-09-17 decision, the key provided
       for exactly this.

@@ -399,6 +399,43 @@ print("quiet-thin-pool-silent:", not any(
         qjob, q_board)["questions"]["move"]["criteria"].values()))
 os.environ["DESKCRAB_CHESS_DIR"] = _real_dir
 
+# -- 2e. the passer-stop clause (chess-mover-amendment.md, "A rook-sized
+# loss names the passer it stops"). browser-070 before black's 57th:
+# 57...Rb1?? read "loses about 5.0 pawns where it lands" while the
+# passed-pawn line said, separately, "their rook guards b1", and nothing
+# joined them — the rook went for a promotion its own capture blocks. The
+# option itself now carries the consequence.
+ps_fen = "6k1/1p3p1p/1K6/4p3/4P3/1p3PP1/1r1p4/3R4 b - - 1 57"
+ps_crit = chess_mover.jev_request(
+    dict(job, side="black", fen=ps_fen, history="(fixture)"),
+    chess.Board(ps_fen))["questions"]["move"]["criteria"]
+print("passer-stop-named:", ps_crit["b2b1"] == (
+    "Rb1 — loses about 5.0 pawns where it lands; the capturing rook "
+    "would then sit on b1, where it stops your b-pawn"))
+# Every other option on that board — the quiet king and pawn moves, and
+# f5's pawn-sized loss — stays exactly as it was.
+print("passer-stop-only-on-the-rook:", not any(
+    "stops your" in d for u, d in ps_crit.items() if u != "b2b1"))
+# A knight-sized loss on the very same path square is below the gate:
+# the clause is for a loss already worth a rook, never for ordinary
+# inaccuracy.
+kn_fen = "6k1/8/1K6/8/8/1pn5/8/3R4 b - - 0 1"
+kn_crit = chess_mover.jev_request(
+    dict(job, side="black", fen=kn_fen, history="(fixture)"),
+    chess.Board(kn_fen))["questions"]["move"]["criteria"]
+print("passer-stop-below-threshold:",
+      "loses about 3.2 pawns" in kn_crit["c3b1"]
+      and "stops your" not in kn_crit["c3b1"])
+# A rook-sized loss whose capture lands nowhere near a passer's path
+# says nothing beyond the count it always said.
+far_fen = "6k1/8/1K6/8/8/1p6/1r6/7R b - - 0 1"
+far_crit = chess_mover.jev_request(
+    dict(job, side="black", fen=far_fen, history="(fixture)"),
+    chess.Board(far_fen))["questions"]["move"]["criteria"]
+print("passer-stop-unrelated-square:",
+      "loses about 5.0 pawns" in far_crit["b2h2"]
+      and "stops your" not in far_crit["b2h2"])
+
 # -- 3. end to end through the mover ----------------------------------------
 outcome, why = m._answer(job)
 print("e2e-outcome:", outcome)
@@ -582,6 +619,21 @@ contains "$PYOUT" "quiet-thin-pool-silent: True" \
 contains "$PYOUT" "quiet-legend-in-instructions: True" \
     && ok "the legend is stated once, in the instructions" \
     || fail "quiet legend" "$(printf '%s\n' "$PYOUT" | grep quiet-legend)"
+
+echo
+echo "the passer-stop clause (chess-mover-amendment.md, browser-070):"
+contains "$PYOUT" "passer-stop-named: True" \
+    && ok "Rb1's option says the capturing rook would sit on b1, stopping the b-pawn" \
+    || fail "passer stop" "$(printf '%s\n' "$PYOUT" | grep passer-stop-named)"
+contains "$PYOUT" "passer-stop-only-on-the-rook: True" \
+    && ok "no other option on the browser-070 board grew a word" \
+    || fail "passer stop bleed" "$(printf '%s\n' "$PYOUT" | grep passer-stop-only)"
+contains "$PYOUT" "passer-stop-below-threshold: True" \
+    && ok "a knight-sized loss on the same square stays clause-free" \
+    || fail "passer threshold" "$(printf '%s\n' "$PYOUT" | grep passer-stop-below)"
+contains "$PYOUT" "passer-stop-unrelated-square: True" \
+    && ok "a rook-sized loss off every passer path stays clause-free" \
+    || fail "passer unrelated" "$(printf '%s\n' "$PYOUT" | grep passer-stop-unrelated)"
 
 echo
 echo "end to end through the mover:"

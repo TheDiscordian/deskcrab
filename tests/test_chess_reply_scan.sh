@@ -300,6 +300,22 @@ printf '%s\n' "$P" | grep -q "Passed pawns — yours: none; theirs: none" \
   && ok "a clean board still prints the line, none and none" \
   || fail "no all-clear passed-pawn line: $(printf '%s\n' "$P" | grep -i passed)"
 
+# --- the passer-stop clause on the loss bucket (browser-070) ----------------
+# chess-mover-amendment.md, "A rook-sized loss names the passer it stops":
+# the prompt's loss bucket carries the same joined consequence the Jev option
+# does. browser-070 before black's 57th — 57...Rb1?? read "loses 500" while
+# the passed-pawn line said, separately, that their rook guards b1.
+PS070="6k1/1p3p1p/1K6/4p3/4P3/1p3PP1/1r1p4/3R4 b - - 1 57"
+P="$(prompt_for "$PS070")"
+hang_line="$(printf '%s\n' "$P" | grep "loses material (centipawns)")"
+printf '%s\n' "$hang_line" | grep -q \
+    "b2b1) loses 500 — the capturing rook would then sit on b1, where it stops your b-pawn" \
+  && ok "the browser-070 rook sac names the passer its capture stops" \
+  || fail "no passer-stop clause on Rb1: $hang_line"
+[ "$(printf '%s\n' "$P" | grep -c "stops your")" = 1 ] \
+  && ok "and the clause fires nowhere else on that board — f5's pawn loss included" \
+  || fail "passer-stop clause bled: $(printf '%s\n' "$P" | grep 'stops your')"
+
 # --- order and timing ------------------------------------------------------
 P="$(prompt_for "$PP32")"
 stand_at="$(printf '%s\n' "$P" | grep -n "can win where they stand" | head -1 | cut -d: -f1)"

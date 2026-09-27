@@ -678,6 +678,63 @@ def passed_pawn_line(board, side=None):
         "; ".join(rendered[False]) or "none"))
 
 
+def passer_stop_clause(board, move, loss):
+    """The browser-070 consequence, joined onto a loss verdict (chess-mover-
+    amendment.md, "A rook-sized loss names the passer it stops"): when
+    `move` already loses at least a rook where it lands, and the capture
+    that prices that loss would leave the capturing piece standing on the
+    promotion path of one of the mover's own passed pawns, the option says
+    what the exchange count and the passed-pawn line each said alone —
+    "the capturing rook would then sit on b1, where it stops your b-pawn".
+    Both facts rode the browser-070 prompt separately (2026-09-17):
+    57...Rb1?? was labelled "loses about 5.0 pawns where it lands" while
+    the passed-pawn line said "their rook guards b1", and nothing joined
+    them, so the sacrifice gave up the rook AND the pawn it was played for.
+    Purely informational and gated on a loss already worth a rook, so it
+    recommends nothing, vetoes nothing, and can add no words to a quiet
+    move — whether a rook-sized loss should ever be vetoable outright is
+    left unresolved on purpose, because real sacrifices exist. Returns ""
+    whenever the case does not hold: a missing clause, never a wrong one."""
+    if loss < PIECE_VALUE[chess.ROOK]:
+        return ""
+    mover_side = board.turn
+    # The mover's own passed pawns, read from the board BEFORE the
+    # candidate: the pawn being stopped must exist now, and a pawn that is
+    # itself the moving piece is not on its own path.
+    stopped = None
+    for colour, sq, steps, _notes in passed_pawns(board):
+        if colour != mover_side or sq == move.from_square:
+            continue
+        f, r = chess.square_file(sq), chess.square_rank(sq)
+        step = 1 if colour == chess.WHITE else -1
+        path = [chess.square(f, rr)
+                for rr in range(r + step,
+                                8 if colour == chess.WHITE else -1, step)]
+        if move.to_square in path and (stopped is None or steps < stopped[1]):
+            stopped = (sq, steps)
+    if stopped is None:
+        return ""
+    # The capture the loss was priced by: the cheapest legal capture on the
+    # candidate's own landing square, the same first exchange
+    # `material_loss` counts. A loss priced only by a pinned attacker has
+    # no capturer to name, and the clause stays silent.
+    board.push(move)
+    try:
+        replies = [r for r in board.legal_moves
+                   if r.to_square == move.to_square and board.is_capture(r)]
+        if not replies:
+            return ""
+        reply = min(replies, key=lambda r: PIECE_VALUE[
+            board.piece_type_at(r.from_square)])
+        capturer = board.piece_type_at(reply.from_square)
+    finally:
+        board.pop()
+    return ("the capturing %s would then sit on %s, where it stops your "
+            "%s-pawn" % (PIECE_NAME[capturer],
+                         chess.square_name(move.to_square),
+                         chess.square_name(stopped[0])[0]))
+
+
 # --- position memory in the prompt (specs/chess-reflex.md rule 14) ----------
 # The retrieval lives HERE, in the mover's own prompt build, never in a job
 # builder: the note design (reason_note handed in on the job) left every
@@ -1220,6 +1277,12 @@ def jev_request(job, board):
                                  "next move, whatever you answer")
                 continue
             desc = f"{san} — loses about {loss / 100:.1f} pawns where it lands"
+            try:
+                stop = passer_stop_clause(board, m, loss)
+            except Exception:
+                stop = ""  # a failed join is a verdict without the clause
+            if stop:
+                desc += "; " + stop
             if backed:
                 desc += "; memory holds a winning record with it"
             if m.promotion:
@@ -2229,12 +2292,19 @@ class Mover:
                     punished.append(
                         (MATE2_LOSS,
                          f"{label} — {mate2} forces mate next move"))
-                elif m.uci() in endorsed:
-                    # Rule 14c: a remembered win is never buried in the
-                    # concrete-reason pile — both facts ride its own line.
-                    backed.append(f"{label} loses {loss} by the count")
                 else:
-                    hangs.append(f"{label} loses {loss}")
+                    try:
+                        stop = passer_stop_clause(board, m, loss)
+                    except Exception:
+                        stop = ""  # a failed join: a line without the clause
+                    stop = f" — {stop}" if stop else ""
+                    if m.uci() in endorsed:
+                        # Rule 14c: a remembered win is never buried in the
+                        # concrete-reason pile — both facts ride its own line.
+                        backed.append(f"{label} loses {loss} by the count"
+                                      f"{stop}")
+                    else:
+                        hangs.append(f"{label} loses {loss}{stop}")
                 continue
             worst = (0, None, None)
             if scan:
