@@ -23,8 +23,14 @@ echo "a running builder's words are in the log before the run ends:"
 # A builder that says one thing, then sits inside a long command — the shape
 # of every compile. The sleep's own stdout is pointed away from the pipe so an
 # orphaned sleep cannot hold the log's pipeline open after the stub is killed.
-cat > "$T/claude-slow" <<'STUB'
+# The stub records its own pid: the sandbox's pkill is a deliberate no-op (a
+# pattern kill escapes onto live audio), and the runner's TERM trap defers
+# until its foreground pipeline ends — so a stop played with a pattern kill
+# left the stub sleeping, the trap waiting on it, and the never-said line in
+# the log when both finally ran.
+cat > "$T/claude-slow" <<STUB
 #!/bin/bash
+echo \$\$ > "$T/claude-slow.pid"
 printf '%s\n' '{"type":"assistant","message":{"model":"stub","content":[{"type":"text","text":"First partial report line from the builder."}]}}'
 sleep 20 >/dev/null
 printf '%s\n' '{"type":"assistant","message":{"model":"stub","content":[{"type":"text","text":"Never reached."}]}}'
@@ -56,9 +62,9 @@ check "the raw stream still carries the event for the viewer" \
 echo
 echo "a stopped builder keeps what it had said:"
 # systemctl stop TERMs the whole unit: the worker and the CLI both. Here that
-# is the runner by pid and the stub by its sandbox-unique path.
+# is the runner by pid and the stub by the pid it recorded.
 kill -TERM "$RUNNER" 2>/dev/null
-pkill -TERM -f "$T/claude-slow" 2>/dev/null
+kill -TERM "$(cat "$T/claude-slow.pid" 2>/dev/null)" 2>/dev/null
 wait "$RUNNER" 2>/dev/null
 check "the partial line survives the stop" \
     grep -q "First partial report line" "$JOBS/livetest.log"

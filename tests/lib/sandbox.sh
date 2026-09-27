@@ -125,8 +125,8 @@
 #                               (lib/job-status), so it moves whenever any
 #                               live builder breathes. The FILES under it
 #                               stay photographed, except the triplets below.
-#   $SANDBOX_RUNNING_JOBS       the stream triplet — <id>.log, <id>.json,
-#                               <id>.lock — of each live builder whose
+#   $SANDBOX_RUNNING_JOBS       the stream set — <id>.log, <id>.json,
+#                               <id>.lock, <id>.stream.log — of each live builder whose
 #                               sidecar said "running" with a live pid when
 #                               the sandbox was built (enumerated once, like
 #                               the foreign logs). A sandboxed test cannot
@@ -222,7 +222,8 @@ _sandbox_running_jobs() {  # <live jobs dir> — triplet paths, one per line
         _rj_pid="$(sed -n 's/^ *"pid": *\([0-9][0-9]*\).*/\1/p' "$_rj_sc" \
             | head -1)"
         [ -n "$_rj_pid" ] && kill -0 "$_rj_pid" 2>/dev/null || continue
-        printf '%s\n' "${_rj_sc%.json}.log" "$_rj_sc" "${_rj_sc%.json}.lock"
+        printf '%s\n' "${_rj_sc%.json}.log" "$_rj_sc" "${_rj_sc%.json}.lock" \
+            "${_rj_sc%.json}.stream.log"
     done
 }
 

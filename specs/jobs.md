@@ -246,6 +246,19 @@ and the completion channel a job has back to her.
     inside one command without writing a byte. Unlinking a running builder's stream empties the
     attempt slice, blinds the blocked judgement, and leaves a blocked run with nothing to record. A
     job's stream is reaped when the JOB has ended, by the side that can ask.
+22a. The tool-call stream MUST outlive the state prefix. The stream is the job's falsifiable
+    trace — the only record of which tools the builder actually ran, against which every claim
+    in its report can be checked — and until 2026-09-27 it lived solely under `/tmp`, where rule
+    22's reaping, the next boot, or three quiet hours after the job ended erased it: exactly the
+    runs whose claims most needed auditing were the ones whose evidence was gone by morning. So
+    the worker writes a durable twin beside the job's own log — `jobs/<id>.stream.log`, fed by
+    the same tee that keeps the live copy byte-identical for the viewer — LIVE, as the events
+    are produced, never copied at exit: a run that ends early (killed, stopped, cut mid-build)
+    retains whatever trace it had produced, because the archive was never waiting on an orderly
+    ending. The sidecar records the path as `stream_archive`; `crab job activity` (rule 25a)
+    falls back to the archive when the live stream is gone, so the evidence door answers after
+    the reap; and the archive is pruned with the record by report's keep-days sweep (never by
+    any stream reaping), so it costs nothing the sidecar and log did not already cost.
 
 ### Reporting
 
@@ -533,6 +546,7 @@ log still held only the account banner. These rules make the protection structur
 |---|---|
 | `~/.local/share/deskcrab/jobs/<id>.json` | `{id, description, workdir, record, want, slug, daily, queued, queued_epoch, started, started_epoch, model, model_request, effort, unit, state, pid, pidstart, attempts, history, finished, finished_epoch, exit, retry, retry_of, branch, commits, unpushed, dirty, tests, collection, collected_at}` — `workdir` is where the builder ran, recorded so `requeue` never has to ask (rule 7a); sidecars older than a field simply lack it. `record` is the engineering record the job was dispatched against (rules 7b, 27–29), absent when none was; `record_attached_epoch` is when the ending gate's attach write touched that record, so rule 27's floor can discount it (engineering-records.md rule 15b), absent on every other dispatch. `want` is the shelf title a want-linked dispatch matched (rule 30). `slug` is the explicit single-flight key and `daily` the recurring brief's own HH:MM occurrence (rules 42 and 45), both absent on a brief that named neither. `queued`/`queued_epoch` are when the brief was shelved (rule 32); `started`/`started_epoch` are the dispatch. `model`/`effort` are what the builder ran with (rule 35) — `model` is re-stamped by rule 5b's family walk so it stays what actually ran, and `model_request` is the per-job override of rule 5c, absent when none was given. `attempts` is one line per account attempt (rule 37); `history` is the transition list `[{at, state}, …]` (rule 36). `retry` is the spent automatic retry of a blocked job (the new job's id, `fired`, or `abandoned`) and `retry_of` names the blocked job a retry came from (rules 18b, 18f). `branch`, `commits` (`["shorthash subject", …]`), `unpushed`, `dirty`, `tests`, `collection`, `collected_at` are what collection found (rules 38–40); `tree_commits` is how many commits the git window saw on a job that declared `commit=none`, present only there, because those are other hands' (rule 38c) |
 | `~/.local/share/deskcrab/jobs/<id>.log` | the builder's report, written live as the stream produces it (rule 26) |
+| `~/.local/share/deskcrab/jobs/<id>.stream.log` | the durable twin of the tool-call stream (rule 22a): every event the live stream carried, written by the same tee as the events are produced; the sidecar names it as `stream_archive`; pruned with the record by report's keep-days sweep |
 | `~/.local/share/deskcrab/jobs/blocked` | `<epoch> \t <family[,family…]|all> \t <reason>` (rule 16), last block wins; a two-field marker from before the families field reads as `all` |
 | `~/.local/share/deskcrab/jobs/<id>.lock` | guards read-modify-write of the sidecar — taken by the status writer itself, so every call site inherits it (rule 36), and by `crab job drop` around its check-and-delete (rule 33) |
 | `~/.local/share/deskcrab/jobs/flight/<key>.lock` | the single-flight lock (rule 44): flock'd by the worker for the life of its run; the `<pid> <job id>` line inside is legibility only, never the lock itself; pruned by report's keep-days sweep |
@@ -675,6 +689,11 @@ the families on the marker, the one retry probe armed from the marker's own wind
 wrote holding a refused family while passing an untried one; and the request riding requeue
 and the automatic block retry).
 
+`tests/test_job_stream_archive.sh` (rule 22a: a run with tool activity leaves
+`jobs/<id>.stream.log` beside its log, byte-identical to the live stream and carrying the
+tool-call events; the sidecar names it as `stream_archive`; with the live stream deleted,
+`crab job activity` answers from the archive; a failed run and a stopped run each retain the
+trace they produced; and report's keep-days sweep prunes the archive with the record);
 `tests/test_job_collect.sh` (rules 38–40: collection records branch, commits since dispatch,
 unpushed and dirty counts, and the report's test tally; the tally is the end state, never the
 deliberate red — a red before the commit line loses to the green after it, a `VERDICT:` line

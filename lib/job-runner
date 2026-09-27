@@ -135,12 +135,25 @@ RECORD="$("$LIB_DIR/job-status" get "$STATUS" record 2>/dev/null)"
 DISPATCH_EPOCH="$("$LIB_DIR/job-status" get "$STATUS" started_epoch 2>/dev/null)"
 ENG_DIR="$(deskcrab_home)/engineering/records"
 
+# The durable twin of the tool-call stream (specs/jobs.md rule 22a). The
+# stream is the job's falsifiable trace, and it used to live only under the
+# state prefix, where the reap above — or the next boot — erased it as soon
+# as the job ended: the runs whose claims most needed auditing were the ones
+# whose evidence was gone by morning. The tees below feed this file the same
+# bytes as $STREAMLOG, live, so a run that dies mid-build keeps whatever
+# trace it had produced. Pruned with the record by report's keep-days sweep.
+# Initialised here, after the single-flight gate, so a duplicate that stood
+# down leaves no archive at all. Truncated, not appended: `crab job dispatch`
+# re-dispatches a queued record under its own id, and a stale trace in front
+# of a fresh run would read as the fresh run's opening acts.
+STREAM_ARCHIVE="$JOBS_DIR/$ID.stream.log"
+: > "$STREAM_ARCHIVE"
 # The pid and its start time let `crab jobs` tell a hard-killed job from a
 # running one — a SIGKILLed worker never gets to write its own outcome. The
 # same write moves the sidecar off `dispatched`: the worker exists now, and
 # state=running is its first word (specs/jobs.md rule 9).
 "$LIB_DIR/job-status" set "$STATUS" state=running pid=$$ pidstart="$(_proc_starttime $$)" \
-    stream="$STREAMLOG" steerable="$JOB_STEERABLE"
+    stream="$STREAMLOG" stream_archive="$STREAM_ARCHIVE" steerable="$JOB_STEERABLE"
 # systemctl stop TERMs the whole unit: claude dies first, then this trap runs.
 # Without it a deliberately stopped job would look identical to a crashed one.
 # The day journal gets the stop too, with whatever log the job managed to write.
@@ -289,7 +302,7 @@ for JOB_TRY_MODEL in $JOB_MODEL_WALK; do
 
 $TASK" </dev/null 2>&1 \
                     | CODEX_STREAM_MODEL="$CODEX_SLUG" "$LIB_DIR/codex-stream" \
-                    | tee -a "$STREAMLOG" \
+                    | tee -a "$STREAMLOG" "$STREAM_ARCHIVE" \
                     | "$LIB_DIR/job-log-stream" >> "$LOG"
                 exit "${PIPESTATUS[0]}"
             )
@@ -364,7 +377,7 @@ $TASK" </dev/null 2>&1 \
                 "${CLAUDE_PROFILE_FLAGS[@]}" \
                 --append-system-prompt "$SYS" \
                 "$TASK" 2>&1 \
-                | tee -a "$STREAMLOG" \
+                | tee -a "$STREAMLOG" "$STREAM_ARCHIVE" \
                 | "$LIB_DIR/job-log-stream" >> "$LOG"
             exit "${PIPESTATUS[0]}"
         )

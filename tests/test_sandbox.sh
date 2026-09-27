@@ -220,8 +220,8 @@ printf '{\n "state": "collected",\n "pid": %s\n}\n' "$$" \
     > "$FAKEJOBS/j-done.json"
 triplets="$(_sandbox_running_jobs "$FAKEJOBS")"
 for want in "$FAKEJOBS/j-running.log" "$FAKEJOBS/j-running.json" \
-            "$FAKEJOBS/j-running.lock"; do
-    check "the live builder's triplet carries ${want##*/}" \
+            "$FAKEJOBS/j-running.lock" "$FAKEJOBS/j-running.stream.log"; do
+    check "the live builder's stream set carries ${want##*/}" \
         bash -c 'printf "%s\n" "$1" | grep -qxF "$2"' _ "$triplets" "$want"
 done
 check "a running sidecar with a dead pid earns nothing" \

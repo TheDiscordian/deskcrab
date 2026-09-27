@@ -26,8 +26,16 @@ try:
 except (OSError, ValueError) as exc:
     die("job-activity: cannot read %s: %s" % (sidecar, exc))
 
-stream = job.get("stream") or ""
-if not stream or not os.path.isfile(stream):
+# The live stream first; when it is gone (reaped, or a boot emptied the state
+# prefix), the durable archive beside the log answers instead (specs/jobs.md
+# rule 22a) — the two are fed by the same tee, so whichever exists is the
+# trace. The computed path covers a sidecar written before the field existed
+# whose archive a newer runner still left.
+candidates = [job.get("stream") or "", job.get("stream_archive") or "",
+              os.path.join(os.path.dirname(os.path.abspath(sidecar)),
+                           "%s.stream.log" % (job.get("id") or ""))]
+stream = next((c for c in candidates if c and os.path.isfile(c)), "")
+if not stream:
     die("Job %s has no readable activity stream." % (job.get("id") or "?"))
 
 rows = []

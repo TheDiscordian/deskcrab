@@ -69,7 +69,8 @@ during the very investigation that produced these specs.
        `.snap`, `.judged`, `.reported`), which its path unit rewrites on every trigger for as
        long as anything writes the watched directories;
      - the live jobs directory's own mtime line (every sidecar update is a rename inside it)
-       and the stream triplet — `<id>.log`, `<id>.json`, `<id>.lock` — of each builder whose
+       and the stream set — `<id>.log`, `<id>.json`, `<id>.lock`, `<id>.stream.log`
+       ([jobs.md](jobs.md) rule 22a) — of each builder whose
        sidecar says `running` with a live pid, enumerated once when the sandbox is built: a
        sandboxed test cannot start a REAL builder (the dispatch gates refuse a scratch jobs
        directory and `systemd-run` is stubbed), so a builder streaming out there is never the

@@ -435,7 +435,10 @@ def cmd_report(argv):
         done_at = job.get("finished_epoch", job.get("started_epoch", now))
         if (job.get("state") not in ("running", "dispatched", "queued")
                 and now - done_at > keep_days * 86400):
-            for ext in (".json", ".log", ".lock"):
+            # .stream.log is the durable tool-call trace (specs/jobs.md rule
+            # 22a): it lives and dies with the record, never with any stream
+            # reaping.
+            for ext in (".json", ".log", ".stream.log", ".lock"):
                 try:
                     os.unlink(job["_path"][:-len(".json")] + ext)
                 except OSError:
