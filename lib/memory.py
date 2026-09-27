@@ -2785,6 +2785,15 @@ _CODEX_RESET_MONTHS = ("january", "february", "march", "april", "may", "june",
                        "december")
 
 
+def codex_cooling_line(until):
+    """The standing cooldown, in the one sentence every reader of it gets:
+    run_codex raises it mid-flight, and cmd_ingest's door gate (rule 30a)
+    prints it before anything is spent."""
+    return ("the codex engine is cooling until %s — the judge cannot judge, "
+            "and no cheaper model may judge in its place"
+            % codex_cooling_clock(until))
+
+
 def codex_limit_reset_parse(text):
     """Epoch of the reset time the refusal itself quotes, else None."""
     for m in _CODEX_RESET_RE.finditer(text or ""):
@@ -2852,10 +2861,7 @@ def run_codex(prompt, model, effort, timeout=600, kind="ingest"):
     slug = codex_model_resolve(model)
     until = codex_cooling_until()
     if until is not None:
-        raise RuntimeError(
-            "the codex engine is cooling until %s — the judge cannot judge, "
-            "and no cheaper model may judge in its place"
-            % codex_cooling_clock(until))
+        raise RuntimeError(codex_cooling_line(until))
     env = {k: v for k, v in os.environ.items() if k != "OPENAI_API_KEY"}
     instr = None
     t0 = time.time()
@@ -2966,6 +2972,20 @@ def extract_candidates(material, model, prompt=None, effort="high"):
 
 
 def cmd_ingest(store, args):
+    # Rule 30a: the cooldown question is asked before the spend. When the
+    # judge is a codex name and the engine is already cooling, the night
+    # fails HERE — before decay, before the header, before stage 1's first
+    # summariser call, before any ledger entry — with the same standing line
+    # stage 2 would otherwise raise a whole paid summarisation later. Same
+    # outcome as that raise (no fallback judge, cursor held, stamp refused,
+    # the day's material still queued for a run the judge can attend), at
+    # zero token cost. --from-json consults no model, so nothing gates it.
+    if not args.from_json and model_backend(args.model) == "codex":
+        until = codex_cooling_until()
+        if until is not None:
+            print(codex_cooling_line(until), file=sys.stderr)
+            return 1
+
     cursor_path = os.path.join(store.dir, "ingest-cursor.json")
     cursor = {}
     if os.path.isfile(cursor_path):

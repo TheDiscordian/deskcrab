@@ -2280,6 +2280,131 @@ class TestIngest(StoreCase):
             os.path.exists(os.path.join(self.dir, "ingest-cursor.json")),
             "a dry run advanced the cursor")
 
+    def test_codex_cooldown_gates_ingest_before_the_summariser(self):
+        """memory-recall.md rule 30a: with a codex-named judge already
+        cooling, the ingest fails at the door — before decay, before the
+        header, before one summariser call, before any ledger entry. Before
+        the gate, stage 1 ran to completion and stage 2's run_codex raised,
+        so every night of a multi-day codex limit bought a full day's
+        summarisation and threw it away (found 2026-09-22)."""
+        jdir = os.path.join(self.dir, "journal")
+        os.makedirs(jdir)
+        with open(os.path.join(jdir, "2026-09-22.jsonl"), "w") as f:
+            f.write(json.dumps(
+                {"time": "2026-09-22T09:00:00-0400", "kind": "desktop",
+                 "user": "a day worth summarising", "reply": "noted"}) + "\n")
+        state = os.path.join(self.dir, "codex-state")
+        with open(state, "w") as f:
+            f.write("blocked-until\t%d\ttest limit\treported\n"
+                    % (int(time.time()) + 6 * 3600))
+        # Every road past the gate fails the test in its own name: the decay
+        # pass (the gate stands before ANY mutation), and run_model (both
+        # stages' only way to a model or a ledger line).
+        self.store.decay_pass = lambda: self.fail(
+            "decay ran despite the standing cooldown")
+        real_run = memory.run_model
+        memory.run_model = lambda *a, **k: self.fail(
+            "a model was consulted despite the standing cooldown")
+        old_state = os.environ.get("DESKCRAB_CODEX_STATE")
+        os.environ["DESKCRAB_CODEX_STATE"] = state
+        try:
+            out, err = io.StringIO(), io.StringIO()
+            with contextlib.redirect_stdout(out), \
+                    contextlib.redirect_stderr(err):
+                rc = memory.cmd_ingest(self.store, Namespace(
+                    dry_run=False, from_json=None, journal_dir=jdir,
+                    transcripts_dir=os.path.join(self.dir, "none"),
+                    model="gpt-5.6-sol", effort="high",
+                    summary_model="sonnet", max_chars=150000))
+        finally:
+            memory.run_model = real_run
+            if old_state is None:
+                os.environ.pop("DESKCRAB_CODEX_STATE", None)
+            else:
+                os.environ["DESKCRAB_CODEX_STATE"] = old_state
+        self.assertEqual(rc, 1)
+        self.assertIn("the codex engine is cooling until", err.getvalue())
+        self.assertNotIn("new chunks", out.getvalue(),
+                         "the header claimed a night that never began")
+        self.assertFalse(
+            os.path.exists(os.path.join(self.dir, "ingest-cursor.json")),
+            "a gated ingest advanced the cursor")
+
+    def test_codex_cooldown_does_not_gate_from_json(self):
+        """Rule 30a's last clause: --from-json consults no model, so a
+        standing cooldown must not refuse it."""
+        cfile = os.path.join(self.dir, "cands.json")
+        with open(cfile, "w") as f:
+            json.dump([{"text": "The deadline moved to Friday.",
+                        "kind": "note"}], f)
+        state = os.path.join(self.dir, "codex-state")
+        with open(state, "w") as f:
+            f.write("blocked-until\t%d\ttest limit\treported\n"
+                    % (int(time.time()) + 6 * 3600))
+        old_state = os.environ.get("DESKCRAB_CODEX_STATE")
+        os.environ["DESKCRAB_CODEX_STATE"] = state
+        try:
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                rc = memory.cmd_ingest(self.store, Namespace(
+                    dry_run=True, from_json=cfile,
+                    journal_dir=os.path.join(self.dir, "nojournal"),
+                    transcripts_dir=os.path.join(self.dir, "none"),
+                    model="gpt-5.6-sol", effort="high",
+                    summary_model="sonnet", max_chars=150000))
+        finally:
+            if old_state is None:
+                os.environ.pop("DESKCRAB_CODEX_STATE", None)
+            else:
+                os.environ["DESKCRAB_CODEX_STATE"] = old_state
+        self.assertEqual(rc, 0)
+        self.assertIn("would add [note]", out.getvalue())
+
+    def test_codex_cooldown_gate_through_the_cli(self):
+        """Rule 30a end to end: the command itself exits 1 with the cooling
+        line, no header, no model process booted, no ledger entry, and no
+        cursor written. Both engine binaries are pinned to a stub that leaves
+        a marker, so 'the summariser was never reached' is asserted on the
+        stub's own witness rather than on output alone."""
+        jdir = os.path.join(self.dir, "journal")
+        os.makedirs(jdir)
+        with open(os.path.join(jdir, "2026-09-22.jsonl"), "w") as f:
+            f.write(json.dumps(
+                {"time": "2026-09-22T09:00:00-0400", "kind": "desktop",
+                 "user": "a day worth summarising", "reply": "noted"}) + "\n")
+        state = os.path.join(self.dir, "codex-state")
+        with open(state, "w") as f:
+            f.write("blocked-until\t%d\ttest limit\treported\n"
+                    % (int(time.time()) + 6 * 3600))
+        marker = os.path.join(self.dir, "model-was-run")
+        stub = os.path.join(self.dir, "engine-stub")
+        with open(stub, "w") as f:
+            f.write("#!/bin/sh\ntouch '%s'\ncat >/dev/null\necho '[]'\n"
+                    % marker)
+        os.chmod(stub, 0o755)
+        metrics = os.path.join(self.dir, "metrics")
+        env = dict(os.environ, DESKCRAB_MEMORY_DIR=self.dir,
+                   XDG_RUNTIME_DIR=self.dir, DESKCRAB_CODEX_STATE=state,
+                   CLAUDE_BIN=stub, CODEX_BIN=stub,
+                   DESKCRAB_METRICS_DIR=metrics)
+        proc = subprocess.run(
+            [sys.executable, os.path.join(REPO, "lib", "memory.py"),
+             "ingest", "--journal-dir", jdir,
+             "--transcripts-dir", os.path.join(self.dir, "none"),
+             "--model", "gpt-5.6-sol", "--summary-model", "sonnet"],
+            capture_output=True, text=True, env=env)
+        self.assertEqual(proc.returncode, 1, proc.stderr)
+        self.assertIn("the codex engine is cooling until", proc.stderr)
+        self.assertNotIn("new chunks", proc.stdout + proc.stderr)
+        self.assertFalse(os.path.exists(marker),
+                         "an engine binary was booted despite the cooldown")
+        self.assertFalse(os.path.exists(metrics),
+                         "a ledger entry was written for a night that "
+                         "never began")
+        self.assertFalse(
+            os.path.exists(os.path.join(self.dir, "ingest-cursor.json")),
+            "a gated ingest advanced the cursor")
+
     def test_journal_delta_and_cursor(self):
         jdir = os.path.join(self.dir, "journal")
         os.makedirs(jdir)

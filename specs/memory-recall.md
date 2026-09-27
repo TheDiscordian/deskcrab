@@ -328,6 +328,16 @@ life, and she re-reads that store every single turn.
     `OPENAI_API_KEY`, honours the shared codex cooldown before booting and records it on a limit
     refusal — and never falls back to a cheaper model, because the judge's failure MUST fail the
     ingest rather than hand retention to a tier forbidden to judge (nightly.md rule 14e).
+30a. **The cooldown question is asked before the spend.** When the ingest judge is a codex name
+    and the shared cooldown already stands, `cmd_ingest` MUST fail at the door: the standing
+    cooldown line printed and a non-zero exit BEFORE the decay pass, before the `ingest: N new
+    chunks` header, before stage 1's first summariser call, and before any ledger entry. The
+    night's outcome is exactly what a stage-2 refusal already bought — no fallback judge, the
+    cursor held, the stamp refused (nightly.md rule 10a), the day's material still queued — but at
+    zero token cost. Before this gate the availability question was first asked inside stage 2's
+    `run_codex`, so every night of a multi-day codex limit paid for a full day's Sonnet
+    summarisation and threw it away under a header claiming the night was under way (found
+    2026-09-22). `--from-json` consults no model and is not gated.
 41. **Ingest's `--dry-run` MUST NOT mutate the store at all** — no records added, no decay run, no
     cursor advanced; the only product is the report. The distiller still runs, and every candidate
     that survives validation is printed as what the pass WOULD add, so a dry run stays a real
