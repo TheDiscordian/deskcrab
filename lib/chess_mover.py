@@ -2334,11 +2334,12 @@ class Mover:
             elif worst[1] is None or net < 100:
                 safe.append(label)
             elif worst[0] >= MATE_LOSS:
-                if m.uci() in endorsed:
-                    backed.append(f"{label} walks into {worst[1]}, checkmate")
-                else:
-                    punished.append((worst[0],
-                                     f"{label} — {worst[1]} is checkmate"))
+                # Mated is mated, here as in the half-sweep above and in the
+                # first builder: a mating reply revokes the endorsement — no
+                # remembered win survives a move that walks into checkmate
+                # (chess-mover-amendment.md, "The reply scan").
+                punished.append((worst[0],
+                                 f"{label} — {worst[1]} is checkmate"))
             elif m.uci() in endorsed:
                 backed.append(f"{label} loses {net} to {worst[1]} "
                               "by the count")

@@ -97,7 +97,12 @@ comes to under a pawn. The rest move to their own bucket, worst reply named
 with its cost in centipawns, least-losing entry first, under words that rule
 them out absent a concrete tactical answer to the reply shown. A remembered
 win (rule 14c) is still never buried: an endorsed candidate the scan reads
-against rides the memory-backed line with both facts on it.
+against rides the memory-backed line with both facts on it — but that
+carve-out is for material costs alone. A worst reply that is checkmate
+revokes the endorsement in BOTH verdict builders, the same treatment the
+mate half-sweep below and the two-ply sweep give it: the candidate lands in
+the punished bucket at mate cost, and no remembered win survives a move that
+walks into checkmate, whichever sweep finds the mate.
 
 A candidate the destination-square test has already priced skips the full
 scan — but never the mate half of it. Losing material and being mated are not

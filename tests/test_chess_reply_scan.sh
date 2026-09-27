@@ -153,6 +153,54 @@ printf '%s\n' "$pun_line" | grep -q "f7f6.*checkmate" \
   && ok "the f6 self-mate is named as checkmate, not priced as a pawn count" \
   || fail "f6 mate entry missing: $pun_line"
 
+# --- endorsement does not survive a mate-in-one reply -----------------------
+# The open defect from the browser-064 record: the prompt builder routed an
+# ENDORSED candidate whose worst reply is checkmate onto the memory-backed
+# line ("walks into ..., checkmate") — presented as a remembered win with a
+# concrete reason — instead of punishing it. On the Bg6 board, f6 loses
+# nothing on its own square and Qxe8# answers it; with memory stubbed to
+# endorse f7f6, the endorsement must be revoked: no backed entry, the
+# checkmate verdict in the punished bucket, ranked at mate cost behind every
+# material number (specs/chess-mover-amendment.md, "The reply scan").
+out="$("$PY" -B - <<EOF
+import sys; sys.path.insert(0, "$REPO/lib")
+import chess, chess_mover
+board = chess.Board("$BG6")
+move = chess.Move.from_uci("f7f6")
+# The fixture's own premises, so a board change fails loudly here:
+assert chess_mover.material_loss(board, move) <= 0, "f6 no longer survives the destination-square test"
+loss, san, _ = chess_mover.worst_reply(board, move)
+assert loss >= chess_mover.MATE_LOSS and san == "Qxe8#", (loss, san)
+real = chess_mover.memory_sections
+chess_mover.memory_sections = lambda b: ([], {"f7f6"}, None)
+try:
+    mover = chess_mover.Mover(play=lambda job, mv: True, log=lambda *a: None)
+    job = {"side": "black", "opponent": "fixture", "gid": "fixture-030",
+           "ply": board.ply(), "fen": board.fen(), "history": "(fixture)",
+           "key": "fixture"}
+    prompt = mover._prompt(job, board)
+finally:
+    chess_mover.memory_sections = real
+lines = prompt.splitlines()
+backed = next((l for l in lines if "verify it on this board" in l), "")
+assert "f7f6" not in backed, f"endorsed-into-mate rides the backed line: {backed}"
+assert "walks into" not in prompt, "the backed walks-into wording survived"
+safe = next((l for l in lines if "do not lose material" in l), "")
+assert "f7f6" not in safe, f"endorsed-into-mate reads safe: {safe}"
+pun = next((l for l in lines if "reply punishes" in l), "")
+entries = pun.split(": ", 1)[1].split("; ")
+mine = [e for e in entries if "f7f6" in e]
+assert mine and "Qxe8# is checkmate" in mine[0], f"no checkmate verdict for f6: {pun}"
+# least bad first: the mate sorts behind the material punishments (f5g6 among them)
+assert entries.index(mine[0]) > next(
+    i for i, e in enumerate(entries) if "f5g6" in e), f"mate not ranked at mate cost: {pun}"
+print("checked")
+EOF
+)"
+[ "$out" = "checked" ] \
+  && ok "a memory endorsement is revoked by a mate-in-one reply, punished not backed" \
+  || fail "endorsement into mate-in-one: $out"
+
 # --- the final UCI-only boundary ------------------------------------------
 out="$("$PY" -B - <<EOF
 import json, sys; sys.path.insert(0, "$REPO/lib")
