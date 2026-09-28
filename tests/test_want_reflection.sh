@@ -190,7 +190,7 @@ exit 0
 CRAB
 chmod +x "$T/crab-ok"
 mkdir -p "$T/lib-order"
-for n in claudism-scan promise-check eng-merge want-reflect night-work; do
+for n in claudism-review promise-check eng-merge want-reflect night-work; do
     printf '#!/bin/bash\necho "%s: stub — nothing to do"\nexit 0\n' "$n" \
         > "$T/lib-order/$n"
     chmod +x "$T/lib-order/$n"

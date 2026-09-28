@@ -421,6 +421,54 @@ class TestReconcile(StoreCase):
         with self.assertRaises(ValueError):
             self.store.link_supersede(new, old)
 
+    def test_rewrite_rewords_a_record_and_keeps_its_standing(self):
+        # Rule 28e: the same claim in new words — same kind, pin, topics and
+        # key, the old row superseded rather than deleted.
+        old = self._directive("He wants the assistant to stop narrating "
+                              "her bookkeeping.")
+        self.store.db.execute(
+            "UPDATE memories SET pinned=1, topics='voice', lookup_key="
+            "'narrating bookkeeping aloud' WHERE id=?", (old,))
+        self.store.db.commit()
+        with contextlib.redirect_stdout(io.StringIO()):
+            memory.cmd_rewrite(self.store, Namespace(
+                id=old, text=["I keep my bookkeeping to myself."]))
+        new = self.store.db.execute(
+            "SELECT id FROM memories WHERE supersedes=?", (old,)).fetchone()[0]
+        row = self.store.db.execute(
+            "SELECT kind, status, pinned, topics, lookup_key, text"
+            " FROM memories WHERE id=?", (new,)).fetchone()
+        self.assertEqual(row, ("directive", "active", 1, "voice",
+                               "narrating bookkeeping aloud",
+                               "I keep my bookkeeping to myself."))
+        self.assertEqual(
+            self.store.db.execute("SELECT status, superseded_by FROM memories"
+                                  " WHERE id=?", (old,)).fetchone(),
+            ("superseded", new))
+
+    def test_peek_selects_without_refreshing_standing(self):
+        # Rule 28f: sleep's review asks what a prompt would have carried
+        # without refreshing any record against decay.
+        rid = self._directive("Tea is brewed with the pot warmed first.")
+        self.store.db.execute(
+            "UPDATE memories SET last_seen='2026-01-01T00:00:00-05:00' WHERE id=?",
+            (rid,))
+        self.store.db.commit()
+        rows, _, _, _ = self.store.search("how is tea brewed", peek=True)
+        self.assertIn(rid, [r[0] for r in rows])
+        self.assertEqual(self.store.db.execute(
+            "SELECT last_seen FROM memories WHERE id=?", (rid,)).fetchone()[0],
+            "2026-01-01T00:00:00-05:00")
+
+    def test_rewrite_refuses_other_kinds(self):
+        eid = self.store.insert("We watched the rain.", kind="episodic")
+        before = self.store.db.execute(
+            "SELECT count(*) FROM memories").fetchone()[0]
+        with self.assertRaises(SystemExit):
+            memory.cmd_rewrite(self.store, Namespace(id=eid, text=["x"]))
+        self.assertEqual(self.store.db.execute(
+            "SELECT count(*) FROM memories").fetchone()[0], before)
+
     def test_cli_refuses_swapped_rows_created_in_the_same_second(self):
         # Creation stamps have only second precision. The id must break the
         # tie or the most common back-to-back correction bypasses the

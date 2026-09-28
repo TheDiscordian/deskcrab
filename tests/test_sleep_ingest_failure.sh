@@ -50,7 +50,7 @@ chmod +x "$T/crab-ok"
 stub_phases() {  # <lib dir> <marker dir>
     local n
     mkdir -p "$1" "$2"
-    for n in claudism-scan eng-merge want-reflect night-work promise-check; do
+    for n in claudism-review eng-merge want-reflect night-work promise-check; do
         printf '#!/bin/bash\necho "%s: stub — ran"\ntouch "%s/%s.ran"\nexit 0\n' \
             "$n" "$2" "$n" > "$1/$n"
         chmod +x "$1/$n"
@@ -76,7 +76,7 @@ if [ ! -f "$T/data-bad/deskcrab/last-slept" ]; then
 else
     fail "a failed ingest must not stamp" "$(cat "$T/data-bad/deskcrab/last-slept")"
 fi
-for n in claudism-scan promise-check eng-merge want-reflect night-work; do
+for n in claudism-review promise-check eng-merge want-reflect night-work; do
     if [ -f "$T/ran-bad/$n.ran" ]; then
         ok "the $n phase still ran"
     else
@@ -89,7 +89,7 @@ check "the memory source-watch phase still ran" grep -q '^watch:' "$LOG"
 check "the night log says plainly it runs on a FAILED ingest" \
     grep -q "FAILED ingest" "$LOG"
 notice_ln="$(grep -n 'FAILED ingest' "$LOG" | head -1 | cut -d: -f1)"
-phase_ln="$(grep -n '^claudism-scan:' "$LOG" | head -1 | cut -d: -f1)"
+phase_ln="$(grep -n '^claudism-review:' "$LOG" | head -1 | cut -d: -f1)"
 if [ -n "$notice_ln" ] && [ -n "$phase_ln" ] && [ "$notice_ln" -lt "$phase_ln" ]; then
     ok "and says so BEFORE the first phase, so no reader mistakes the night for whole"
 else
@@ -121,7 +121,7 @@ if [ -f "$T/data-ok/deskcrab/last-slept" ]; then
 else
     fail "a good night must stamp" "$out"
 fi
-for n in claudism-scan promise-check eng-merge want-reflect night-work; do
+for n in claudism-review promise-check eng-merge want-reflect night-work; do
     if [ -f "$T/ran-ok/$n.ran" ]; then
         ok "the $n phase ran"
     else

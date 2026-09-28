@@ -4,7 +4,7 @@
 # section owed for the 2026-08-11 audit (H3 / RC-6). `crab memory` exec'd
 # lib/memory.py carrying only the MEMORY_* knobs, so the nightly ingest ran
 # stock `claude` with the walk collapsed to one login; lib/sleep-nightly
-# sourced nothing, so its direct claudism-scan rewrite pass did the same; and
+# sourced nothing, so its direct nightly children did the same; and
 # detach_turn_child's setsid fallback dropped CLAUDE_BIN and the selected
 # login. All three now export the harness, the configured list, the one
 # shared limit signature, and the shared state file path, and seed
@@ -87,7 +87,7 @@ check_eq "the shared state file path goes with it" \
     "$(envfact "$T/memory-env" ACCOUNT_STATE_FILE)" "$ACCOUNT_STATE_FILE"
 
 echo
-echo "sleep-nightly — the claudism-scan child arrives holding the same set:"
+echo "sleep-nightly — the claudism-review child arrives holding the same set:"
 # The night scaffold of test_sleep_phase_silence.sh: sleep-nightly's functions
 # sourced with LIB_DIR pointed at a stub phase set, the ingest a healthy fake.
 # The exports under test run at source time, before cmd_run fires a phase.
@@ -100,7 +100,7 @@ exit 0
 CRAB
 chmod +x "$T/crab-ok"
 mkdir -p "$T/night-lib"
-make_dumper "$T/night-lib/claudism-scan" "$T/scan-env"
+make_dumper "$T/night-lib/claudism-review" "$T/scan-env"
 for n in promise-check night-work; do
     printf '#!/bin/bash\necho "%s: stub — nothing to do"\nexit 0\n' "$n" > "$T/night-lib/$n"
     chmod +x "$T/night-lib/$n"
@@ -110,7 +110,7 @@ env CLAUDE_CONFIG_DIR="$T/stale" CLAUDE_FALLBACK_CONFIG_DIR="$T/two" \
     CRAB_BIN="$T/crab-ok" XDG_DATA_HOME="$T/night-data" \
     bash -c 'source "$1" || exit 9; LIB_DIR="$2"; cmd_run' \
     _ "$REPO/lib/sleep-nightly" "$T/night-lib" >/dev/null 2>&1
-[ -s "$T/scan-env" ] || die "the night never reached its claudism-scan child"
+[ -s "$T/scan-env" ] || die "the night never reached its claudism-review child"
 check_eq "the harness reaches the nightly child" \
     "$(envfact "$T/scan-env" CLAUDE_BIN)" "$SANDBOX_BIN/claude"
 check_eq "the nightly child starts where the selection stands now, not on the leftover" \

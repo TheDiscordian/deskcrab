@@ -198,7 +198,7 @@ def load_patterns(path):
     return entries, bad
 
 
-# The mention test — specs/nightly.md rule 47, specs/speech-output.md rule
+# The mention test — specs/turn-pipeline.md rule 32b, specs/speech-output.md rule
 # 50. Words inside a code span or an unclosed double quote are quoted, not
 # said; a sentence that names its own entry, or that carries the vocabulary
 # of the list itself, is talking about the habit rather than having it. The

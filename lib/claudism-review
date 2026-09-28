@@ -1,0 +1,115 @@
+#!/usr/bin/env bash
+# claudism-review — sleep's review of the day for claudisms: the moments she
+# sounded like a generic assistant instead of herself (specs/nightly.md rules
+# 39-44). Part of sleep's work on her prompt and her memories: it finds the
+# material that pulled her voice toward the assistant register and fixes that
+# material, so she wakes with the change already made. Its only outputs are
+# edits — a memory record reworded or retired, an exact-text replacement in
+# her persona sheet or a conduct file, a replacement line in her phrase list
+# revised or revoked. No report, no wake, no counts, no speech.
+#
+#   claudism-review run [YYYY-MM-DD]   review that day (default: yesterday)
+#
+# Knobs, environment or deskcrab.conf (this file sources lib/common.sh):
+#   CLAUDISM_REVIEW_ENABLED=1          0/no/off/false switches the phase off
+#   CLAUDISM_REVIEW_MODEL / _EFFORT    default the night's one judge (rule 14c-i)
+#   CLAUDISM_REVIEW_TIMEOUT=900        seconds for the one call
+#   CLAUDISM_REVIEW_MAX_EDITS=6        edits applied in one night (rule 42)
+#   CLAUDISM_REVIEW_RECALL_TURNS=40    turns whose recalled records are shown
+#   CLAUDISM_REVIEW_JOURNAL_BUDGET=60000   bytes of the day, cut announced
+#   CLAUDISM_REVIEW_CONDUCT_BUDGET=160000  bytes of conduct bodies, same
+#   CLAUDISM_REVIEW_DRY_RUN=0          1 prints the planned edits, makes none
+#
+# Every failure path exits 0 with a line on the night log: a broken review
+# costs only itself, never the night (rule 44).
+set -uo pipefail
+
+# readlink -f before dirname (specs/nightly.md rule 6a).
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+# shellcheck source=common.sh
+. "$SCRIPT_DIR/lib/common.sh"
+# shellcheck source=nightly-judge
+. "$LIB_DIR/nightly-judge"
+
+CLAUDISM_REVIEW_MODEL="${CLAUDISM_REVIEW_MODEL:-${NIGHT_JUDGE_MODEL:-gpt-5.6-sol}}"
+CLAUDISM_REVIEW_EFFORT="${CLAUDISM_REVIEW_EFFORT:-${NIGHT_JUDGE_EFFORT:-high}}"
+CRAB="${CRAB_BIN:-$HOME/.local/bin/crab}"
+SESSION_KIND=claudism-review
+
+say() { printf 'claudism-review: %s\n' "$1"; }
+
+cmd_run() {
+    case "${CLAUDISM_REVIEW_ENABLED:-1}" in
+        0|no|off|false)
+            say "switched off (CLAUDISM_REVIEW_ENABLED=${CLAUDISM_REVIEW_ENABLED:-})"
+            return 0 ;;
+    esac
+
+    local DAY H JFILE WORK
+    DAY="${1:-$(date -d yesterday +%F 2>/dev/null || date +%F)}"
+    H="$(deskcrab_home)"
+    JFILE="$DAY_JOURNAL_DIR/$DAY.jsonl"
+    if [ ! -f "$JFILE" ]; then
+        say "no journal for $DAY — nothing to review"
+        return 0
+    fi
+    WORK="$(mktemp -d "${TMPDIR:-/tmp}/deskcrab-claudism-review-XXXXXX")"
+    # shellcheck disable=SC2064
+    trap "rm -rf '$WORK'" EXIT
+
+    export CR_DAY="$DAY" CR_JFILE="$JFILE" CR_WORK="$WORK" CR_CRAB="$CRAB" \
+        CR_NAME="${ASSISTANT_NAME:-}" \
+        CR_FLAGS="$CLAUDISM_FLAGS_DIR/$DAY.jsonl" CR_LIST="$CLAUDISMS_FILE" \
+        CR_PERSONA="${CUSTOM_PROMPT:-}" CR_CONDUCT="$H/conduct" \
+        CR_BACKUP="$H/sleep/claudism-review/$DAY" \
+        CR_MAX_EDITS="${CLAUDISM_REVIEW_MAX_EDITS:-6}" \
+        CR_RECALL_TURNS="${CLAUDISM_REVIEW_RECALL_TURNS:-40}" \
+        CR_JOURNAL_BUDGET="${CLAUDISM_REVIEW_JOURNAL_BUDGET:-60000}" \
+        CR_CONDUCT_BUDGET="${CLAUDISM_REVIEW_CONDUCT_BUDGET:-160000}"
+
+    if ! python3 "$LIB_DIR/claudism_review.py" material > "$WORK/prompt.txt"; then
+        say "could not assemble the day's material — nothing is reviewed tonight"
+        return 0
+    fi
+    if [ ! -s "$WORK/prompt.txt" ]; then
+        return 0   # the material step said why on stderr
+    fi
+
+    say "reviewing the day of $DAY — most nights change nothing"
+    local OUT
+    if ! OUT="$(nightly_judge_walk "$CLAUDISM_REVIEW_MODEL" "$CLAUDISM_REVIEW_EFFORT" \
+            "${CLAUDISM_REVIEW_TIMEOUT:-900}" claudism-review \
+            '^(NOTHING|EDITS)([^A-Za-z0-9]|$)' < "$WORK/prompt.txt")"; then
+        say "no answer came back from $CLAUDISM_REVIEW_MODEL — nothing is changed tonight"
+        return 0
+    fi
+    printf '%s\n' "$OUT" > "$WORK/answer.txt"
+
+    # Plan first: every edit validated against what the judge was shown, and
+    # the files it will touch named, so the writes are declared (rule 6) and
+    # the files copied aside (rule 43) before a byte changes.
+    if ! python3 "$LIB_DIR/claudism_review.py" plan > "$WORK/files.txt"; then
+        return 0
+    fi
+    case "${CLAUDISM_REVIEW_DRY_RUN:-0}" in
+        1|yes|on|true)
+            python3 "$LIB_DIR/claudism_review.py" show
+            say "dry run — nothing is changed"
+            return 0 ;;
+    esac
+    if [ -s "$WORK/files.txt" ]; then
+        local -a FILES=()
+        mapfile -t FILES < "$WORK/files.txt"
+        touch_suppress "${FILES[@]}" >/dev/null 2>&1 \
+            || say "could not declare the writes — her own edits may be reported to her as an outsider's"
+    fi
+    python3 "$LIB_DIR/claudism_review.py" apply
+    return 0
+}
+
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+    case "${1:-}" in
+        run) shift; cmd_run "$@" ;;
+        *)   echo "Usage: claudism-review run [YYYY-MM-DD]" >&2; exit 2 ;;
+    esac
+fi

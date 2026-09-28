@@ -580,7 +580,7 @@ for reduction here — every rule below makes the queue **visible and bounded**,
 41. The promise auditor (`promise-audit`), the promise checker (`promise-check`), the job runner
     (`job-runner`), the self-change watcher
     (`notice-selfchange`), the new-file watcher (`notice-newfiles`), the watcher's canary
-    (`canary`), the nightly claudism review (`claudism-review`) and the chain floor
+    (`canary`) and the chain floor
     (`wake-chain-floor`) all book wakes in her name. Each MUST pass its own
     identity as `booked_by`. Three further identities reach a record without being subsystems:
     `outage-retry`, when a wake that failed before the model ran — or was cut off mid-run by a

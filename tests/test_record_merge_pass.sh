@@ -411,7 +411,7 @@ echo "the wiring: sleep runs the pass after the sweep, before the night's work,"
 echo "and WITH --apply — the fold gate, not the flag, is what stays conservative:"
 SEQ="$T/phase-seq"
 mkdir -p "$T/stub-lib"
-for n in claudism-scan promise-check eng-merge night-work; do
+for n in claudism-review promise-check eng-merge night-work; do
     cat > "$T/stub-lib/$n" <<STUB
 #!/bin/bash
 printf '%s %s\n' "$n" "\$*" >> "$SEQ"

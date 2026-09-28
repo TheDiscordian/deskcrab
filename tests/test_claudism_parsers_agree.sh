@@ -125,23 +125,3 @@ DOUT="$(CLAUDISM_FLAGS_DIR="$DFLAGS" CLAUDISM_LIST="$DLIST" \
 check "the feed-forward names it by the same family" \
     contains "$DOUT" "(the borrowed-jargon move)"
 check "and quotes the line as said" contains "$DOUT" "$DSENT"
-
-DJ="$SANDBOX/drain-journal"
-DOUTDIR="$SANDBOX/drain-claudisms"
-mkdir -p "$DJ"
-printf '{"epoch": %s, "time": "%s", "kind": "desktop", "pid": 4243, "user": "?", "reply": "%s"}\n' \
-    "$DEPOCH" "$(date -d "@$DEPOCH" +%Y-%m-%dT%H:%M:%S%z)" "$DSENT" > "$DJ/$DDAY.jsonl"
-cat > "$SANDBOX/drain-crab" <<'CRAB'
-#!/bin/bash
-exit 0
-CRAB
-chmod +x "$SANDBOX/drain-crab"
-CRAB_BIN="$SANDBOX/drain-crab" DAY_JOURNAL_DIR="$DJ" CLAUDISM_LIST="$DLIST" \
-    CLAUDISM_DIR="$DOUTDIR" CLAUDISM_FLAGS_DIR="$SANDBOX/drain-scan-flags" \
-    CLAUDISM_REWRITES=0 "$SANDBOX_REPO/lib/claudism-scan" run "$DDAY" >/dev/null 2>&1
-check "the nightly scan scores it under the same family" \
-    contains "$(cat "$DOUTDIR/functions.tsv" 2>/dev/null)" \
-    "${DDAY}${TAB}borrowed-jargon${TAB}1${TAB}0"
-check "and counts it under its own key" \
-    contains "$(cat "$DOUTDIR/counts.tsv" 2>/dev/null)" \
-    "${TAB}the-drain${TAB}1"

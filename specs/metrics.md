@@ -44,7 +44,7 @@ two share a directory and nothing else.
 4. The session kinds are: `turn` (desk), `phone`, `wake`, `job`, `summariser`, `memory-judge`,
    `ingest` (the ingest's retention judge), `ingest-summary` (the ingest's stage-1 summariser,
    [memory-recall.md](memory-recall.md) rule 27), `chess`, `promise-audit`, `promise-check`,
-   `claudism-mirror`, `claudism-scan`, `eng-merge` (the twin-merge judge),
+   `claudism-mirror`, `claudism-review` (sleep's claudism review), `eng-merge` (the twin-merge judge),
    `night-work` (the night-work selector). A
    backfilled record whose kind cannot be told from its artifact carries the best approximation
    and `approx: true` — never a guess dressed as knowledge.
@@ -91,7 +91,7 @@ two share a directory and nothing else.
 13. Every CLI invocation path appends to the ledger at the end of its run, from the stream it
     just wrote, before that stream is pruned or deleted: the desk turn and phone turn (one hook,
     in the shared generation walk), the wake chain, the detached job, the conversation
-    summariser, the claudism mirror and the nightly claudism-scan rewrite pass, the promise
+    summariser, the claudism mirror and sleep's claudism review, the promise
     audit, the promise checker, the nightly night-work selector, the memory judge, the
     memory ingest distiller, and the chess mover. A new invocation path added without a ledger
     hook is incomplete.
@@ -99,7 +99,7 @@ two share a directory and nothing else.
     promise checker, the night-work selector) record each attempt inside their walk, before
     the truncation, or the refused attempts vanish.
 15. The Python callers that used to run the CLI in plain text mode (the memory judge, the
-    ingest distiller — and through them the claudism-scan rewrite pass — and the chess mover)
+    ingest distiller and the chess mover)
     ask for `--output-format json` so the run's own result object carries usage, and read their
     answer from its `result` field. A stdout that does not parse as that object (a stub, an
     older CLI) is treated as the whole answer exactly as before, and no record is written —

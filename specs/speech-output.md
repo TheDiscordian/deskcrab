@@ -255,7 +255,7 @@ The live half of the claudism guard. Her own phrase list, held against each line
 hand-off before the synthesiser; a line that fires is repaired from her own replacement table
 where she has written one, and otherwise routed back to HER for one rewrite, and what she decides
 is what is spoken. The capture half is [turn-pipeline.md](turn-pipeline.md)
-rules 30–32 and the nightly half is [nightly.md](nightly.md) rules 39–45; the design record is
+rules 30–32 and sleep's claudism review is [nightly.md](nightly.md) rules 39–44; the design record is
 `engineering/claudism-guard-amendment.md` in her data directory.
 
 38. The check MUST run off the reader thread, at the last hand-off before the synthesiser, and a
@@ -369,11 +369,11 @@ rules 30–32 and the nightly half is [nightly.md](nightly.md) rules 39–45; th
     rewrite reached for — and seventeen of those held a defensible sentence mid-draft and sent
     it back to be reworded. So before holding or calling, the live path MUST ask the SAME
     mention test the capture and the night run — `classify_use` in `lib/claudism-mirror`, one
-    parser, one mention test ([nightly.md](nightly.md) rule 47) — judged per entry, a use
+    parser, one mention test ([turn-pipeline.md](turn-pipeline.md) rule 32b) — judged per entry, a use
     anywhere in the sentence outranking any number of mentions, so a sentence holds on an
     entry it USES and never on one it merely quotes or names. A mention is never held and never
     mirror-called; its flag row still lands, `use=mention`
-    with outcome `mention` (rule 45), so the night still counts it and a wrong call stays
+    with outcome `mention` (rule 45), so the flag log still has it and a wrong call stays
     visible rather than lost. Every fire the test does not skip behaves exactly as it always
     did, its row saying `use=use`. The trade is made with open eyes: a quoted word still
     reaches the ear, and a word the listener must not hear still belongs in the display half —
@@ -382,13 +382,13 @@ rules 30–32 and the nightly half is [nightly.md](nightly.md) rules 39–45; th
     answer fires as before, and a mention row that cannot be written holds as before. Her
     replace table (rules 47–49) is unchanged either way.
     An entry marked `- live: no` arms only the
-    turn-close capture and the nightly review, never the mirror — the broad, urge-shaped
-    patterns that make the night's scoring honest would make the speech path stutter, so the
+    turn-close capture, never the mirror — the broad, urge-shaped
+    patterns that point sleep's review at a moment would make the speech path stutter, so the
     list carries both kinds and each half reads its own.
 51. A `rewrite` outcome is logged with the words that went out. The day's flag-log row for a
     model rewrite carries `before` — the held sentence — and `after` — her replacement as it
     was spliced — the same pair a table-swap row has carried under rule 49, so the two kinds
-    of repair read alike and the nightly reading can see what the mirror said, not only that
+    of repair read alike and sleep's review can see what the mirror said, not only that
     it said something. The row is written after the words are already decided: a row that
     cannot be written changes nothing about what is spoken or committed — logging is never a
     gate (rule 42), and the turn-close capture still records the turn regardless.
@@ -451,29 +451,6 @@ rules 30–32 and the nightly half is [nightly.md](nightly.md) rules 39–45; th
     rewrite ever removed it. That is a one-way ratchet installing a tic the voice never chose —
     the cure shaping the patient. The prompt names the failure, not just the prohibition, so the
     model knows which move it is being asked not to make.
-
-    The nightly watch on this rule — the review's "cure shaping the voice" section — MUST carry a
-    denominator. A phrasing's share of the repaired lines convicts nothing by itself: repairs are
-    sentences she wrote, so any phrase she habitually uses appears "added and never removed" the
-    moment repairs are counted against only themselves. The watch fired eight lines in its first
-    nine nights and every one was false or worthless — twice on a signature phrase the user had
-    named as genuinely hers, once on a phrase whose whole-day rate a hand measurement showed flat
-    for nine nights, five times on one auth-leak artefact wearing five overlapping grams. So: a
-    repair-added phrasing is reported only when its rate across ALL of that day's spoken words —
-    spoken halves only, jobs excluded, the same population as every other rate in the report,
-    normalised per 1000 spoken words — is climbing night over night against the preceding nights
-    from the same population: at least two prior nights on record, the last three nightly rates
-    strictly rising, and tonight's rate at least one and a half times the median of the prior
-    nights'. (Chosen against the measured flat series 1.08, 1.14, 1.20, 0.81, 0.94, 1.29, 1.14
-    per 1000 words: its loudest night rose three-in-a-row to 1.29 but sat under 1.5 x its prior
-    median of 1.08, so it never fires.) Phrases on the persona-signature list — personal state
-    beside the phrase list, `CLAUDISM_SIGNATURES`, one place, never inlined in the generator —
-    are suppressed unconditionally, whatever their share or rate: a repair restoring her own
-    signature is the cure working, not the cure shaping her. The closing clause is computed,
-    never asserted: "on no list here" MAY be printed only when the gram matches no loaded list
-    pattern, and a gram a pattern does cover names that entry instead. And one tic is one line —
-    a flagged gram wholly contained in an equally-counted flagged gram is the same addition
-    counted twice, not a second finding.
 
 55. A `fix: delete` entry MUST reach the mirror as a deletion. The fired entry's `fix:` field
     rides the fire record and the mirror call's prompt, and where it reads `delete` the prompt

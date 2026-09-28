@@ -300,6 +300,16 @@ life, and she re-reads that store every single turn.
     the note. Supersession and retirement close the old note's watches. There is no dismiss operation
     and the checker never advances a baseline by itself: source change revokes unquestioned freshness;
     it does not decide that the claim is false.
+28e. **A record can be reworded without changing its claim.** `crab memory rewrite <id> <text>`
+    writes a new active record of the same kind as `<id>` — a directive or a note only, rule 28c's
+    kinds — carrying the old record's pin, topics, source, occurred date and lookup key, and links
+    it over the old one exactly as `crab memory supersede` does: the old row keeps its text and
+    provenance and leaves retrieval. Sleep's claudism review uses it to put a record in her voice
+    ([nightly.md](nightly.md) rule 41).
+28f. `crab memory recall-block --peek` selects exactly as a prompt build does and leaves every
+    record's `last_seen` untouched, so a reader that only wants to know what a prompt would have
+    carried — sleep's claudism review — never refreshes a record's standing against decay.
+
 29. **Ingest MUST NOT trim its input — it windows.** A day's journal larger than the input cap
     would lose its earliest material to a tail-clamp, so the chunk list is split into successive
     windows, each at most the cap, breaking only on whole chunk boundaries — never mid-chunk, and a

@@ -3,7 +3,8 @@
 ## PURPOSE
 
 Four scheduled processes that keep her from rotting: sleep, which ingests the day into long-term
-memory and then holds the day's spoken sentences up against her own banned-phrase list; tidy, which
+memory and then reviews her prompt and memories for whatever made her sound like a generic
+assistant instead of herself; tidy, which
 maintains the shelves; the self-change watcher, which tells her when a hand that was not hers
 changed the files that constitute her; and the canary, which proves the watcher is
 still alive. This spec owns their schedules, their guarantees, and the rule that a scheduled process
@@ -83,7 +84,7 @@ which fails silently is worse than one that does not exist.
 14b. A phase that cannot start MUST NOT look like a phase with nothing to do. Each post-ingest
     phase — the key backfill, the memory source-watch pass, the claudism review, the promise sweep, the twin-merge pass, the
     want reflection, the night's work — owes
-    the night log at least one line opening with its own name (`backfill-keys:`, `watch:`, `claudism-scan:`,
+    the night log at least one line opening with its own name (`backfill-keys:`, `watch:`, `claudism-review:`,
     `promise-check:`, `eng-merge:`, `want-reflect:`,
     `night-work:`); sleep watches each phase's stretch of the log, and when a phase exits
     leaving no such line there, sleep MUST say so loudly — `PHASE SILENT`, naming the phase and
@@ -126,9 +127,9 @@ which fails silently is worse than one that does not exist.
     NOT decide what survives, what merges, what died, or what work runs. Opus holds no sleep
     judgment role either: the 2026-08-06 phase-2 line ("what is a duplicate … Opus, always") is
     superseded on this path by the 2026-08-25 ruling, and rule 53c carries the new default. The
-    claudism review's rewrite call is not a judgment role — nothing survives or runs on its
-    answer (rules 39 and 42) — and the post-turn reinforcement judge (`MEMORY_JUDGE_MODEL`) is
-    a live-turn role, not a sleep one; neither moves under this section.
+    claudism review (rules 39-44) is a judgment role and runs on the judge. The post-turn
+    reinforcement judge (`MEMORY_JUDGE_MODEL`) is a live-turn role, not a sleep one, and does not
+    move under this section.
 14e. No cheaper model may judge in the judge's place. A judgment the judge cannot make tonight —
     the codex engine cooling, a refusal, an unparseable answer — is NOT made: the pair stands,
     the day is not swept, the round selects nothing, and the walk says so in its own name on the
@@ -205,7 +206,7 @@ which fails silently is worse than one that does not exist.
 21c. The undestinated-claims check. Beside the shelf-line check, the tidy unit runs the machine
     check `lib/tidy-claims run` over the day just ended — the journal day before the night the
     tidy runs in, her voice only: rows whose kind is not `job` (a builder's entry is a log, not
-    her speech — rule 41's own line), the display half stripped the anchored way of
+    her speech — rule 40's own line), the display half stripped the anchored way of
     [speech-output.md](speech-output.md) rules 3 and 4. The check looks for the sentences that
     vouch their own durability and cannot point at anything. A sentence is a candidate when all
     three hold at once: it reports a thing as put into writing (written down, wrote down,
@@ -471,163 +472,43 @@ which fails silently is worse than one that does not exist.
 
 ### The claudism review — part of sleep
 
-39. After the ingest — stamped when it succeeded, the FAILED-ingest notice on the log when it did
-    not (rule 10a) — sleep runs the claudism review
-    over the day that just ended. It reads the day's journal and nothing else. It MUST NOT run
-    inside a live turn, and it MUST NOT gate, mute, or rewrite anything she says or has said:
-    detection and review after the fact, only. The standing rule of
-    [speech-output.md](speech-output.md) outranks this whole feature — the moment the review grows
-    a hand on the speech path, it is the mechanism that rule forbids, and it is deleted.
-40. The phrase list is hers: personal state beside the shelves, never in this repository. Each
-    entry carries the reason the phrase is borrowed, so the list reads as prose and not as a regex
-    blob. No list means no review, silently, one log line — an empty habit is not an error.
-40a. An entry whose pattern will not compile is skipped, so that pattern never ran and the
-    night's silence is not evidence about it. The report MUST NOT call such a night clean: with
-    any entry broken, a no-catch headline says nothing was caught among the entries that ran and
-    counts the entries that did not compile, and on a night with hits or mentions the
-    broken-entry count stands immediately before the headline — the reader is never handed a
-    verdict and then corrected. The per-entry warning naming each broken entry and its error
-    remains, and a night with no broken entries reads exactly as before. The morning wake's
-    agenda (rule 44) takes the same branch as the report's headline, from the same signal: with
-    any entry broken the agenda MUST NOT say a clean night — it says plainly that entries never
-    compiled and did not run, counting and naming them — and the clean wording is kept only for
-    the genuinely clean night, no catches and no broken entries. The sentence read at half nine
-    may never contradict the report sitting beside it.
-41. The review reads only the SPOKEN half of each reply — the text above the display delimiter,
-    split the anchored, whitespace-tolerant way of [speech-output.md](speech-output.md) rules 3
-    and 4 — and never the user's words, the display half, or a job's entry. A job's journal entry
-    is a builder's log, not her voice.
-42. Every hit is quoted as its whole sentence with its turn's timestamp, beside a proposed rewrite
-    in her own voice. The rewrite is the point: step back and say it the right way — a
-    habit-breaking exercise, never a censor. The rewrite call runs under the account chain (rule
-    13 applies); a night when every login refuses still writes the report, hits included, with the
-    rewrites marked missing. Detection MUST never depend on the model.
-43. A per-phrase count accumulates night over night, so the number can be watched going down.
-    Re-running a night replaces that night's counts; it never doubles them. The running total
-    MUST be printed beside the date the phrase was last actually used, because a large total can
-    belong to a habit that stopped weeks ago and the total alone cannot say so.
-44. The review MUST surface. It books a morning event wake naming the report — on a night with
-    hits, on a clean night, and on a scan that failed. A review she never hears about is
-    surveillance, not an exercise; the wake's agenda offers awareness, never an instruction.
-45. The review declares its writes (rule 6), books through the queue's one door under its own
-    identity (`claudism-review` — [wake-queue.md](wake-queue.md) rule 41), and its failure MUST
-    NOT unstamp or fail the night: the stamp and the exit stay the ingest's own (rules 8 and 10).
-46. The list speaks in functions, not only in strings. An entry MAY declare the rhetorical move
-    it performs (`- function:`, a short slug; several entries may share one) and what a true
-    correction looks like (`- fix: delete` where the cure is striking the decoration, `- fix:
-    resay` where only a different sentence will do; unset, an entry with `replace:` lines
-    defaults to delete and any other to resay). The review MUST aggregate by function and MUST
-    report each function's uses per thousand spoken words, tonight beside its recent nights,
-    because the habit under watch is the move and not the wording: a banned member's share
-    moving to a sibling word is the same habit in a new coat, not a cure. An untagged entry
-    stands as its own function. The function table counts a caught sentence once per function
-    and classification (use or mention): when two sibling patterns fire on the same sentence,
-    that is one observed move, while two different functions in the sentence remain two. The
-    night-over-night rate table MUST carry its own denominator: a row of each night's spoken
-    word count, and a row of the rate a single use prints on that night (1000 / words). A short
-    night has coarse resolution — on 843 spoken words no rate between 0.00 and 1.19 can exist —
-    so a rate printed without the denominator beside it invites a run of single hits to be read
-    as a climb. This is rule 48a's principle applied to the one table that had escaped it: a
-    total, a rate or a verdict is stated only against the exposure that produced it.
-47. A mention is not a use. A hit whose matched words are quoted, inside a code span, or in a
-    sentence that is about the list itself — naming an entry, a ban, a flag, a pattern, a
-    rewrite, the review — MUST be classed a mention: never scored as a use, never handed to the
-    rewrite call, counted and quoted separately under its own per-thousand-words rate. Talking
-    about the drift instead of not drifting is its own failure mode and MUST stay visible;
-    dropping mentions silently would hide it, and scoring them would inflate every count the
-    moment she discusses her own review. The test is ONE implementation — `classify_use` in
-    `lib/claudism-mirror`, the library half the capture keeps line-identical, the corpus
-    reader imports, and this review loads — and since 2026-08-24 the live mirror asks it at
-    fire time as well ([speech-output.md](speech-output.md) rules 45 and 50): a live mention
-    is skipped, never held, and still lands in the flag log as `use=mention`, so nothing this
-    review counts is lost to the skip.
-48. The substitution watch. The report MUST place a function's members side by side across the
-    recent nights and say plainly when the family's total holds while its members churn — a
-    member gone quiet beside a sibling that rose is the habit changing words, not dying. The
-    verdict on the total is COMPUTED, never a fixed tail, and it is computed against a RATE: each
-    member's own uses over the spoken words of the nights THAT MEMBER existed for gives its
-    standing rate, the members' rates sum to the count expected for a night of tonight's size,
-    and the note may say the total holds only when tonight's total and that expectation agree
-    within one occurrence or a
-    quarter of the expectation, whichever is larger — an integer total against a fractional
-    expectation never lands exactly, and the notes of 2026-08-20..23 that printed "holds" over a
-    family down by half or more are the fault this band closes. A mean of nightly COUNTS is not
-    an acceptable baseline: nightly volume has moved by two orders of magnitude (25,559 spoken
-    words in a day to 174), so an unchanged count is not an unchanged habit. The 2026-09-16 note
-    called a vouching family holding at 2 against ~1.5 a night when per thousand words it had
-    risen more than fivefold, two lines under its own table of zeros. Neither may the baseline be
-    pooled across entries of different ages, and a member's nightly average MUST be taken over its
-    own nights alone: an entry added last week did not exist to be counted before it, so charging
-    it the whole record's spoken words deflates the family's standing rate and inflates every
-    verdict made against it. The 2026-09-25 vouching note put 3 catches against a pooled 0.33 per
-    thousand and called the family 8.5x louder at one night in 100, when two of its seven members
-    were days old and member by member the expectation was 0.81 — 3.7x at about one night in
-    twenty, a finding over the line by a hair rather than one in a hundred. A baseline averaged
-    over entries of different ages is an average over two different instruments, the same fault
-    as a totals row measuring the list rather than the habit. The note MUST print the
-    denominator it used — tonight's spoken words, tonight's rate, the standing rate — so the
-    verdict can be re-measured from the line itself. Without prior spoken words there is no
-    denominator and the watch MUST stay silent rather than guess. Outside the band the note MUST state the direction and the size of the move
-    instead — a total materially down is the family going quieter while its residue changes
-    words, a weaker claim than substitution; a total up is the move growing even as it changes
-    words — and MUST NOT print a premise it did not measure. Every verdict MUST carry its own
-    strength: the band of rule 48 is a fraction of the expectation, and counting noise is not, so
-    the band alone states a move as a finding when chance alone would produce it. Measured
-    2026-09-18 against a Poisson at the standing rate: the "grew louder" verdict fires on between
-    8 and 27 nights in 100 across the whole range of expectations the watch sees, worst at an
-    expectation near 2, where a total of 3 draws "the move got louder" and comes up by chance
-    better than one night in four. So the note MUST print how often chance alone reaches tonight's
-    total at the standing rate, and MUST state a move as a finding only when that is below one
-    night in twenty; above it the direction and size are still reported, named a lean and not a
-    finding. The churn claim itself MUST carry its own strength on the same terms, and it is a
-    separate test from the total's: a member at zero beside a sibling above its own average is two
-    raw counts, and a family with more members than the night has occurrences has members at zero
-    whatever it is doing. Measured 2026-09-18 over every eligible family-night in the record, by
-    holding tonight's total fixed and redistributing it across the members at their standing
-    shares: the quiet/risen gate fires on 62 family-nights in 100 with the shares unchanged, on 91
-    in 100 of the nights it actually fired, and six of the nine churn notes ever emitted fire with
-    a chance of 0.98 or better — not one of the nine survives its own test. So the report MUST
-    compute how often unchanged shares alone produce tonight's split, by exact enumeration over
-    every way tonight's total could fall across the members, with add-one smoothing so a member
-    never counted before is treated as unmeasured rather than impossible. Below one night in
-    twenty the note MAY name the quiet and risen members as churn; above it the note MUST NOT
-    assert substitution, MUST say instead that the split at this total is arithmetic rather than
-    evidence, and MUST NOT carry any clause resting on the churn premise — but the family-total
-    verdict, which does not depend on the split, MUST still be printed with its own numbers.
-    Churn at a family total of one is
-    arithmetic, not evidence: no note below a total of two tonight. A member first counted
-    tonight MUST NOT stand as the risen side — an entry has counts only from the night it was
-    created, so an empty history is absence of measurement, not absence of the habit. A
-    proposed rewrite that still fires any pattern of the same function is a miss, not a pass:
-    the report MUST mark it substituted and MUST NOT present it as the fix. The rewrite
-    instruction is function-aware — for a `fix: delete` entry the proposal is the sentence with
-    the decoration struck (the entry's own `replace:` lines where they cover it, the matched
-    span struck where they do not and rule 50 allows it), and the model is asked only where the
-    fix is a different sentence.
-48a. A clean night carries its own power, or it reports the word count as the habit. Where the
-    night caught nothing and the record holds enough prior nights to be a baseline (at least five
-    nights and 5000 words, with at least one prior use), the headline MUST be followed by the
-    expected number of catches for TONIGHT'S spoken words at the standing de-duplicated rate
-    across all prior nights, and by the probability a night that size comes up empty at that rate
-    — saying plainly that a likely-empty night is news about how little was said, and that an
-    unlikely-empty one is worth something. The fault this closes is measured: the rate held flat
-    at about 0.60 uses per 1000 spoken words across August, 2026-09-02..08 and the "clean" run of
-    2026-09-13..15, while the nightly volume fell from 25,559 words to 174-279, so three clean
-    headlines in a row described the volume and were read as the habit. This is rule 48's missing
-    denominator one layer up: a total, a rate or a verdict is stated only against the exposure
-    that produced it.
-49. The night corroborates the live mirror. For each flag-log record of a live rewrite
-    ([speech-output.md](speech-output.md) rule 45), the review MUST check whether the same
-    turn's final reply still fires the same function, and name it in the report when it does: a
-    hold answered with a synonym went out as the same move in new words, and only the night can
-    see both halves. This is the corroboration `MIN-34` is owed, in its first piece.
-50. A mechanical deletion may only strike what comes away clean. Where no `replace:` line covers
-    a `fix: delete` hit, the bare span MAY be struck only if every uncovered match is a single
-    `-ly` adverb; any other span — an adjective its noun is sitting on, a match with the verb
-    inside it — MUST route to the model as a resay instead. A correction that leaves an
-    ungrammatical sentence teaches nothing and discredits the entry it came from: the review of
-    2026-08-08 offered "Intermittent is the kind of hard" and "what was surfaced, what with it"
-    as the lines she should have said.
+39. After the ingest and the key backfill, sleep reviews the day for claudisms: the moments she
+    sounded like a generic assistant instead of herself. The review is part of sleep's work on her
+    prompt and her memories, and its only outputs are edits to them, so she wakes with the change
+    already made. It writes no report, books no wake, keeps no counts or rates, and never speaks.
+40. The review reads the day's journal (her replies' spoken halves beside the user's words; a
+    job's entry is a builder's log, not her voice, and is excluded), the day's flag log
+    ([turn-pipeline.md](turn-pipeline.md) rules 30-32) as pointers to moments worth a look, her
+    persona sheet, her conduct files, and the active memory records recall puts in front of her
+    for the day's turns. It looks for the material that pulled her voice toward the assistant
+    register — a record written about her in the third person or in procedure-speak, a conduct
+    body that reads like a policy document, a persona line that invites the move — and fixes that
+    material. The spoken lines themselves are evidence; they are never rewritten.
+41. An edit takes one of three routes and no other:
+    - a directive or note record rewritten in her voice through `crab memory rewrite`
+      ([memory-recall.md](memory-recall.md) rule 28e); the old record is superseded, never
+      deleted;
+    - a record retired through `crab memory forget`;
+    - an exact-text replacement in the persona sheet or in one file of the conduct drawer. The old
+      text MUST occur exactly once in that file, or the edit is refused;
+    - a `- replace:` line in the phrase list revised or revoked, for an entry whose replacement
+      fired that day: the night is where the table's automatic swaps are reviewed
+      ([speech-output.md](speech-output.md) rule 49). An edit there may touch `- replace:` lines
+      only, and never adds an entry.
+    Only records and files the judge was shown can be edited, and only directives and notes among
+    the records. No other file is touched. Instructions that live in this repository's code are
+    outside the review's reach.
+42. Most nights change nothing, and a night that changes nothing is a normal answer, never a
+    failure. A night applies at most `CLAUDISM_REVIEW_MAX_EDITS` edits (default 6); any beyond
+    the cap are named on the night log and not applied.
+43. Before its first edit the review declares its writes (rule 6) and copies every file it is
+    about to edit to `sleep/claudism-review/<date>/`, so any edit can be undone by hand. Every
+    applied or refused edit is one line on the night log opening `claudism-review:`, carrying
+    the judge's reason. `CLAUDISM_REVIEW_DRY_RUN=1` runs the whole review and prints the edits it
+    would make, making none.
+44. The judgment is the night judge's (rules 14c-14e): one call, no fallback, never re-asked; a
+    judge that cannot answer changes nothing. The review's failure never unstamps or fails the
+    night (rules 8 and 10).
 
 ### The promise sweep — part of sleep
 
@@ -810,7 +691,7 @@ only when it is an appetite she would actually choose.
     (`lib/want-reflect run [day]`, default the day just ended; `WANT_REFLECT_ENABLED=0`
     switches it off with one line in its own name). The reflection reads TWO things and judges
     from nothing else: the swept day's journal — her turns and the user's words as lived, a
-    builder's `kind: job` entry excluded exactly as rule 41 excludes it from her voice, because
+    builder's `kind: job` entry excluded exactly as rule 40 excludes it from her voice, because
     a builder's log is not her lived day — and the wants drawer's standing in every state, so
     what is already live, resting, grown or retired is visible and an existing attraction is
     never re-invented. Each rides the judge's prompt as its own labelled section under rule
@@ -1021,12 +902,6 @@ that was asked for, and promised work must stop waiting for a live turn to perso
     exactly as a real round does (rule 60a), and its would-dispatch line names the resolved
     workdir, so what is watched in daylight is what the night would actually do.
 
-The same engine is runnable by hand: `lib/claudism-corpus` scores an archived conversation
-directory (the rotation's transcript format — [turn-pipeline.md](turn-pipeline.md) DATA) against
-the list, bucketed by date, uses and mentions apart, per function per thousand spoken words — so
-a claim about the habit's history is a measurement, not an impression. It is wired to no timer
-and writes nothing: a reader run by hand, assistant halves only, spoken halves only.
-
 ## DATA
 
 | Path | Owner | Role |
@@ -1048,9 +923,7 @@ and writes nothing: a reader run by hand, assistant halves only, spoken halves o
 | `~/.local/share/deskcrab/self-baselines/` | her, by hand | the 2026-08-28 manual stopgap copies; rule 25e seeds a conf-dir file's first shadow from its same-named baseline, and the drawer stays as history |
 | `~/.local/state/deskcrab/canary-self.log` | the canary | one line per check |
 | `~/.local/share/deskcrab/claudisms.md` | her, by hand | the phrase list: what is borrowed, and why |
-| `~/.local/share/deskcrab/claudisms/<date>.md` | the claudism review | the night's report: hits, rewrites, counts |
-| `~/.local/share/deskcrab/claudisms/counts.tsv` | the claudism review | one line per night and phrase, uses only |
-| `~/.local/share/deskcrab/claudisms/functions.tsv` | the claudism review | one line per night and function: uses, mentions, spoken words |
+| `~/.local/share/deskcrab/sleep/claudism-review/<date>/` | the claudism review | rule 43: the pre-edit copy of every file the night's review edited |
 | `~/.local/share/deskcrab/promise-ledger.jsonl` | the promise checker; the sweep appends its records (rule 53) and any hand appends resolutions through the resolve door (rule 53f) | live catches, end-of-day misses and their resolutions ([turn-pipeline.md](turn-pipeline.md) DATA); the night's work reads the unresolved sweep records back as owed-work material (rules 53f, 58b), through `lib/promise_ledger.py` alone |
 | `~/.local/share/deskcrab/night-work/dispatched.tsv` | the night's work | one line per dispatched pick: night, key, job id, title (rule 59) — threads, swept promises and wake-parked work alike |
 | `~/.local/share/deskcrab/wants/<slug>.md`, `wants.md` | the wants tool ([wants.md](wants.md)) | the want reflection's ONLY writes, on a WANT verdict, through `lib/eng --kind want new` alone (rule 53i); the reflection owns no file of its own, and a NOTHING night writes nothing at all |
@@ -1102,7 +975,6 @@ reaches her through an event wake or through a record she reads.
 | `MIN-30` | A stray file duplicates the engineering namespace: unreachable by every reader, and inside the watcher's glob. |
 | `MIN-31` | The tidy prompt asks for a dated prose line in a machine-written record, where the journal reader skips it and the ingest drops it. Tidy's own record never survives. |
 | `MIN-32` | The canary reports the path unit disabled and only revives it in-session, so it will not come back after a reboot. |
-| `MIN-34` | Two claudism detectors, unreconciled. The turn-close capture ([turn-pipeline.md](turn-pipeline.md) rules 30-32) writes a day flag log; the review judges from the journal directly (rule 39) and does not read it. The log is no longer unread — the recent-catches block ([prompt-assembly.md](prompt-assembly.md) rule 35) surfaces it at the start of a turn, and the pre-speech mirror ([speech-output.md](speech-output.md) rule 45) appends its fires and outcomes to it — so retiring it is off the table. The first piece of the corroboration is in — the review reads the day's flag log and names a live rewrite whose turn still fires the same function (rule 49). Still owed: the rest of it — telling a line she already re-said mid-turn from one that went out as drafted, deduped by sentence and pattern. Two detectors with no reconciliation will drift. |
 
 ## TESTS
 
@@ -1132,22 +1004,13 @@ deletion fires; and the bounded windows: a finished-uncollected job sharing a wo
 one loses the attribution to the more recently started, a finished-uncollected job past its grace
 suppresses nothing while one inside the grace still claims its last bytes without ever being called
 running, a `running` sidecar older than the ceiling claims no new byte but keeps the ones from
-inside it, and no report calls the orphan running. `tests/test_claudism_scan.sh` — the review reads the
-spoken half only and never a job's entry; counts replace, never double; a missing list is a silent
-skip; the wake is booked through the door in the review's own name; a dead model still writes the
-report with the rewrites marked missing. `tests/test_claudism_report_broken.sh` — rule 40a: a
-night with a broken list entry and no catches is never called clean — the headline counts the
-entries that would not compile, singular and plural; on a caught night the broken fact stands
-before the verdict, not as a correction after it; and an all-compiling list with no catches keeps
-its clean-night headline with no warning attached. `tests/test_claudism_agenda_clean.sh` — rule
-40a's morning half: with one uncompilable entry and no catches the wake's agenda never says a
-clean night and names the entry that never ran; a caught night's agenda carries the same fact;
-and an all-compiling no-catch night keeps its clean agenda word for word.
-`tests/test_claudism_clean_power.sh` — rule 48a: with no baseline in the record the clean headline
-stands exactly as it did; with one, a short clean night states the rate, the catches its words
-should have carried and that it is news about how little was said, a long clean night at the same
-rate is called worth something instead, the morning agenda takes the same branch as the report,
-and a night that caught something says nothing about power at all.
+inside it, and no report calls the orphan running.
+`tests/test_claudism_review.sh` — rules 39-44: the judge is handed the spoken halves and never a
+job's entry, the flag log, the persona sheet, the conduct files, and the recalled records with
+their ids; a NOTHING answer writes nothing; a record rewrite supersedes the old record, a retire
+retires it, and a file edit lands only when its old text occurs exactly once, with the file copied
+to the night's backup directory first; an edit outside the persona sheet and the conduct drawer is
+refused; the cap holds; and no wake is booked.
 `tests/test_promise_check.sh` — rules 51-53c: the sweep
 hands the model the day's replies with their outcomes and the live ledger, surfaces a genuine miss
 as a ledger record and one morning wake in the checker's name, and books nothing on a clean day;

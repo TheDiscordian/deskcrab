@@ -1212,7 +1212,7 @@ class Store:
 
     def search(self, query, k=TOP_K, deliberate=False, scope=(),
                directive_cap=DIRECTIVE_CAP, episodic_cap=EPISODIC_TOP_K,
-               max_chars=0):
+               max_chars=0, peek=False):
         """The retrieval rule from the design's 13:15 revision — two pools
         with different floors, queried separately so the assistant's own
         chatter can never crowd the user's rules out: notes take the top-K
@@ -1378,7 +1378,7 @@ class Store:
             picked.append(row)
             seen.add(row[0])
         t2 = time.monotonic()
-        if picked:
+        if picked and not peek:
             now = now_iso()
             self.db.executemany("UPDATE memories SET last_seen=? WHERE id=?",
                                 [(now, r[0]) for r in picked])
@@ -2210,7 +2210,7 @@ def cmd_recall_block(store, args):
         rows, _, _, abstained = store.search(
             query, k=args.notes, scope=args.scope,
             directive_cap=args.directives, episodic_cap=args.episodes,
-            max_chars=args.max_chars)
+            max_chars=args.max_chars, peek=args.peek)
     except (urllib.error.URLError, OSError, RuntimeError) as e:
         # Degraded recall, never silent amnesia: the pinned tier plus a loud
         # warning still reach the prompt.
@@ -3596,6 +3596,35 @@ def cmd_supersede(store, args):
     return 0
 
 
+def cmd_rewrite(store, args):
+    """Rule 28e: the same claim in new words. A new row of the old one's kind,
+    carrying its pin, topics, source, occurred date and lookup key, linked
+    over it by rule 28c's supersession."""
+    text = " ".join(args.text).strip()
+    if not text:
+        sys.exit("memory rewrite: empty text")
+    row = store.db.execute(
+        "SELECT kind, status, pinned, source, topics, occurred, lookup_key"
+        " FROM memories WHERE id=?", (args.id,)).fetchone()
+    if not row:
+        sys.exit(f"memory rewrite: no record #{args.id}")
+    kind, status, pinned, source, topics, occurred, lookup_key = row
+    if status != "active" or kind not in ("directive", "note"):
+        sys.exit(f"memory rewrite: #{args.id} is not an active directive or note")
+    new_id = store.insert(text, kind, bool(pinned), source or "self",
+                          topics or "", occurred=occurred,
+                          lookup_key=lookup_key or "")
+    try:
+        store.link_supersede(new_id, args.id)
+    except ValueError as exc:
+        store.db.execute("DELETE FROM memories WHERE id=?", (new_id,))
+        store.db.execute("DELETE FROM memories_vec WHERE rowid=?", (new_id,))
+        store.db.commit()
+        sys.exit(f"memory rewrite: {exc}")
+    print(f"#{new_id} rewrites #{args.id} [{kind}]")
+    return 0
+
+
 def cmd_overlaps(store, args):
     if args.scan:
         pairs, excluded = store.scan_rule_overlaps()
@@ -3988,6 +4017,12 @@ def main():
                    help="keep a row created before the one it absorbs")
     p.set_defaults(fn=cmd_supersede)
 
+    p = sub.add_parser("rewrite", help="the same claim in new words: a new "
+                       "row of the old one's kind, superseding it")
+    p.add_argument("id", type=int)
+    p.add_argument("text", nargs="+")
+    p.set_defaults(fn=cmd_rewrite)
+
     p = sub.add_parser("dump", help="whole store as readable text")
     p.set_defaults(fn=cmd_dump)
 
@@ -4100,6 +4135,9 @@ def main():
     p.add_argument("--max-chars", type=int, default=0,
                    help="maximum rendered block characters, selecting only "
                         "whole records; 0 keeps the general unbounded default")
+    p.add_argument("--peek", action="store_true",
+                   help="select as a prompt build would, but leave every "
+                        "record's last_seen untouched (sleep's review)")
     p.set_defaults(fn=cmd_recall_block)
 
     p = sub.add_parser("judge-turn",

@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""claudism-capture — the listening half of the nightly claudism review.
+"""claudism-capture — the day's flag log, for sleep's claudism review.
 
 She has phrasing habits that are not hers — the assistant-brochure cadence the
 conduct sheet calls claudisms. The cure is a habit-breaking exercise, not a
 censor: this runs AFTER a reply is delivered, detached, out of band (same
 moment as the promise audit, specs/turn-pipeline.md rules 30-32), greps the
 spoken half against the phrase list, and appends every hit to the day's flag
-log. The nightly review reads that log and shows her each sentence next to a
-rewrite. Nothing here can edit, hold, or slow what she says, and nothing here
+log. Sleep's claudism review reads that log as pointers to the day's slips
+(specs/nightly.md rules 39-44). Nothing here can edit, hold, or slow what she says, and nothing here
 speaks: the flag log and a one-line run trace are the only outputs.
 
 Usage: claudism-capture <phrase-file> <flags-dir> <kind> <epoch> <pid> <response>
@@ -30,20 +30,19 @@ capture only carries them — nothing here ever applies one.
 
 Three more lines an entry may carry, each riding the entry above it like a
 replace line: `- function: <slug>` names the rhetorical move the entry
-performs, so several entries can be one family (specs/nightly.md rule 46);
+performs, so several entries can be one family (specs/turn-pipeline.md rule 32a);
 `- fix: delete|resay` says what a true correction looks like (unset: delete
 where the entry has replace lines, resay otherwise); `- live: no` keeps the
-entry off the speech path — capture and nightly review only, never a mirror
+entry off the speech path — capture only, never a mirror
 hold (specs/speech-output.md rule 50).
 
-A match is classed use or mention (specs/nightly.md rule 47): words that are
+A match is classed use or mention (specs/turn-pipeline.md rule 32b): words that are
 quoted, in a code span, or in a sentence about the list itself are being
 talked about, not said. A mention is still a record — the capture drops
 nothing, it classifies — and the record says which it was.
 
-Flag records key on (epoch, pid) — the day journal's identity — so the
-nightly review, which is her re-reading her own log, can find the whole
-turn a sentence came from.
+Flag records key on (epoch, pid) — the day journal's identity — so sleep's
+review can find the whole turn a sentence came from.
 """
 
 import fcntl
@@ -208,7 +207,7 @@ def load_patterns(path):
     return entries, bad
 
 
-# The mention test — specs/nightly.md rule 47, specs/speech-output.md rule
+# The mention test — specs/turn-pipeline.md rule 32b, specs/speech-output.md rule
 # 50. Words inside a code span or an unclosed double quote are quoted, not
 # said; a sentence that names its own entry, or that carries the vocabulary
 # of the list itself, is talking about the habit rather than having it. The

@@ -325,11 +325,11 @@ roughly 800 bytes off every speaking prompt, with nothing removed that a turn ca
     died at the gate and was never spoken, and the block MUST say so rather than present it as
     something she said — otherwise she apologises for words he never heard and reads the banned
     wording back as her own. Mention-class flags —
-    words quoted or talked about rather than used ([nightly.md](nightly.md) rule 47) — are not
+    words quoted or talked about rather than used ([turn-pipeline.md](turn-pipeline.md) rule 32b) — are not
     shown: the block exists to catch the habit, and quoting the list is not the habit. It exists
     so she sees her
     own habit before she writes, which is where the habit is actually cured; the pre-speech check
-    and the nightly review ([speech-output.md](speech-output.md), [nightly.md](nightly.md)) pick up
+    and sleep's claudism review ([speech-output.md](speech-output.md), [nightly.md](nightly.md)) pick up
     what seeing it first did not prevent. Feed-forward only: the block MUST be read from the
     capture's flag log alone, MUST NOT touch a reply or hold a turn, and MUST cost nothing when it
     fails — an unreadable log or a broken reader means the layer assembles without it, never a

@@ -290,7 +290,7 @@ audit, offline, each child a stub that photographs its environment: `crab memory
 `lib/memory.py` the harness (`CLAUDE_BIN`), the configured list, the one shared limit signature,
 and the shared state file path, and re-seeds `CLAUDE_CONFIG_DIR` to the account the selection
 answers with rather than the environment's leftover; `lib/sleep-nightly` seeds its direct
-children — the `claudism-scan` rewrite pass stands in — the same way; and `detach_turn_child`
+children — the claudism review stands in — the same way; and `detach_turn_child`
 names the selected login explicitly in its systemd-run argv and forwards the whole set through
 its `setsid` fallback — on both branches, account 1 included, with nothing configured and no
 state on disk (rule 3).

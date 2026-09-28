@@ -41,7 +41,7 @@ stub() {  # <dir> <name>  (body on stdin)
 }
 chatty_except() {  # <dir> <name to leave out>
     local n
-    for n in claudism-scan eng-merge want-reflect night-work promise-check; do
+    for n in claudism-review eng-merge want-reflect night-work promise-check; do
         [ "$n" = "$2" ] && continue
         printf '#!/bin/bash\necho "%s: stub — nothing to do"\nexit 0\n' "$n" | stub "$1" "$n"
     done
@@ -107,9 +107,9 @@ check "and the non-zero exit lands in the log file, not stderr alone" \
 
 echo
 echo "a phase that fails after speaking draws did-not-finish alone:"
-chatty_except "$T/lib-loud" claudism-scan
-printf '#!/bin/bash\necho "claudism-scan: died halfway"\nexit 1\n' \
-    | stub "$T/lib-loud" claudism-scan
+chatty_except "$T/lib-loud" claudism-review
+printf '#!/bin/bash\necho "claudism-review: died halfway"\nexit 1\n' \
+    | stub "$T/lib-loud" claudism-review
 out="$(run_night "$T/lib-loud" "$T/data-loud")"; rc=$?
 check_eq "the night still exits zero" "$rc" "0"
 LOG="$(night_log "$T/data-loud")"

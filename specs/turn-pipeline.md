@@ -269,9 +269,9 @@ slot is the loudest statement this machine can make that it was not listening.
 
 ### Turn-close capture
 
-The listening half of the nightly claudism review ([nightly.md](nightly.md)): a cheap phrase-list
-pass over what was just said, so the night has a day's flag log to judge. Detection only, by
-design and by rule — the review exists to break a habit, never to gate a tongue.
+A cheap phrase-list pass over what was just said, so sleep's claudism review
+([nightly.md](nightly.md) rules 39-44) has the day's flagged moments to start from. Detection
+only: the capture never gates a tongue.
 
 30. Every path that delivers a reply (desk, phone, wake) MUST hand the response to the claudism
     capture at the same out-of-band moment as the promise audit: detached, after the user has
@@ -283,17 +283,28 @@ design and by rule — the review exists to break a habit, never to gate a tongu
     (the day journal's identity), the journal kind, the sentence as spoken, and the pattern that
     matched — and, so the night can score the move rather than the string, the entry's function
     where the list declares one and whether the words were used or merely mentioned (quoted, in
-    a code span, or talked about — [nightly.md](nightly.md) rule 47). A mention is still a
+    a code span, or talked about — rule 32b). A mention is still a
     record: the capture drops nothing, it classifies. The flag log is append-only, dated like
     the journal, and flocked like it. Its
     readers: the recent-catches block ([prompt-assembly.md](prompt-assembly.md) rule 35) surfaces
     it at the start of a turn, and the pre-speech mirror ([speech-output.md](speech-output.md)
-    rule 45) appends its live fires and outcomes beside the capture's records. The nightly review
-    still judges from the journal directly; [nightly.md](nightly.md) `MIN-34` tracks the
-    corroboration owed.
+    rule 45) appends its live fires and outcomes beside the capture's records. Sleep's claudism
+    review reads it beside the journal ([nightly.md](nightly.md) rule 40).
 32. A missing phrase list is not an error: the capture simply does not fire. A capture that
     cannot parse the list, or that crashes, MUST exit quietly without touching the turn — its
     run-trace line is the only place that failure shows.
+32a. An entry MAY declare the rhetorical move it performs (`- function:`, a short slug; several
+    entries may share one) and what a true correction looks like (`- fix: delete` where the cure
+    is striking the decoration, `- fix: resay` where only a different sentence will do; unset, an
+    entry with `replace:` lines defaults to delete and any other to resay). An untagged entry
+    stands as its own function. The capture records the function; the live mirror reads both
+    ([speech-output.md](speech-output.md) rules 52 and 55).
+32b. A mention is not a use. A hit whose matched words are quoted, inside a code span, or in a
+    sentence that is about the list itself — naming an entry, a ban, a flag, a pattern, a
+    rewrite, the review — MUST be classed a mention. The test is ONE implementation,
+    `classify_use` in `lib/claudism-mirror`, which the capture keeps line-identical and the live
+    mirror asks at fire time ([speech-output.md](speech-output.md) rules 45 and 50): a live
+    mention is skipped, never held, and still lands in the flag log as `use=mention`.
 
 ### The promise checker
 
@@ -561,7 +572,7 @@ file rather than re-instrumented every time the question comes up.
 | `~/.local/share/deskcrab/sessions/<pid>.ckpt` | `crab checkpoint` | append-only, one line per checkpoint |
 | `${STATE_PREFIX}-sessions.log` | `session_finish`, `session_reap` | append-only journal |
 | `~/.local/share/deskcrab/journal/<date>.jsonl` | `day_journal_append` | one JSON object per finished turn |
-| `~/.local/share/deskcrab/claudisms.md` | the nightly review (see [nightly.md](nightly.md)) | phrase list: a `## heading` per claudism with a `- pattern:` line carrying the trigger in a backtick span; a list with no `- pattern:` lines is read as one trigger per bullet/heading, from its first span; entries MAY add `- function:`, `- fix:` and `- live:` lines ([nightly.md](nightly.md) rule 46, [speech-output.md](speech-output.md) rule 50) |
+| `~/.local/share/deskcrab/claudisms.md` | her, by hand | phrase list: a `## heading` per claudism with a `- pattern:` line carrying the trigger in a backtick span; a list with no `- pattern:` lines is read as one trigger per bullet/heading, from its first span; entries MAY add `- function:`, `- fix:` and `- live:` lines (rule 32a, [speech-output.md](speech-output.md) rule 50) |
 | `~/.local/share/deskcrab/claudism-flags/<date>.jsonl` | `lib/claudism-capture` | one JSON object per flagged sentence |
 | `${STATE_PREFIX}-claudism-capture.log` | `lib/claudism-capture` | one line per run: ran-and-found-nothing versus never-ran |
 | `~/.local/share/deskcrab/promise-ledger.jsonl` | `lib/promise-check` | one JSON line per UNKEPT commitment (rule 32c), plus the sweep's identified records and their later resolutions ([nightly.md](nightly.md) rules 53, 53f) |

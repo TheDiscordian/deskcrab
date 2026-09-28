@@ -123,7 +123,7 @@ LEAD = _int_knob("TIDY_CLAIMS_LEAD", 600)
 SLACK = _int_knob("TIDY_CLAIMS_SLACK", 120)
 
 # The delimiter, anchored to its own line and tolerant of surrounding
-# whitespace — specs/speech-output.md rules 3 and 4, the same split the
+# whitespace — specs/speech-output.md rules 3 and 4, the same split sleep's
 # claudism review makes: the journal holds the reply in full, and a display
 # table is not speech.
 DISPLAY_RE = re.compile(r"(?m)^[ \t]*---DISPLAY---[ \t]*$")
