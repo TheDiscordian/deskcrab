@@ -1145,7 +1145,10 @@ def _selfplay_model_forbidden(model):
     }
 
 
-def _codex_cooling():
+def _codex_cooling(model=None):
+    """Whether this model's own cooldown, or a whole-login one, stands
+    (model-backends.md rule 13); without a model, whether any does."""
+    slug = _codex_resolve(model) if model else ""
     f = os.environ.get("DESKCRAB_CODEX_STATE") or os.path.join(
         os.environ.get("XDG_DATA_HOME")
         or os.path.expanduser("~/.local/share"), "deskcrab", "codex-state")
@@ -1154,7 +1157,9 @@ def _codex_cooling():
             for line in fh:
                 p = line.rstrip("\n").split("\t")
                 if (p and p[0] == "blocked-until" and len(p) > 1
-                        and p[1].isdigit() and int(p[1]) > time.time()):
+                        and p[1].isdigit() and int(p[1]) > time.time()
+                        and (not slug or len(p) < 5 or not p[4]
+                             or p[4] == slug)):
                     return True
     except OSError:
         pass
@@ -1713,7 +1718,7 @@ class Mover:
         else:
             job_model = (job.get("model") or "").strip() or None
         if (selfplay and job_model and _codex_backend(job_model)
-                and _codex_cooling()):
+                and _codex_cooling(job_model)):
             why = "subscription limit: configured codex login is cooling"
             self.alert(f"mover: {job['gid']} ply {job['ply']} refused — {why}")
             return "failed", why
@@ -1870,7 +1875,7 @@ class Mover:
                 # yields no attempt at all — the benchmark driver cancels
                 # the worker without turning the account refusal into clock
                 # evidence.
-                if _codex_cooling():
+                if _codex_cooling(model):
                     self.alert("mover: codex login is cooling — no attempt "
                                "for self-play model %r" % model)
                     return
@@ -1888,7 +1893,7 @@ class Mover:
             # and rule 16e's alert/stall machinery makes the failure
             # visible while the position is re-offered on its cooldown.
             if job_model:
-                if _codex_cooling():
+                if _codex_cooling(model):
                     self.alert("mover: codex login is cooling — no attempt "
                                "for routed model %r; identity preserved, "
                                "no substitute engine" % model)
@@ -1905,7 +1910,7 @@ class Mover:
             # a game in flight never stalls on a dry engine. `ultra` is
             # codex's own top effort; the Claude CLI refuses the word, so
             # the fallback attempts clamp it.
-            if not _codex_cooling():
+            if not _codex_cooling(model):
                 env = self._env(None)
                 env.pop("OPENAI_API_KEY", None)
                 yield ("codex",

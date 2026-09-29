@@ -50,8 +50,8 @@ nightly_judge_walk() {  # <model> <effort> <timeout s> <ledger kind> <verdict-ER
     if [ "$(model_backend "$MODEL")" = "codex" ]; then
         local SLUG D INSTR
         SLUG="$(codex_model_resolve "$MODEL")"
-        if ! codex_available; then
-            echo "$NJ_KIND: the judge ($MODEL) is unavailable — $(codex_unavailable_why); no judgment is made and no cheaper model may make it" >&2
+        if ! codex_available "$MODEL"; then
+            echo "$NJ_KIND: the judge ($MODEL) is unavailable — $(codex_unavailable_why "$MODEL"); no judgment is made and no cheaper model may make it" >&2
             rm -f "$CLOG"
             return 1
         fi
@@ -79,7 +79,7 @@ nightly_judge_walk() {  # <model> <effort> <timeout s> <ledger kind> <verdict-ER
         # One record per attempt, model and effort as run (specs/metrics.md).
         token_ledger_record "$CLOG" "$NJ_KIND" "$MODEL" "$EFFORT" ""
         if REFUSAL="$(codex_stream_refusal "$CLOG")"; then
-            codex_limit_record "$REFUSAL"
+            codex_limit_record "$REFUSAL" "$MODEL"
             echo "$NJ_KIND: the judge ($MODEL) refused — cooldown recorded; no judgment is made and no cheaper model may make it" >&2
             rm -f "$CLOG"
             return 1

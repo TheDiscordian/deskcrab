@@ -158,12 +158,15 @@ watchdog expects a trickle, so the translator carries a heartbeat.
     back to the flat `CODEX_LIMIT_COOLDOWN` window (default 1800 seconds) — the pre-existing
     behaviour, unchanged, which also covers a refusal that quotes no time at all. The state line
     is `blocked-until`, the expiry epoch, the refusal text (one line, at most 200 characters),
-    then a trailing marker: `reported` when the epoch is the provider's own answer, `estimated`
-    when it is our flat-window guess — so no reader mistakes a guess for a measurement. The
-    marker trails on purpose: every existing reader splits the line on TAB and consults only the
-    first two fields. While the cooldown stands, `codex_available` answers no
-    and every path goes straight to its fallback rather than paying a doomed boot. The cooldown
-    MUST be visible in `crab status` beside the account line. Wherever that expiry is RENDERED —
+    then a marker: `reported` when the epoch is the provider's own answer, `estimated` when it is
+    our flat-window guess — so no reader mistakes a guess for a measurement — and last the codex
+    slug of the model that refused. The provider meters each model on its own, so a cooldown
+    benches only its own model: the file holds one line per cooling model, a refusal replaces its
+    model's line and keeps the others, and `codex_available <model>` answers no only while that
+    model's line, or a whole-login line (one with no slug), stands. Every path asks about the
+    model it is about to run and goes straight to its fallback rather than paying a doomed boot;
+    a model with no line of its own boots normally while a sibling cools. Each cooling model MUST
+    be visible in `crab status` beside the account line. Wherever that expiry is RENDERED —
     the status line, the state block, the reason a codex path gives for standing down — a bare
     clock time is only honest for a time later today; a reported expiry can stand days out, so
     any other date MUST be shown with it.

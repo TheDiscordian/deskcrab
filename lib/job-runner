@@ -287,7 +287,7 @@ for JOB_TRY_MODEL in $JOB_MODEL_WALK; do
         ATTEMPT=$(( ATTEMPT + 1 ))
         ACCT="codex"
         CODEX_SLUG="$(codex_model_resolve "$JOB_TRY_MODEL")"
-        if codex_available; then
+        if codex_available "$JOB_TRY_MODEL"; then
             echo "job-runner: building on codex ($CODEX_SLUG)" >> "$LOG"
             ATT_OFF=$(wc -c < "$STREAMLOG" 2>/dev/null || echo 0)
             (
@@ -311,7 +311,7 @@ $TASK" </dev/null 2>&1 \
                 "$LIB_DIR/job-status" append "$STATUS" attempts \
                     "$(date '+%F %T') codex: ran clean" 2>/dev/null
             elif REFUSAL="$(codex_stream_refusal "$STREAMLOG" "$ATT_OFF")"; then
-                codex_limit_record "$REFUSAL"
+                codex_limit_record "$REFUSAL" "$JOB_TRY_MODEL"
                 "$LIB_DIR/job-status" append "$STATUS" attempts \
                     "$(date '+%F %T') codex: refused — $REFUSAL" 2>/dev/null
                 FAMILY_REFUSED=1
@@ -323,7 +323,7 @@ $TASK" </dev/null 2>&1 \
             # Cooling or absent: this family never boots. The reason is kept
             # in hand — the post-run judgement cannot read a refusal out of
             # a stream no CLI ever wrote to — and the walk moves on.
-            CODEX_PRE_BLOCKED="codex is $(codex_unavailable_why)"
+            CODEX_PRE_BLOCKED="codex is $(codex_unavailable_why "$JOB_TRY_MODEL")"
             echo "job-runner: $CODEX_PRE_BLOCKED — this family never began" >> "$LOG"
             "$LIB_DIR/job-status" append "$STATUS" attempts \
                 "$(date '+%F %T') codex: $CODEX_PRE_BLOCKED" 2>/dev/null

@@ -1811,11 +1811,16 @@ account_state_line() {
     printf '\n'
     # The codex engine's one login, visible beside the accounts whenever it
     # is benched (specs/model-backends.md rule 13) — silent otherwise.
-    local codex_until
-    if codex_until="$(codex_limit_until)"; then
-        printf 'Codex: over its limit — cooling until %s; codex-model turns fall back to the Claude walk\n' \
-            "$(codex_cooling_clock "$codex_until")"
-    fi
+    local codex_slug codex_until
+    codex_limit_list | while IFS="$(printf '\t')" read -r codex_slug codex_until; do
+        if [ "$codex_slug" = codex ]; then
+            printf 'Codex: over its limit — cooling until %s; codex-model turns fall back to the Claude walk\n' \
+                "$(codex_cooling_clock "$codex_until")"
+        else
+            printf 'Codex: %s over its limit — cooling until %s; turns on that model fall back to the Claude walk\n' \
+                "$codex_slug" "$(codex_cooling_clock "$codex_until")"
+        fi
+    done
 }
 
 self_state_report() {
@@ -2424,7 +2429,7 @@ $(cat "$OLDFILE")"
             # engine cooldown inside codex_classify; any failed or empty run
             # falls through to the ordinary Claude outage path, never into the
             # saved summary.
-            codex_available || continue
+            codex_available "$CONVO_SUMMARY_MODEL" || continue
             MODEL_USED="$CONVO_SUMMARY_MODEL"
             printf '%s' "$SUMMATERIAL" \
                 | CLAUDE_CLASSIFY_STREAM=1 \
@@ -6107,39 +6112,68 @@ codex_limit_reset_epoch() {  # <refusal text> -> epoch, only for a sane read
     printf '%s' "$epoch"
 }
 
-codex_limit_record() {  # <refusal text>
-    local f until src; f="$(_codex_state_file)"
+codex_limit_record() {  # <refusal text> [model]
+    local f until src slug tmp; f="$(_codex_state_file)"
     mkdir -p "$(dirname "$f")" 2>/dev/null
     # The refusal's own reset time IS the cooldown when it quotes one; the
     # flat window is the fallback for a refusal that quotes nothing usable.
-    # The trailing marker says which, so no reader mistakes a guess for a
-    # measurement — every reader of this line splits on TAB and consults the
-    # first two fields, so the extra field costs none of them anything.
+    # The fourth field says which, so no reader mistakes a guess for a
+    # measurement. The fifth names the model that refused: the provider
+    # meters each model on its own, so a limit on one never benches the
+    # others (specs/model-backends.md rule 13). A line without it is a
+    # whole-login cooldown and benches every model.
     if until="$(codex_limit_reset_epoch "${1:-}")"; then
         src="reported"
     else
         until=$(( $(date +%s) + CODEX_LIMIT_COOLDOWN ))
         src="estimated"
     fi
-    printf 'blocked-until\t%s\t%s\t%s\n' "$until" \
-        "$(printf '%s' "${1:-limit}" | tr '\n\t' '  ' | head -c 200)" \
-        "$src" > "$f" 2>/dev/null
+    slug=""
+    [ -n "${2:-}" ] && slug="$(codex_model_resolve "$2")"
+    tmp="$f.tmp.$$"
+    {
+        # Every other model's standing cooldown survives this write; this
+        # model's old line is replaced, a whole-login record replaces them
+        # all, and an expired line is dropped.
+        [ -r "$f" ] && awk -F'\t' -v slug="$slug" -v now="$(date +%s)" \
+            '$1 == "blocked-until" && $2 > now && slug != "" && $5 != slug' "$f"
+        printf 'blocked-until\t%s\t%s\t%s\t%s\n' "$until" \
+            "$(printf '%s' "${1:-limit}" | tr '\n\t' '  ' | head -c 200)" \
+            "$src" "$slug"
+    } > "$tmp" 2>/dev/null && mv -f "$tmp" "$f" 2>/dev/null
+    rm -f "$tmp" 2>/dev/null
 }
 
-codex_limit_until() {  # -> epoch on stdout only while a cooldown stands
-    local f until; f="$(_codex_state_file)"
+codex_limit_until() {  # [model] -> epoch on stdout only while a cooldown stands
+    # With a model: that model's own cooldown or a whole-login one. Without:
+    # the latest cooldown standing on any model.
+    local f until slug=""; f="$(_codex_state_file)"
     [ -r "$f" ] || return 1
-    until="$(awk -F'\t' '$1 == "blocked-until" {print $2; exit}' "$f" 2>/dev/null)"
+    [ -n "${1:-}" ] && slug="$(codex_model_resolve "$1")"
+    until="$(awk -F'\t' -v slug="$slug" -v now="$(date +%s)" '
+        $1 == "blocked-until" && $2 ~ /^[0-9]+$/ && $2 > now \
+            && (slug == "" || $5 == "" || $5 == slug) && $2 > best { best = $2 }
+        END { if (best) print best }' "$f" 2>/dev/null)"
     case "$until" in ''|*[!0-9]*) return 1 ;; esac
-    [ "$until" -gt "$(date +%s)" ] || return 1
     printf '%s' "$until"
 }
 
-# Worth booting at all: the binary exists and no cooldown stands. Every path
-# asks before paying a doomed boot (rule 13).
-codex_available() {
+# Every model cooling right now, one "<slug><TAB><epoch>" line each; a
+# whole-login cooldown reads as the slug "codex".
+codex_limit_list() {
+    local f; f="$(_codex_state_file)"
+    [ -r "$f" ] || return 1
+    awk -F'\t' -v now="$(date +%s)" '
+        $1 == "blocked-until" && $2 ~ /^[0-9]+$/ && $2 > now {
+            print ($5 == "" ? "codex" : $5) "\t" $2; n++ }
+        END { exit n ? 0 : 1 }' "$f" 2>/dev/null
+}
+
+# Worth booting at all: the binary exists and no cooldown stands on this
+# model. Every path asks before paying a doomed boot (rule 13).
+codex_available() {  # [model]
     [ -x "$CODEX_BIN" ] || command -v "$CODEX_BIN" >/dev/null 2>&1 || return 1
-    ! codex_limit_until >/dev/null
+    ! codex_limit_until "${1:-}" >/dev/null
 }
 
 # A cooldown used to be half an hour, so a bare clock time could only mean
@@ -6156,9 +6190,9 @@ codex_cooling_clock() {  # <epoch> -> clock time, dated unless it is today
     fi
 }
 
-codex_unavailable_why() {
+codex_unavailable_why() {  # [model]
     local until
-    if until="$(codex_limit_until)"; then
+    if until="$(codex_limit_until "${1:-}")"; then
         printf 'cooling until %s' "$(codex_cooling_clock "$until")"
     else
         printf 'not installed'
@@ -6392,7 +6426,7 @@ _codex_stream_run() {  # <turn|wake> <model> <effort> <prompt text>
 codex_classify() {  # <model> <system prompt>  [question on stdin]
     local model="$1" sys="$2" slug d instr err raw rc refusal
     slug="$(codex_model_resolve "$model")"
-    codex_available || return 1
+    codex_available "$model" || return 1
     d="$(claude_sterile_cwd)"
     instr="$(mktemp "${TMPDIR:-/tmp}/deskcrab-codex-classify.XXXXXX")" || return 1
     err="$(mktemp "${TMPDIR:-/tmp}/deskcrab-codex-classify-err.XXXXXX")" \
@@ -6429,7 +6463,7 @@ print(text)'
     rc=${PIPESTATUS[0]}
     if [ "$rc" -ne 0 ]; then
         refusal="$(grep -iEhm1 "$CODEX_LIMIT_RE" "$err" "$raw" 2>/dev/null || true)"
-        [ -n "$refusal" ] && codex_limit_record "$refusal"
+        [ -n "$refusal" ] && codex_limit_record "$refusal" "$model"
     fi
     rm -f "$instr" "$err" "$raw" 2>/dev/null
     return "$rc"
@@ -6701,7 +6735,7 @@ wake_claude_run_chain() {
     # takes the long re-book it is owed (specs/wake-queue.md rule 23a).
     if [ "$(model_backend "$WAKE_MODEL")" = "codex" ]; then
         local WAKE_MODEL="$WAKE_MODEL" WAKE_EFFORT="$WAKE_EFFORT"
-        if codex_available; then
+        if codex_available "$WAKE_MODEL"; then
             while :; do
                 ATT="$(wc -c < "$DEBUGLOG" 2>/dev/null || echo 0)"
                 case "$ATT" in ''|*[!0-9]*) ATT=0 ;; esac
@@ -6720,7 +6754,7 @@ wake_claude_run_chain() {
                         "codex server capacity stayed unavailable after $WAKE_CHAIN_ATTEMPTS attempts"
                     return 0
                 elif REFUSAL="$(codex_stream_refusal "$DEBUGLOG" "$ATT")"; then
-                    codex_limit_record "$REFUSAL"
+                    codex_limit_record "$REFUSAL" "$WAKE_MODEL"
                     claude_stream_note "codex-limit" \
                         "codex refused — the Claude walk takes the wake"
                     LIMITED=$(( LIMITED + 1 ))
@@ -6731,7 +6765,7 @@ wake_claude_run_chain() {
             done
         else
             claude_stream_note "codex-cooling" \
-                "codex is $(codex_unavailable_why) — the Claude walk takes the wake"
+                "codex is $(codex_unavailable_why "$WAKE_MODEL") — the Claude walk takes the wake"
         fi
         WAKE_MODEL="$(codex_fallback_model)"
         WAKE_EFFORT="$(claude_effort_clamp "$WAKE_EFFORT")"
@@ -7997,9 +8031,9 @@ claude_generate() {
         local CODEX_OFF CODEX_REFUSAL CODEX_CAPACITY
         local CODEX_CAPACITY_RETRY=0 CODEX_CAPACITY_MAX="$CODEX_CAPACITY_RETRIES"
         case "$CODEX_CAPACITY_MAX" in ''|*[!0-9]*) CODEX_CAPACITY_MAX=2 ;; esac
-        if ! codex_available; then
+        if ! codex_available "$MODEL"; then
             claude_stream_note "codex-cooling" \
-                "codex is $(codex_unavailable_why) — the Claude walk takes the turn"
+                "codex is $(codex_unavailable_why "$MODEL") — the Claude walk takes the turn"
             MODEL="$(codex_fallback_model)"
             EFFORT="$(claude_effort_clamp "$EFFORT")"
         else
@@ -8020,7 +8054,7 @@ claude_generate() {
                         "codex server capacity stayed unavailable after $(( CODEX_CAPACITY_RETRY + 1 )) attempts"
                     RUN_CLAUDE_WALK=""
                 elif CODEX_REFUSAL="$(codex_stream_refusal "$DEBUGLOG" "$CODEX_OFF")"; then
-                    codex_limit_record "$CODEX_REFUSAL"
+                    codex_limit_record "$CODEX_REFUSAL" "$MODEL"
                     claude_stream_note "codex-limit" \
                         "codex refused — the Claude walk takes the turn"
                     [ "${SESSION_KIND:-}" = "autonomous wake" ] || notify-send -t 8000 \

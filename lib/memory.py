@@ -2747,18 +2747,26 @@ def _codex_state_path():
         or os.path.expanduser("~/.local/share"), "deskcrab", "codex-state")
 
 
-def codex_cooling_until():
-    """The shared cooldown's epoch while one stands, else None."""
+def codex_cooling_until(model=None):
+    """The cooldown standing on this model — its own, or a whole-login one
+    (a line with no fifth field) — as an epoch, else None. Without a model,
+    the latest cooldown on any model (model-backends rule 13)."""
+    slug = codex_model_resolve(model) if model else ""
+    best = None
     try:
         with open(_codex_state_path(), encoding="utf-8", errors="replace") as f:
             for line in f:
                 parts = line.rstrip("\n").split("\t")
-                if parts and parts[0] == "blocked-until" and len(parts) > 1 \
-                        and parts[1].isdigit() and int(parts[1]) > time.time():
-                    return int(parts[1])
+                if not (parts and parts[0] == "blocked-until" and len(parts) > 1
+                        and parts[1].isdigit() and int(parts[1]) > time.time()):
+                    continue
+                owner = parts[4] if len(parts) > 4 else ""
+                if slug and owner and owner != slug:
+                    continue
+                best = max(best or 0, int(parts[1]))
     except OSError:
         pass
-    return None
+    return best
 
 
 def codex_cooling_clock(until):
@@ -2826,7 +2834,7 @@ def codex_limit_reset_epoch(text):
     return epoch
 
 
-def codex_limit_record(reason):
+def codex_limit_record(reason, model=None):
     try:
         cool = int(os.environ.get("CODEX_LIMIT_COOLDOWN") or 1800)
     except ValueError:
@@ -2841,13 +2849,33 @@ def codex_limit_record(reason):
     src = "estimated" if until is None else "reported"
     if until is None:
         until = int(time.time()) + cool
+    # The fifth field names the model that refused: the provider meters each
+    # model on its own, so the other models' standing lines survive this
+    # write. No model means a whole-login record, which replaces them all.
+    slug = codex_model_resolve(model) if model else ""
     path = _codex_state_path()
+    keep = []
+    if slug:
+        try:
+            with open(path, encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    parts = line.rstrip("\n").split("\t")
+                    if (parts and parts[0] == "blocked-until" and len(parts) > 4
+                            and parts[1].isdigit()
+                            and int(parts[1]) > time.time()
+                            and parts[4] and parts[4] != slug):
+                        keep.append(line if line.endswith("\n") else line + "\n")
+        except OSError:
+            pass
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        with open(path, "w", encoding="utf-8") as f:
-            f.write("blocked-until\t%d\t%s\t%s\n"
+        tmp = "%s.tmp.%d" % (path, os.getpid())
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.writelines(keep)
+            f.write("blocked-until\t%d\t%s\t%s\t%s\n"
                     % (until, " ".join((reason or "limit").split())[:200],
-                       src))
+                       src, slug))
+        os.replace(tmp, path)
     except OSError:
         pass
 
@@ -2859,7 +2887,7 @@ def run_codex(prompt, model, effort, timeout=600, kind="ingest"):
     the completed agent message; usage from turn.completed lands on the token
     ledger in the claude shape the ledger already reads."""
     slug = codex_model_resolve(model)
-    until = codex_cooling_until()
+    until = codex_cooling_until(model)
     if until is not None:
         raise RuntimeError(codex_cooling_line(until))
     env = {k: v for k, v in os.environ.items() if k != "OPENAI_API_KEY"}
@@ -2933,7 +2961,7 @@ def run_codex(prompt, model, effort, timeout=600, kind="ingest"):
     if rx.search(said):
         # The recorder gets the WHOLE refusal, not a first line or a clamp:
         # the reset clause it parses may sit past either.
-        codex_limit_record(said.strip() or "limit")
+        codex_limit_record(said.strip() or "limit", model)
         _ledger_record(None, kind, model, "", "refused", time.time() - t0)
         raise RuntimeError(
             "the codex login refused (%s) — cooldown recorded; no cheaper "
@@ -2981,7 +3009,7 @@ def cmd_ingest(store, args):
     # the day's material still queued for a run the judge can attend), at
     # zero token cost. --from-json consults no model, so nothing gates it.
     if not args.from_json and model_backend(args.model) == "codex":
-        until = codex_cooling_until()
+        until = codex_cooling_until(args.model)
         if until is not None:
             print(codex_cooling_line(until), file=sys.stderr)
             return 1

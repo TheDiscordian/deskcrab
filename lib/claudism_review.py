@@ -200,7 +200,9 @@ badly. Her spoken lines are evidence only; you never rewrite them.
 
 Most nights need no edit. NOTHING is a normal answer. Change only what you \
 can tie to a slip in today's material, keep the meaning of every rule and \
-fact you touch, and write in her voice: first person, plain, hers.
+fact you touch, and write in her voice: plain, hers, and in the person the \
+surrounding text already uses — the persona sheet speaks to her as "you", \
+her records and conduct files speak as "I".
 
 Edits available, at most {max_edits}:
 - {{"route": "memory-rewrite", "id": N, "text": "...", "why": "..."}}
