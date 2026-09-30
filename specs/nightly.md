@@ -434,6 +434,20 @@ which fails silently is worse than one that does not exist.
     `self-baselines/` are incorporated, never silently discarded: the first shadow of a conf-dir
     file with a same-named manual baseline seeds FROM the baseline, so the first report after
     this rule lands still diffs from the last state a hand recorded.
+25f. A deletion's recovery line answers to HEAD, not only to the index. A staged deletion
+    (`git rm`) takes the path out of the index, so an index membership test answers "untracked"
+    for a file HEAD still holds whole — and the report then reached for a shadow that was never
+    kept, because the file was tracked when it was last seen, and declared the content not
+    recoverable (2026-09-28: ten staged deletions reported lost in one alarm, the record
+    `a-staged-deletion-is-reported-to-me-as-unrecover`; `git show HEAD:<path>` printed each one
+    whole). When the index does not know a deleted path in the code repo, the watcher MUST ask
+    HEAD before it declares loss: a blob at `HEAD:<path>` is reported as a staged deletion, never
+    as untracked, with the command that prints it as the recovery route. A shadow kept for the
+    same path — the file left the index while it stayed on disk, and was seen untracked since —
+    is named beside the HEAD blob, because either may be the later state. Only a deleted path
+    that neither the index, nor HEAD, nor a shadow holds is reported as not recoverable here. A
+    recovery line that errs toward loss is the expensive error: it invites panic-copying of
+    content that was never in danger.
 26. Write declarations come in two tiers. A **strong** declaration means the path was in a provable
     write position and excuses anything, including a subtree. A **weak** declaration means the path
     merely appeared in a command she ran, and excuses exact paths only, never a deletion.
@@ -978,7 +992,7 @@ reaches her through an event wake or through a record she reads.
 
 ## TESTS
 
-**Existing:** `tests/test_notice_selfchange.sh` — 100 assertions in the most hermetic sandbox in the
+**Existing:** `tests/test_notice_selfchange.sh` — 125 assertions in the most hermetic sandbox in the
 suite, and the model for every other test; among them, `.git` internals under a watched drawer and
 under an extra watch directory fire nothing (rule 25a), and the run window both ways (rule 25b): a
 write whose mtime sits inside her own window — a live registration, a finished session's log line,
@@ -994,7 +1008,13 @@ copied; a binary file and an unreadable one are each named for what they are, th
 retained; and the settle's two singletons (rules 24a, 24b): the tail of a burst books the one named
 re-check and no stamped per-trigger unit, a trigger arriving while that re-check is armed books
 nothing at all, and a run that finds the judgement lock held folds into the re-check and wakes
-nobody, while the same change is judged in full the moment the lock is free.
+nobody, while the same change is judged in full the moment the lock is free; and a deletion's
+recovery line (rule 25f), against a repo with a real staged deletion: the report calls it a staged
+deletion, never untracked or unrecoverable, and the `git show HEAD:<path>` route it prints is run
+and returns the content whole, while an unstaged deletion keeps its git-tracked line; a file staged
+but never committed, then removed, is still named not recoverable with no HEAD route invented; and
+a file taken out of the index, edited and then deleted names both the HEAD blob and the retained
+shadow, the shadow kept and its content never inlined.
 `tests/test_notice_jobclaim.sh` — rules 25c and 25d both ways, against a fabricated jobs ledger and
 a scratch tree: a running job's save, three successive saves, a committed change, and two concurrent
 jobs' writes all stay quiet with the job id on the quiet line; a deletion under a live claim still

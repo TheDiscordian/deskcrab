@@ -861,6 +861,21 @@ RTMP="$(mktemp "$STATE_DIR/notice-self-report-tmp.XXXXXX" 2>/dev/null)" || RTMP=
                                 git -C "$SCRIPT_DIR" log -3 --oneline -- "$rel" 2>/dev/null | sed 's/^/  - /'
                             fi
                         fi
+                    elif [ "$want_kind" = "deleted" ] \
+                        && [ "$(git -C "$SCRIPT_DIR" cat-file -t "HEAD:$rel" 2>/dev/null)" = "blob" ]; then
+                        # A STAGED deletion (`git rm`) has left the index, so
+                        # the membership test above answers "untracked" for a
+                        # file HEAD still holds whole — and no shadow was ever
+                        # kept for it, because it was tracked when last seen.
+                        # The 2026-09-28 alarm called ten such files lost.
+                        # Ask HEAD before declaring loss (spec rule 25f).
+                        echo "- a staged deletion: gone from the index too, but HEAD still holds it: \`git -C $SCRIPT_DIR show HEAD:$rel\`"
+                        git -C "$SCRIPT_DIR" log -1 --oneline -- "$rel" 2>/dev/null \
+                            | sed 's/^/- last commit: /'
+                        # Out of the index while it stayed on disk, and seen
+                        # untracked since: the shadow may be the later state.
+                        [ -f "$SHADOW_DIR$path" ] \
+                            && echo "- a shadow of it as last seen untracked is also held privately at: $SHADOW_DIR$path (it may be later than the HEAD blob)"
                     else
                         echo "- in the repo but not git-tracked"
                         shadow_report "$want_kind" "$path"

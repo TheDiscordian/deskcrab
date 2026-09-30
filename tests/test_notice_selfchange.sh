@@ -500,3 +500,91 @@ exec 7>&-
 run 99
 check "nothing was lost: the change is judged once the lock is free" \
     [ "$(wakes)" = 24 ]
+
+echo "== rule 25f: a staged deletion is recoverable from HEAD, and the report says so =="
+# The 2026-09-28 alarm: `git rm` takes the path out of the index, so the
+# index membership test answered "untracked", no shadow had ever been kept for
+# a file that was tracked when it was last seen, and the report declared lost
+# what `git show HEAD:<path>` prints whole.
+G() { git -C "$T/repo" -c user.email=t@t -c user.name=t "$@"; }
+section() {  # <path> — that path's lines of the newest report
+    awk -v h="### $1" '$0 == h { on = 1; next } /^##/ { on = 0 } on' "$REPORT"
+}
+: > "$STATE/notice-self.suppress"
+echo "committed cargo" > "$T/repo/staged-gone.txt"
+echo "committed ballast" > "$T/repo/plain-gone.txt"
+G add -- staged-gone.txt plain-gone.txt
+G commit -qm "two files to lose"
+W=$(wakes)
+run   # consume the creations as their own burst
+check "the committed creations fire" [ "$(wakes)" = "$(( W + 1 ))" ]
+G rm -q -- staged-gone.txt       # staged: gone from disk AND from the index
+rm "$T/repo/plain-gone.txt"      # unstaged: gone from disk, the index still knows it
+check "the index no longer knows the staged deletion" \
+    bash -c "! git -C '$T/repo' ls-files --error-unmatch -- staged-gone.txt >/dev/null 2>&1"
+run
+check "the deletions fire" [ "$(wakes)" = "$(( W + 2 ))" ]
+REPORT="$(ls -1t "$STATE"/notice-self-report-*.md | head -1)"
+SEC="$(section "$T/repo/staged-gone.txt")"
+check "the staged deletion has its own report section" [ -n "$SEC" ]
+check "it is named a staged deletion" contains "$SEC" "staged deletion"
+check "the HEAD blob is named as the recovery route" \
+    contains "$SEC" "git -C $T/repo show HEAD:staged-gone.txt"
+check "it is not called untracked" bash -c '! grep -q "not git-tracked" <<< "$1"' _ "$SEC"
+check "it is not called unrecoverable" bash -c '! grep -q "not recoverable" <<< "$1"' _ "$SEC"
+ROUTE="$(sed -n 's/.*`\(git -C [^`]* show HEAD:[^`]*\)`.*/\1/p' <<< "$SEC" | head -1)"
+check_eq "the route the report prints returns the content whole" \
+    "$(bash -c "$ROUTE" 2>/dev/null)" "committed cargo"
+check "the last commit that held it is named" contains "$SEC" "last commit: "
+SEC="$(section "$T/repo/plain-gone.txt")"
+check "an unstaged deletion keeps its git-tracked line" \
+    contains "$SEC" "git-tracked; last committed version: \`git -C $T/repo show HEAD:plain-gone.txt\`"
+
+echo "== but a deletion neither HEAD nor a shadow holds is still named unrecoverable =="
+# Staged, never committed: the index knew it, so no shadow was kept; `git rm
+# -f` then takes it out of the index, and HEAD never had it. Asking HEAD must
+# not turn this into a recovery route that prints nothing.
+echo "staged, never committed" > "$T/repo/never-committed.txt"
+G add -- never-committed.txt
+W=$(wakes)
+run   # the creation, its own burst
+check "the staged creation fires" [ "$(wakes)" = "$(( W + 1 ))" ]
+check "no shadow was kept while the index knew it" \
+    test ! -e "$SHADOWS$T/repo/never-committed.txt"
+G rm -qf -- never-committed.txt
+check "HEAD never held it" \
+    bash -c "! git -C '$T/repo' cat-file -e HEAD:never-committed.txt 2>/dev/null"
+run
+check "its deletion fires" [ "$(wakes)" = "$(( W + 2 ))" ]
+REPORT="$(ls -1t "$STATE"/notice-self-report-*.md | head -1)"
+SEC="$(section "$T/repo/never-committed.txt")"
+check "it is named not git-tracked" contains "$SEC" "in the repo but not git-tracked"
+check "and not recoverable here" contains "$SEC" "the content is not recoverable here"
+check "no HEAD route is invented for it" bash -c '! grep -q "show HEAD:" <<< "$1"' _ "$SEC"
+
+echo "== and where HEAD and a shadow both hold it, both are named =="
+# Out of the index but left on disk (`git rm --cached`), then edited: the
+# watcher has shadowed the untracked file since, so HEAD holds the committed
+# state and the shadow the later one. Neither may be dropped from the report.
+echo "the committed state" > "$T/repo/uncached-gone.txt"
+G add -- uncached-gone.txt
+G commit -qm "one file to uncache"
+W=$(wakes)
+run   # the creation, its own burst
+G rm -q --cached -- uncached-gone.txt
+echo "a later untracked line" >> "$T/repo/uncached-gone.txt"
+run   # the outside edit: first sighting, a shadow is kept from here
+check "the untracked edit fires and is shadowed" \
+    grep -q "a later untracked line" "$SHADOWS$T/repo/uncached-gone.txt"
+rm "$T/repo/uncached-gone.txt"
+run
+check "its deletion fires" [ "$(wakes)" = "$(( W + 3 ))" ]
+REPORT="$(ls -1t "$STATE"/notice-self-report-*.md | head -1)"
+SEC="$(section "$T/repo/uncached-gone.txt")"
+check "the HEAD blob is named" contains "$SEC" "git -C $T/repo show HEAD:uncached-gone.txt"
+check "the shadow is named beside it" contains "$SEC" "$SHADOWS$T/repo/uncached-gone.txt"
+check "nothing is called unrecoverable" bash -c '! grep -q "not recoverable" <<< "$1"' _ "$SEC"
+check "the shadow survives the deletion" \
+    grep -q "a later untracked line" "$SHADOWS$T/repo/uncached-gone.txt"
+check "and the report inlines none of its content" \
+    bash -c "! grep -q 'a later untracked line' '$REPORT'"
