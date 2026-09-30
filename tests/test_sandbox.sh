@@ -41,6 +41,32 @@ check "the developer's account choice is not inherited" \
 check "the session bus is out of reach" \
     [ -z "${DBUS_SESSION_BUS_ADDRESS:-}" ]
 
+# The one chess knob that crosses the clean environment (rule 4): the chess
+# suites read DESKCRAB_CHESS_VENV as their override, and a caller's value was
+# stripped before any of them could — a run pointed at no venv, to see what a
+# box without one reports, ran the live venv instead. A fresh phase 1 each
+# way: the value given arrives as given, and none given arrives empty, so the
+# suites' own default still stands.
+CHILD_VENV="$SANDBOX/tmp/child-chess-venv.sh"
+cat > "$CHILD_VENV" <<CHILD
+#!/bin/bash
+. "$SANDBOX_REPO/tests/lib/sandbox.sh"
+echo "chess-venv=[\${DESKCRAB_CHESS_VENV:-}]"
+ok "the child ran"
+CHILD
+chmod +x "$CHILD_VENV"
+venv_child() { # [VAR=value…] — the child's chess-venv line, from a fresh phase 1
+    env -u DESKCRAB_SANDBOX_ROOT -u DESKCRAB_SANDBOX_REPO \
+        -u DESKCRAB_SANDBOX_LIB -u DESKCRAB_SANDBOX_NAME -u DESKCRAB_CHESS_VENV \
+        DESKCRAB_SANDBOX_SETTLE=2 DESKCRAB_SANDBOX_VIGIL=4 "$@" \
+        bash "$CHILD_VENV" 2>&1 | grep '^chess-venv='
+}
+check_eq "a caller's chess venv override reaches the sandboxed test" \
+    "$(venv_child DESKCRAB_CHESS_VENV="$SANDBOX/no such venv")" \
+    "chess-venv=[$SANDBOX/no such venv]"
+check_eq "with none given it arrives empty, so a suite's default stands" \
+    "$(venv_child)" "chess-venv=[]"
+
 echo
 echo "the desktop is stubbed from one directory:"
 for tool in notify-send piper-tts aplay render-md hyprctl kitty ffmpeg \

@@ -22,6 +22,14 @@ during the very investigation that produced these specs.
    tools, the transcriber, and the CLI itself.
 4. The helper MUST start from a clean environment rather than inheriting the developer's, on the
    model of the existing watcher test.
+   - Two interpreter locations cross that boundary by name, because each names an interpreter a
+     suite runs and never state a suite writes: `MEMORY_PYTHON`, the store's venv interpreter,
+     which lives under the real home the sandbox is about to move; and `DESKCRAB_CHESS_VENV`, the
+     chess venv the mover's suites run in. The caller's value reaches the sandboxed test as given;
+     unset, it arrives empty and the suites fall back to the live venv. The chess suites always
+     read the second as their override, and until 2026-09-30 the clean environment stripped it
+     before any of them could: a run pointed at another venv — or at none, to prove what a box
+     without one reports — silently ran against the live venv instead.
 5. The helper MUST create its own temporary root and remove it on exit, including on failure.
 6. A test MUST NOT set an environment variable that papers over a defect in the code. If the code
    should unset a variable, the test asserts that it does — it does not strip the variable itself.
@@ -192,6 +200,20 @@ during the very investigation that produced these specs.
     outside the streamer, never from the pipeline's own receipt or logs.
 17. A test that loads a module under test MUST load the real module, not a re-implementation, or a
     green run is a statement about the test.
+17a. A check that did not run MUST NOT be counted as passed. When the box lacks what a check needs
+    — an optional venv, a tool that is not a dependency — the test skips through the helper's one
+    skip door: the reason on its own line, exit 77, reported by the runner as a skip and never as
+    a pass. A test MUST NOT stand the expected output in for the code it could not run: a check
+    that passes against the test's own words is rule 17's re-implementation in its smallest form.
+    A file that can still hold part of its contract runs and counts that part FIRST and skips
+    after it, so a failure among the checks that did run is still a failure — exit 1, never 77 —
+    and the file is never reported green with a reader unexercised. Found 2026-09-30 in
+    `tests/test_codex_model_cooldown.sh`: with no chess venv it printed SKIP, wrote the two lines
+    the mover would have printed into its own captured output, and counted both mover checks as
+    passed — fifteen green, two of them about nothing. Still owed: thirteen older chess suites
+    announce `SKIP` with no venv and `exit 0`, which the runner reports as a pass with nothing
+    counted. They count no unrun check, so they hold the MUST NOT above; what they owe is the
+    door.
 18. A test for a bug MUST be red before the fix and green after. A test written after the fix, which
     was never run against the broken code, proves nothing.
 19. Every test file MUST be executable and MUST carry the runner line it is invoked with. The bit
@@ -302,7 +324,9 @@ These are the things the current suite gets right. Carry them into the new harne
 
 The harness tests itself:
 
-- `tests/test_sandbox.sh` — the helper pins every knob in the list; a test that tries to write a
+- `tests/test_sandbox.sh` — the helper pins every knob in the list; a caller's
+  `DESKCRAB_CHESS_VENV` reaches the sandboxed test as given and an unset one arrives empty
+  (rule 4); a test that tries to write a
   live path fails; a test that tries to book a real wake fails; a test that tries to start a real
   model session fails; the photograph's named exclusions drop exactly the listed paths and
   nothing beside them (a lookalike name, a finished job's log, a booking record all stay in);

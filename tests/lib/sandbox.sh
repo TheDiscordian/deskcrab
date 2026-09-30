@@ -367,6 +367,13 @@ CONF
     _sb_venv="${MEMORY_PYTHON:-$HOME/.local/share/deskcrab/venv/bin/python}"
     [ -x "$_sb_venv" ] || _sb_venv=""
 
+    # The chess venv crosses the same way and for the same reason (rule 4): an
+    # interpreter a suite runs, never state it writes. Every chess suite reads
+    # DESKCRAB_CHESS_VENV as its override, and `env -i` below stripped it
+    # before any of them could — so a run pointed at no venv, to see what a box
+    # without one reports, quietly ran the live venv instead. Passed as given,
+    # never checked here: a missing venv is each suite's own skip to announce.
+
     exec env -i \
         DESKCRAB_SANDBOX_ROOT="$_sb_root" \
         DESKCRAB_SANDBOX_REPO="$_sb_repo" \
@@ -412,6 +419,7 @@ CONF
         OPENRSC_STATE_DIR="$_sb_root/state/game" \
         DESKCRAB_OPENRSC_STATE_DIR="$_sb_root/state/game" \
         MEMORY_PYTHON="$_sb_venv" \
+        DESKCRAB_CHESS_VENV="${DESKCRAB_CHESS_VENV:-}" \
         SANDBOX_CODEX_LOG="$_sb_root/witness/codex.log" \
         SANDBOX_SYSTEMD_LOG="$_sb_root/witness/systemd-run.log" \
         SANDBOX_SYSTEMCTL_LOG="$_sb_root/witness/systemctl.log" \

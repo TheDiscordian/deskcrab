@@ -3,7 +3,9 @@
 # rule 13. The provider meters each model on its own, so a limit on one model
 # must not stand another down; a line with no model is a whole-login cooldown
 # and still benches everything. Held for all three readers: the shell helpers,
-# lib/memory.py's mirror, and the chess mover's. Run:
+# lib/memory.py's mirror, and the chess mover's — the last inside the chess
+# venv, and on a box without one the file skips (77) rather than count a
+# reader it never loaded. Run:
 # bash tests/test_codex_model_cooldown.sh
 . "$(dirname "$(readlink -f "$0")")/lib/sandbox.sh"
 set -u
@@ -78,10 +80,23 @@ m.codex_limit_record("You've hit your usage limit.", "model-b")
 print("both", m.codex_cooling_until("model-a") is not None)
 EOF
 )"
-CPY="${DESKCRAB_CHESS_VENV:-$SANDBOX_LIVE_DATA/chess/venv}/bin/python"
-if [ -x "$CPY" ]; then
-    OUT="$OUT
-$(DESKCRAB_CODEX_STATE="$SANDBOX/codex-state-chess" "$CPY" - "$REPO" <<'EOF'
+pyv() { printf '%s\n' "$OUT" | awk -v k="$1" '$1 == k {print $2; exit}'; }
+check_eq "memory.py benches the refusing model" "$(pyv a)" "True"
+check_eq "…reached through the sol alias too" "$(pyv sol)" "True"
+check_eq "…and not another" "$(pyv b)" "False"
+check_eq "…and a second refusal keeps the first" "$(pyv both)" "True"
+
+# The mover's reader runs in the chess venv or not at all. With no venv its
+# two checks are not run and not counted: the file skips (77) HERE, after
+# everything above has been held — a red up there still reads red, and the
+# runner never reports this file green with a reader unexercised. This branch
+# used to print SKIP and then write the two lines the mover would have printed
+# into OUT, so both checks passed against the test's own words
+# (specs/test-harness.md rule 17a).
+CVENV="${DESKCRAB_CHESS_VENV:-$SANDBOX_LIVE_DATA/chess/venv}"
+CPY="$CVENV/bin/python"
+[ -x "$CPY" ] || sandbox_skip "no chess venv at $CVENV — the chess mover's cooldown reader was not exercised (the shell helpers and memory.py were, above)"
+OUT="$(DESKCRAB_CODEX_STATE="$SANDBOX/codex-state-chess" "$CPY" - "$REPO" <<'EOF'
 import importlib.machinery, importlib.util, os, sys, time
 repo = sys.argv[1]
 sys.path.insert(0, os.path.join(repo, "lib"))
@@ -96,16 +111,5 @@ print("chess-a", c._codex_cooling("model-a"))
 print("chess-b", c._codex_cooling("model-b"))
 EOF
 )"
-else
-    echo "SKIP: no chess venv — the mover's reader is unexercised"
-    OUT="$OUT
-chess-a True
-chess-b False"
-fi
-pyv() { printf '%s\n' "$OUT" | awk -v k="$1" '$1 == k {print $2; exit}'; }
-check_eq "memory.py benches the refusing model" "$(pyv a)" "True"
-check_eq "…reached through the sol alias too" "$(pyv sol)" "True"
-check_eq "…and not another" "$(pyv b)" "False"
-check_eq "…and a second refusal keeps the first" "$(pyv both)" "True"
 check_eq "the chess mover benches the refusing model" "$(pyv chess-a)" "True"
 check_eq "…and not another" "$(pyv chess-b)" "False"
