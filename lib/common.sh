@@ -1814,10 +1814,10 @@ account_state_line() {
     local codex_slug codex_until
     codex_limit_list | while IFS="$(printf '\t')" read -r codex_slug codex_until; do
         if [ "$codex_slug" = codex ]; then
-            printf 'Codex: over its limit — cooling until %s; codex-model turns fall back to the Claude walk\n' \
+            printf 'Codex: over its limit — trying again at %s; codex-model turns fall back to the Claude walk\n' \
                 "$(codex_cooling_clock "$codex_until")"
         else
-            printf 'Codex: %s over its limit — cooling until %s; turns on that model fall back to the Claude walk\n' \
+            printf 'Codex: %s over its limit — trying again at %s; turns on that model fall back to the Claude walk\n' \
                 "$codex_slug" "$(codex_cooling_clock "$codex_until")"
         fi
     done
@@ -6041,6 +6041,9 @@ CODEX_HOME="${CODEX_HOME:-$HOME/.codex}"
 export CODEX_BIN CODEX_HOME
 CODEX_MODEL_SOL="${CODEX_MODEL_SOL:-gpt-5.6-sol}"
 CODEX_LIMIT_COOLDOWN="${CODEX_LIMIT_COOLDOWN:-1800}"
+# The longest a refusal benches a model before the next run tries it again,
+# whatever reset time the refusal quoted (specs/model-backends.md rule 13).
+CODEX_LIMIT_RECHECK="${CODEX_LIMIT_RECHECK:-3600}"
 CODEX_PROMPT_MODE="${CODEX_PROMPT_MODE:-instructions}"
 # Liberal on purpose: only codex-owned error text is ever tested against it —
 # error events, a failed turn's message, the CLI's own stderr — never a
@@ -6115,17 +6118,25 @@ codex_limit_reset_epoch() {  # <refusal text> -> epoch, only for a sane read
 codex_limit_record() {  # <refusal text> [model]
     local f until src slug tmp; f="$(_codex_state_file)"
     mkdir -p "$(dirname "$f")" 2>/dev/null
-    # The refusal's own reset time IS the cooldown when it quotes one; the
-    # flat window is the fallback for a refusal that quotes nothing usable.
-    # The fourth field says which, so no reader mistakes a guess for a
-    # measurement. The fifth names the model that refused: the provider
-    # meters each model on its own, so a limit on one never benches the
-    # others (specs/model-backends.md rule 13). A line without it is a
-    # whole-login cooldown and benches every model.
-    if until="$(codex_limit_reset_epoch "${1:-}")"; then
+    # The refusal's own reset time is kept (sixth field) but never trusted
+    # as a block past CODEX_LIMIT_RECHECK: the provider lifts limits early
+    # (credits bought, a reset that came sooner), and a model benched on a
+    # days-old quote is a model nobody is using for nothing. Past the window
+    # the next run tries once; a fresh refusal records a fresh line. The
+    # flat window covers a refusal that quotes nothing usable. The fourth
+    # field says which kind of time was quoted. The fifth names the model
+    # that refused: the provider meters each model on its own, so a limit on
+    # one never benches the others (specs/model-backends.md rule 13). A line
+    # without it is a whole-login cooldown and benches every model.
+    local now reported=""; now="$(date +%s)"
+    if reported="$(codex_limit_reset_epoch "${1:-}")"; then
         src="reported"
+        until="$reported"
+        [ "$until" -gt $(( now + CODEX_LIMIT_RECHECK )) ] \
+            && until=$(( now + CODEX_LIMIT_RECHECK ))
     else
-        until=$(( $(date +%s) + CODEX_LIMIT_COOLDOWN ))
+        reported=""
+        until=$(( now + CODEX_LIMIT_COOLDOWN ))
         src="estimated"
     fi
     slug=""
@@ -6137,9 +6148,9 @@ codex_limit_record() {  # <refusal text> [model]
         # all, and an expired line is dropped.
         [ -r "$f" ] && awk -F'\t' -v slug="$slug" -v now="$(date +%s)" \
             '$1 == "blocked-until" && $2 > now && slug != "" && $5 != slug' "$f"
-        printf 'blocked-until\t%s\t%s\t%s\t%s\n' "$until" \
+        printf 'blocked-until\t%s\t%s\t%s\t%s\t%s\n' "$until" \
             "$(printf '%s' "${1:-limit}" | tr '\n\t' '  ' | head -c 200)" \
-            "$src" "$slug"
+            "$src" "$slug" "$reported"
     } > "$tmp" 2>/dev/null && mv -f "$tmp" "$f" 2>/dev/null
     rm -f "$tmp" 2>/dev/null
 }

@@ -29,6 +29,10 @@ sandbox_stub codex <<'STUB'
 exit 0
 STUB
 
+# The checks below pin how a quoted reset time is READ, so they run with a
+# re-check window wide enough never to cut it; the window itself is pinned at
+# the end of the file.
+export CODEX_LIMIT_RECHECK=604800
 sb() { DESKCRAB_CODEX_STATE="$CODEX_STATE" sandbox_bash "$@"; }
 field() { awk -F'\t' -v n="$1" '$1 == "blocked-until" {print $n; exit}' "$CODEX_STATE" 2>/dev/null; }
 
@@ -206,3 +210,19 @@ EOF
 else
     fail "the memory venv interpreter is not available — the python recorder is unproven"
 fi
+
+echo
+echo "the re-check window — a quoted reset time never benches a model for days (rule 13):"
+unset CODEX_LIMIT_RECHECK
+rm -f "$CODEX_STATE"
+BEFORE="$(date +%s)"
+sb 'codex_limit_record "$MSG_REPORTED" model-a'
+AFTER="$(date +%s)"
+G="$(field 2)"
+check "the next try is at most an hour out, however far the quote reaches" \
+    test -n "$G" -a "$G" -ge $(( BEFORE + 3600 )) -a "$G" -le $(( AFTER + 3600 ))
+check_eq "the provider's quoted time is kept beside it" "$(field 6)" "$TARGET_EPOCH"
+check_eq "…and the line still says reported" "$(field 4)" "reported"
+check_eq "the model is listed as cooling until that next try" \
+    "$(sb 'codex_limit_list')" "model-a$(printf '\t')$G"
+

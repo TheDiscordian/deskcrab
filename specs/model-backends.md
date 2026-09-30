@@ -151,16 +151,22 @@ watchdog expects a trickle, so the translator carries a heartbeat.
 13. A refusal records a cooldown in `codex-state` (in the deskcrab data dir). When the refusal
     text itself quotes a reset time — the wording seen in the wild is
     `try again at Sep 6th, 2026 10:28 PM`: ordinal day, US month-day-year, 12-hour clock, local
-    time — that quoted moment IS the cooldown. The recorder parses the FULL refusal text it was
+    time — that quoted moment is recorded, but it is never trusted as a block for longer than
+    `CODEX_LIMIT_RECHECK` (default 3600 seconds) after the refusal: the provider lifts limits
+    early — credits bought, a reset that comes sooner than the quote — and a model benched for
+    days on a stale quote is a working model nobody uses. Past the window the next run tries
+    once, and a fresh refusal records a fresh line. The recorder parses the FULL refusal text it was
     handed, before its own comment clamp shortens anything, and tolerates the clause appearing
     more than once. The parse is conservative: a clause that does not clearly match, a time not
     in the future, or a time more than a week out is a bad read, not a booking, and each falls
     back to the flat `CODEX_LIMIT_COOLDOWN` window (default 1800 seconds) — the pre-existing
     behaviour, unchanged, which also covers a refusal that quotes no time at all. The state line
-    is `blocked-until`, the expiry epoch, the refusal text (one line, at most 200 characters),
+    is `blocked-until`, the epoch of the next try, the refusal text (one line, at most 200
+    characters),
     then a marker: `reported` when the epoch is the provider's own answer, `estimated` when it is
     our flat-window guess — so no reader mistakes a guess for a measurement — and last the codex
-    slug of the model that refused. The provider meters each model on its own, so a cooldown
+    slug of the model that refused, then the provider's quoted epoch when there was one. The
+    provider meters each model on its own, so a cooldown
     benches only its own model: the file holds one line per cooling model, a refusal replaces its
     model's line and keeps the others, and `codex_available <model>` answers no only while that
     model's line, or a whole-login line (one with no slug), stands. Every path asks about the

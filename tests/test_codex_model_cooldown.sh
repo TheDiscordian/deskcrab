@@ -78,6 +78,12 @@ print("sol", m.codex_cooling_until("sol") is not None)
 print("b", m.codex_cooling_until("model-b") is not None)
 m.codex_limit_record("You've hit your usage limit.", "model-b")
 print("both", m.codex_cooling_until("model-a") is not None)
+far = "You've hit your usage limit. Try again at %s." % time.strftime(
+    "%b %-d, %Y %-I:%M %p", time.localtime(time.time() + 2 * 86400))
+os.environ.pop("CODEX_LIMIT_RECHECK", None)
+m.codex_limit_record(far, "model-c")
+u = m.codex_cooling_until("model-c")
+print("capped", u is not None and u <= time.time() + 3600 + 5)
 EOF
 )"
 pyv() { printf '%s\n' "$OUT" | awk -v k="$1" '$1 == k {print $2; exit}'; }
@@ -85,6 +91,7 @@ check_eq "memory.py benches the refusing model" "$(pyv a)" "True"
 check_eq "…reached through the sol alias too" "$(pyv sol)" "True"
 check_eq "…and not another" "$(pyv b)" "False"
 check_eq "…and a second refusal keeps the first" "$(pyv both)" "True"
+check_eq "a quote two days out benches the model an hour at most" "$(pyv capped)" "True"
 
 # The mover's reader runs in the chess venv or not at all. With no venv its
 # two checks are not run and not counted: the file skips (77) HERE, after

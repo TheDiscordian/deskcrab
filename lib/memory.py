@@ -2845,10 +2845,17 @@ def codex_limit_record(reason, model=None):
     # measurement — every reader of this line splits on TAB and consults
     # only the first two fields, so the extra field costs none of them
     # anything.
-    until = codex_limit_reset_epoch(reason or "")
-    src = "estimated" if until is None else "reported"
-    if until is None:
-        until = int(time.time()) + cool
+    # The quoted reset time is kept (sixth field) but never trusted as a
+    # block past CODEX_LIMIT_RECHECK: the provider lifts limits early, and
+    # the next run past the window tries once (model-backends rule 13).
+    try:
+        recheck = int(os.environ.get("CODEX_LIMIT_RECHECK") or 3600)
+    except ValueError:
+        recheck = 3600
+    now = int(time.time())
+    reported = codex_limit_reset_epoch(reason or "")
+    src = "estimated" if reported is None else "reported"
+    until = now + cool if reported is None else min(reported, now + recheck)
     # The fifth field names the model that refused: the provider meters each
     # model on its own, so the other models' standing lines survive this
     # write. No model means a whole-login record, which replaces them all.
@@ -2872,9 +2879,9 @@ def codex_limit_record(reason, model=None):
         tmp = "%s.tmp.%d" % (path, os.getpid())
         with open(tmp, "w", encoding="utf-8") as f:
             f.writelines(keep)
-            f.write("blocked-until\t%d\t%s\t%s\t%s\n"
+            f.write("blocked-until\t%d\t%s\t%s\t%s\t%s\n"
                     % (until, " ".join((reason or "limit").split())[:200],
-                       src, slug))
+                       src, slug, "" if reported is None else reported))
         os.replace(tmp, path)
     except OSError:
         pass
