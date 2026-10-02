@@ -116,7 +116,9 @@ Every booking is now made as a *delay* rather than by passing the spec through t
 calendar spec like `09:45` used to make a transient timer that came back every morning while the
 record covered only the next firing — so the repetition was accidental, invisible to the reconciler,
 and left ghost timers `crab status` could not explain. A wake-at is one-shot, and now it is one-shot
-in systemd too.
+in systemd too. (The delay itself turned out to be the next defect — see 2026-10-02 below. What
+survives of this entry is the half that was right: never a BARE spec. A fully dated instant elapses
+once.)
 
 ### The report read systemd instead of the records
 
@@ -248,6 +250,38 @@ most ONE want") was itself a small appointment. Repairs and owed engineering sta
 builders. The deliberate exception to rule 20 (an active interaction never defers a session) is
 carved for exactly this one wake class: its whole premise is the idleness, so a deferral loses no
 reading and no dated thought. Contract: rules 40a-40f.
+
+### 2026-10-02 — every pending wake had drifted off its own record
+
+Seven sittings were pending and every one of their timers stood later than its record: a wake
+booked for a Thursday at 14:00 was armed for the Friday of the week after, and five of the seven
+records were already in the past with their timers still counting. The timers had been armed as
+delays (`systemd-run --on-active`), which is what the calendar-spec entry above prescribed — and a
+delay is counted from the timer's ACTIVATION. The user manager starts that count again on every
+`daemon-reload`: the journal reached back only a day and showed three reloads in it, and each of
+the seven timers' next elapse was exactly its original delay measured from the last of those.
+Nothing noticed, for three reasons that each looked like a virtue. `crab status` reads the
+records, as it must, so it went on naming the promised times. Restore skipped any unit whose timer
+was merely active, so the one pass that could have healed the queue called it whole at the end of
+every wake. And the record-versus-timer divergence the test-harness audit had listed as never
+exercised was still never exercised.
+
+Three things were measured in a private user manager before anything was changed, because each
+decided part of the repair. A delay timer armed and reloaded twenty seconds later moved by those
+twenty seconds; a dated instant armed beside it did not move. A dated instant that is already
+behind the manager's clock when its timer starts — five seconds behind, or inside the current
+second — is accepted, answered with exit zero, and never fired: so a one-second urgent booking
+cannot be a dated instant, and the near lane keeps those as delays, where the delay's own length
+bounds what a reload can cost. And a reload landing after a dated instant has passed but before
+the timer's accuracy window has let it fire does not lose it: it fires on the reload.
+
+The missed sittings were the last decision. Rule 30's overdue path — once, promptly, staggered —
+was written for a machine that had been off, and would have released five personal sittings
+within about twenty minutes of whatever moment the repair landed, some of them three weeks
+stale. They were re-seated instead at the next occurrence of the clock time each had been booked
+for: the hour she chose is the part of the booking still worth keeping once its date is gone.
+Event wakes and the reason-less return keep the prompt path, because something is waiting on the
+other end of those. Contract: rules 8, 30a and 30b.
 
 Contract: [`specs/wake-queue.md`](../specs/wake-queue.md).
 

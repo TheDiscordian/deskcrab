@@ -156,7 +156,7 @@ check_eq "the restoration is durable as well as spoken" "$(led_count restored)" 
 check_eq "no floor wake is booked on top of a pending scheduled one" \
     "$(led_count booked)" "0"
 check_eq "exactly one booking reached the schedule gate" \
-    "$(armed on-active)" "1"
+    "$(armed '--on-')" "1"
 
 echo
 echo "restore is idempotent when the timers are already there:"
@@ -244,4 +244,225 @@ check_eq "the record survives an operation that could not take the lock" \
 case "$out" in
     *"booking lock is still held"*) ok "and both say the lock was not theirs to take" ;;
     *) fail "an operation that cannot lock must say so and change nothing" "$out" ;;
+esac
+
+# ---------------------------------------------------------------------------
+# Rules 30a and 30b: a LIVE timer is checked against its record, never trusted.
+#
+# Until 2026-10-02 every timer was armed as a delay, the user manager started
+# that delay again on each daemon-reload, and restore skipped any unit whose
+# timer was merely active — so seven sittings stood armed for moments their
+# records had never named, five of those records already in the past, and the
+# one pass that could have healed them called the queue whole.
+#
+# The manager's answers are scripted here: which timers are alive, and where
+# each one stands (an epoch for a dated timer, nothing for a delay timer —
+# exactly what NextElapseUSecRealtime says of each). The same cases run against
+# a real manager in tests/test_wake_reload_drift.sh.
+MGR="$T/mgr.timers"
+STOPPED="$T/mgr.stopped"
+cat > "$T/mgr.sh" <<MGRSH
+systemctl() {
+    case "\$*" in
+        *is-active*.service) return 1 ;;
+        *is-active*.timer)
+            local u; for u in "\$@"; do :; done
+            awk -F'\t' -v u="\${u%.timer}" '\$1 == u { hit = 1 } END { exit !hit }' "$MGR" 2>/dev/null
+            return \$? ;;
+        *" show "*)
+            awk -F'\t' '{ printf "Id=%s.timer\nNextElapseUSecRealtime=%s\n\n", \$1, (\$2 == "" ? "" : "@" \$2) }' "$MGR" 2>/dev/null
+            return 0 ;;
+        *" stop "*)
+            local u; for u in "\$@"; do :; done
+            printf '%s\n' "\$u" >> "$STOPPED"
+            return 0 ;;
+    esac
+    return 0
+}
+MGRSH
+alive() { # <unit> [<epoch the dated timer stands on> — empty for a delay timer]
+    printf '%s\t%s\n' "$1" "${2:-}" >> "$MGR"
+}
+restore_against_manager() { run ". '$T/mgr.sh'; wake_restore"; }
+mclean() { clean; rm -f "$MGR" "$STOPPED"; : > "$MGR"; }
+stopped() { sandbox_count_in "$1" "$STOPPED"; }
+fire_of() { awk -F'\t' '{ print $1; exit }' "$W/$1.wake" 2>/dev/null; }
+utc() { date -u -d "@$1" '+%Y-%m-%d %H:%M:%S UTC'; }
+clock() { date -d "@$1" '+%H:%M:%S'; }
+
+echo
+echo "a live timer that stands where its record says is left alone:"
+mclean
+record deskcrab-wake-agree $(( NOW + 3600 )) scheduled "an agreed moment" herself
+alive deskcrab-wake-agree $(( NOW + 3600 ))
+out="$(restore_against_manager)"
+check_eq "nothing is stopped" "$(stopped .)" "0"
+check_eq "and nothing is armed" "$(attempts)" "0"
+check_eq "nothing about it reaches the ledger" "$(led_count reconciled)" "0"
+case "$out" in
+    *"needs no restoring"*) ok "restore says the queue was already whole" ;;
+    *) fail "an agreeing queue restores to a stated nothing" "$out" ;;
+esac
+
+echo
+echo "a delay timer left by the old arming is re-armed at the record's epoch:"
+mclean
+record deskcrab-wake-drift $(( NOW + 7200 )) scheduled "the sitting that drifted" herself
+alive deskcrab-wake-drift ""
+before="$(cksum < "$W/deskcrab-wake-drift.wake")"
+out="$(restore_against_manager)"
+check_eq "the drifted timer is stopped, once" "$(stopped 'deskcrab-wake-drift.timer')" "1"
+check_eq "one timer is armed in its place" "$(attempts)" "1"
+check_eq "at the record's own instant" \
+    "$(armed "unit=deskcrab-wake-drift .*--on-calendar=$(utc $(( NOW + 7200 ))) ")" "1"
+check_eq "and not as another delay" "$(armed 'on-active')" "0"
+check_eq "the record is not rewritten to suit a timer" \
+    "$(cksum < "$W/deskcrab-wake-drift.wake")" "$before"
+check_eq "the ledger calls it what it was" "$(led_count reconciled)" "1"
+check_eq "and says where the timer stood" \
+    "$(led_actor reconciled deskcrab-wake-drift)" "restore (timer stood on a delay)"
+check_eq "it is not counted as a plain restoration" "$(led_count restored)" "0"
+case "$out" in
+    *"reconciled: deskcrab-wake-drift"*) ok "and restore says it out loud" ;;
+    *) fail "a reconciled timer must be reported" "$out" ;;
+esac
+case "$out" in
+    *"needs no restoring"*) fail "a pass that re-armed a drifted timer must not call the queue whole" "$out" ;;
+    *) ok "the pass does not end on the sentence that says nothing was needed" ;;
+esac
+
+echo
+echo "a dated timer standing on another instant is moved back to its record:"
+mclean
+record deskcrab-wake-wrong $(( NOW + 7200 )) event "a job that will finish" job-runner
+alive deskcrab-wake-wrong $(( NOW + 90000 ))
+out="$(restore_against_manager)"
+check_eq "it is stopped" "$(stopped 'deskcrab-wake-wrong.timer')" "1"
+check_eq "and re-armed at the record's instant" \
+    "$(armed "unit=deskcrab-wake-wrong .*--on-calendar=$(utc $(( NOW + 7200 ))) ")" "1"
+check_eq "the record keeps its moment" "$(fire_of deskcrab-wake-wrong)" "$(( NOW + 7200 ))"
+case "$(led_actor reconciled deskcrab-wake-wrong)" in
+    "restore (timer stood at "*) ok "the ledger names the instant the timer had stood on" ;;
+    *) fail "a reconciled dated timer says where it stood" "$(led_actor reconciled deskcrab-wake-wrong)" ;;
+esac
+
+echo
+echo "a near-lane delay timer inside its own window is left to fire:"
+# Rule 8's near lane arms a booking due within the margin as a delay, and such
+# a timer has no dated elapse to compare. Inside the margin of its record's
+# moment it is about to fire, or has just — stopping it there to re-arm it
+# would be the repair interrupting the thing it is repairing.
+mclean
+record deskcrab-wake-soon $(( NOW + 60 )) event "a move is waiting" job-runner
+record deskcrab-wake-just $(( NOW - 30 )) event "a file just landed" notice-newfiles
+alive deskcrab-wake-soon ""
+alive deskcrab-wake-just ""
+out="$(restore_against_manager)"
+check_eq "neither is stopped" "$(stopped .)" "0"
+check_eq "neither is re-armed" "$(attempts)" "0"
+check_eq "and both records stand as they were" \
+    "$(fire_of deskcrab-wake-soon) $(fire_of deskcrab-wake-just)" "$(( NOW + 60 )) $(( NOW - 30 ))"
+
+echo
+echo "a missed personal sitting is re-seated at its own hour, never fired blind:"
+# Rule 30b. Three days and five hours ago: the moment went by while the timer
+# stood armed for some other one. The overdue path would release it ninety
+# seconds from now, whatever the hour — and five of them did stand in exactly
+# this state on 2026-10-02. It goes back to the clock time she booked.
+mclean
+MISSED=$(( NOW - 3 * 86400 - 5 * 3600 ))
+printf '%s\tscheduled\t%s\t%s\therself\thigh\tsol\n' "$MISSED" \
+    "an evening with the book" "$(( NOW - 9 * 86400 ))" > "$W/deskcrab-wake-sit.wake"
+alive deskcrab-wake-sit ""
+out="$(restore_against_manager)"
+newfire="$(fire_of deskcrab-wake-sit)"
+check_eq "the stale timer is stopped" "$(stopped 'deskcrab-wake-sit.timer')" "1"
+check "the record now names a moment still to come" [ "$newfire" -gt "$NOW" ]
+check "and no further off than the next day" [ "$newfire" -le "$(( NOW + 86400 + 600 ))" ]
+check_eq "at the clock time she booked" "$(clock "$newfire")" "$(clock "$MISSED")"
+check_eq "the timer is armed at exactly that instant" \
+    "$(armed "unit=deskcrab-wake-sit .*--on-calendar=$(utc "$newfire") ")" "1"
+check_eq "and nothing is armed for the prompt overdue slot" "$(armed 'on-active')" "0"
+check_eq "one timer, not two" "$(attempts)" "1"
+check_eq "the ledger says reseated" "$(led_count reseated)" "1"
+check_eq "and does not say overdue" "$(led_count overdue)" "0"
+case "$(led_actor reseated deskcrab-wake-sit)" in
+    "restore (missed "*) ok "with the moment it missed" ;;
+    *) fail "a re-seating names the missed moment" "$(led_actor reseated deskcrab-wake-sit)" ;;
+esac
+check_eq "its agenda, booked-at and booker are untouched" \
+    "$(cut -f2-5 "$W/deskcrab-wake-sit.wake")" \
+    "$(printf 'scheduled\tan evening with the book\t%s\therself' "$(( NOW - 9 * 86400 ))")"
+check_eq "and so are its effort and model overrides" \
+    "$(cut -f6-7 "$W/deskcrab-wake-sit.wake")" "$(printf 'high\tsol')"
+check_eq "which ride the re-armed unit too" \
+    "$(armed 'deskcrab-wake-sit herself high sol$')" "1"
+case "$out" in
+    *"reseated: deskcrab-wake-sit"*) ok "restore says it out loud" ;;
+    *) fail "a re-seating must be reported" "$out" ;;
+esac
+
+echo
+echo "two sittings missed at the same hour do not come back on one second:"
+mclean
+record deskcrab-wake-s1 $(( MISSED ))         scheduled "the table, two more rows" herself
+record deskcrab-wake-s2 $(( MISSED - 86400 )) scheduled "the openers, re-scored"   herself
+alive deskcrab-wake-s1 ""
+alive deskcrab-wake-s2 ""
+out="$(restore_against_manager)"
+a="$(fire_of deskcrab-wake-s1)"; b="$(fire_of deskcrab-wake-s2)"
+gap=$(( a - b )); [ "$gap" -lt 0 ] && gap=$(( -gap ))
+check_eq "both are re-seated" "$(led_count reseated)" "2"
+check "onto different moments, a slot apart" [ "$gap" -ge 180 ]
+check "and both within minutes of the hour they were booked for" [ "$gap" -le 600 ]
+
+echo
+echo "identical missed sittings collapse before either is re-seated:"
+mclean
+record deskcrab-wake-d1 $(( MISSED ))        scheduled "the same promise" herself
+record deskcrab-wake-d2 $(( MISSED + 600 ))  scheduled "the same promise" herself
+alive deskcrab-wake-d1 ""
+alive deskcrab-wake-d2 ""
+out="$(restore_against_manager)"
+check_eq "one booking is left" "$(records)" "1"
+check_eq "one is re-seated" "$(led_count reseated)" "1"
+check_eq "one is collapsed" "$(led_count collapsed)" "1"
+check_eq "and BOTH stale timers were stopped — a collapsed booking leaves no timer behind" \
+    "$(stopped .)" "2"
+
+echo
+echo "everything else that was missed takes the prompt path:"
+# Something is waiting on the other end of an event wake; a reason-less return
+# measures idleness when it fires; another booker's follow-up is not a sitting;
+# and a sitting found inside the grace is still within its own hour.
+mclean
+record deskcrab-wake-m1 $(( NOW - 7200 )) event     "a job that finished"   job-runner
+record deskcrab-wake-m2 $(( NOW - 7000 )) scheduled ""                      herself
+record deskcrab-wake-m3 $(( NOW - 6800 )) scheduled "a want you said"       promise-audit
+record deskcrab-wake-m4 $(( NOW - 600 ))  scheduled "the sitting, just now" herself
+for u in m1 m2 m3 m4; do alive "deskcrab-wake-$u" ""; done
+out="$(restore_against_manager)"
+check_eq "all four stale timers are stopped" "$(stopped .)" "4"
+check_eq "all four are re-armed as overdue" "$(led_count overdue)" "4"
+check_eq "and none is re-seated" "$(led_count reseated)" "0"
+soonest="$(cut -f1 "$W"/*.wake | sort -n | head -1)"
+check "the first comes back within minutes, not tomorrow" [ "$(( soonest - NOW ))" -le 300 ]
+check_eq "the sitting inside its grace is one of them" \
+    "$(led_actor overdue deskcrab-wake-m4)" "herself"
+
+echo
+echo "a re-seat that cannot arm puts the record back and says so:"
+mclean
+record deskcrab-wake-fail "$MISSED" scheduled "the sitting that could not re-arm" herself
+alive deskcrab-wake-fail ""
+sandbox_systemd_rc 1
+out="$(restore_against_manager)"
+sandbox_systemd_rc 0
+check_eq "the record keeps the moment it had" "$(fire_of deskcrab-wake-fail)" "$MISSED"
+check_eq "the failure is on the ledger" "$(led_count restore-failed)" "1"
+check_eq "and no re-seating is claimed" "$(led_count reseated)" "0"
+case "$out" in
+    *"needs no restoring"*) fail "a pass that armed nothing must not claim the queue is whole" "$out" ;;
+    *"could not be re-armed"*) ok "and the pass says what it could not do" ;;
+    *) fail "a failed re-seat must be reported" "$out" ;;
 esac

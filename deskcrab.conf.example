@@ -248,6 +248,20 @@ WHISPER_MODEL="/usr/share/whisper.cpp-model-small.en/ggml-small.en.bin"
 # only the standing random-interval timer had any ceiling at all.
 # WAKE_RUNTIME_MAX=7200
 
+# Optional: the near lane, seconds (default 120). A wake timer is armed at its
+# booking record's absolute fire time, so a reload of the user manager cannot
+# move it — except a booking due within this many seconds, which is armed as
+# the remaining delay: a dated instant that close can already be in the past
+# when its timer starts, and systemd never fires one that is.
+# WAKE_ABSOLUTE_MARGIN=120
+
+# Optional: how far past its moment a missed personal sitting may be and still
+# fire promptly, seconds (default 3600). A sitting found later than this under
+# a timer that had drifted off its record is re-seated at the next occurrence
+# of its own booked clock time instead of being fired at whatever minute the
+# repair ran.
+# WAKE_MISSED_GRACE=3600
+
 # Optional: where the queue's own change ledger lives, and how many lines of it
 # are kept. Every booking, cancellation, restoration, collapse and purge is
 # written here, and the state block reads it to say what changed while she was

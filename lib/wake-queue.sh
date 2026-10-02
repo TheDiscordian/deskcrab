@@ -54,6 +54,19 @@ WAKE_LEDGER_KEEP="${WAKE_LEDGER_KEEP:-2000}"
 # for as long as the ceiling has existed. For a oneshot the whole run counts as
 # its start, so the start timeout is the runtime bound that actually applies.
 WAKE_RUNTIME_MAX="${WAKE_RUNTIME_MAX:-7200}"
+# The near lane (specs/wake-queue.md rule 8). A timer is armed at its record's
+# absolute fire epoch — except a booking due within this many seconds of the
+# moment it is armed, which is armed as the remaining delay: an instant that
+# close can already be behind the manager's clock by the time the unit exists,
+# and a dated instant in the past when its timer starts is accepted, answered
+# with zero, and never fired. The same margin is restore's tolerance for a
+# delay timer inside its own window (rule 30a).
+WAKE_ABSOLUTE_MARGIN="${WAKE_ABSOLUTE_MARGIN:-120}"
+case "$WAKE_ABSOLUTE_MARGIN" in ''|*[!0-9]*) WAKE_ABSOLUTE_MARGIN=120 ;; esac
+# How far past its moment a missed personal sitting may be and still fire
+# promptly (rule 30b). Past this it is re-seated at its own clock time.
+WAKE_MISSED_GRACE="${WAKE_MISSED_GRACE:-3600}"
+case "$WAKE_MISSED_GRACE" in ''|*[!0-9]*) WAKE_MISSED_GRACE=3600 ;; esac
 # Where the LIVE queue lives, regardless of what this instance was pointed at.
 # The fourth gate below compares against it.
 WAKE_LIVE_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab/wakes"
@@ -248,10 +261,44 @@ _wake_unit_is_fixture() {  # <unit base name>
     return 1
 }
 
+# Every live wake timer's next elapse as an epoch, in ONE call — restore holds
+# each of them against its record (rule 30a), and one `show` per record would
+# be a process spawn per booking at the end of every wake. Only a timer armed
+# at a dated instant has an answer here: a delay timer counts on the monotonic
+# clock and NextElapseUSecRealtime is empty for it, which is exactly how
+# restore tells the two apart. `--timestamp=unix` prints "@<epoch>"; a manager
+# too old to know the flag prints a civil time, and that is parsed instead.
+declare -A _WAKE_TIMER_ELAPSE
+_wake_load_timer_elapses() {
+    _WAKE_TIMER_ELAPSE=()
+    local line id="" at=""
+    while IFS= read -r line || [ -n "$line" ]; do
+        case "$line" in
+            Id=*) id="${line#Id=}"; id="${id%.timer}" ;;
+            NextElapseUSecRealtime=*) at="${line#NextElapseUSecRealtime=}" ;;
+            '') [ -n "$id" ] && _wake_note_timer_elapse "$id" "$at"
+                id=""; at="" ;;
+        esac
+    done < <(systemctl --user show 'deskcrab-wake-*.timer' -p Id \
+                 -p NextElapseUSecRealtime --timestamp=unix 2>/dev/null)
+    [ -n "$id" ] && _wake_note_timer_elapse "$id" "$at"
+    return 0
+}
+
+_wake_note_timer_elapse() {  # <unit> <NextElapseUSecRealtime value>
+    local at="$2"
+    case "$at" in
+        '') return 0 ;;
+        @*) at="${at#@}"; at="${at%%.*}" ;;
+        *)  at="$(date -d "$at" +%s 2>/dev/null)" ;;
+    esac
+    case "$at" in ''|*[!0-9]*) return 0 ;; esac
+    _WAKE_TIMER_ELAPSE["$1"]="$at"
+}
+
 # "<unit>\t<next-elapse string>" for every deskcrab timer systemd will admit to.
 # Only consulted for rows that have no record — a record already knows its own
-# moment, and a transient --on-active timer reports monotonic time that
-# NextElapseUSecRealtime cannot answer.
+# moment.
 _wake_timer_nexts() {
     systemctl --user list-timers --all --no-pager --legend=false 'deskcrab-*' 2>/dev/null \
         | awk '$1 ~ /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun)$/ {
@@ -444,7 +491,7 @@ _wake_cluster_fold() {  # <by> <kind> <class-prefix> <window> <item> <fire-epoch
     local newunit
     newunit="$(_wake_new_unit)"
     wake_state_write "$newunit" "$oldfire" "$oldkind" "$merged" "$oldat" "$oldby" "$oldeffort" "$oldmodel"
-    if _wake_book "$newunit" "$(( oldfire - now ))s" "$oldkind" "$merged" "$oldby" "$oldeffort" "$oldmodel"; then
+    if _wake_book "$newunit" "$oldfire" "$oldkind" "$merged" "$oldby" "$oldeffort" "$oldmodel"; then
         wake_ledger folded "$newunit" "$oldkind" "$merged" "$by (cluster fold, was $best)"
         echo "Folded into the cluster's pending wake: $newunit still fires $(date -d "@$oldfire" '+%H:%M:%S'), now carrying this item too."
         return 0
@@ -592,25 +639,43 @@ _wake_new_unit() {
 # re-book in the same name. The ONLY caller of systemd-run in this project's
 # wake path.
 #
-# Always a DELAY, never a calendar specification. A bare '09:45' handed to
-# systemd makes a timer that comes back every morning while the record covers
-# only the next firing — a wake-at is one-shot, and it is now one-shot in
-# systemd too.
+# Armed at the record's own ABSOLUTE fire epoch — one fully dated UTC instant
+# (specs/wake-queue.md rule 8). It was a delay until 2026-10-02, and a delay is
+# counted from the timer's activation: the user manager starts that count again
+# on every daemon-reload, so each reload pushed every pending wake back by its
+# whole original delay while the record went on holding the civil time that
+# was booked. Seven sittings stood armed for the wrong moment that night, five
+# of them already past the one recorded. A dated instant is recomputed from the
+# calendar and lands where it did. Dated in full, never a bare '09:45': that
+# makes a timer that comes back every morning while the record covers only the
+# next firing — a wake-at is one-shot, and it is one-shot in systemd too.
+#
+# The near lane is the one exception: a booking due within WAKE_ABSOLUTE_MARGIN
+# is armed as the delay remaining to its epoch, because an instant that close
+# can be behind the manager's clock before the unit exists, and the manager
+# accepts such a timer, answers zero, and never fires it.
 #
 # --collect so a failed unit does not leak into the user manager (two were
 # sitting failed when this was written, one of them pointing at a deleted /tmp
 # checkout), and a start timeout so a runaway session has a ceiling the
 # in-process watchdog cannot provide.
-_wake_book() {  # <unit> <delay, e.g. 900s> <kind> <reason> [booked-by] [effort] [model]
-    local unit="$1" when="$2" kind="$3" reason="$4" by="${5:-unknown}" effort="${6:-}" model="${7:-}"
+_wake_book() {  # <unit> <fire-epoch> <kind> <reason> [booked-by] [effort] [model]
+    local unit="$1" fire="$2" kind="$3" reason="$4" by="${5:-unknown}" effort="${6:-}" model="${7:-}"
     if ! _wake_manager_is_live; then
         echo "  (scratch instance — record kept for $unit, no timer armed)" >&2
         return 0
     fi
-    case "$when" in
-        *[!0-9]s) : ;;
-        *) when="$(printf '%s' "$when" | tr -cd '0-9')s" ;;
+    case "$fire" in
+        ''|*[!0-9]*) echo "_wake_book: '$fire' is not a fire epoch — $unit not armed." >&2
+                     return 1 ;;
     esac
+    local left=$(( fire - $(date +%s) )) at
+    if [ "$left" -le "$WAKE_ABSOLUTE_MARGIN" ]; then
+        [ "$left" -lt 1 ] && left=1
+        at="--on-active=${left}s"
+    else
+        at="--on-calendar=$(date -u -d "@$fire" '+%Y-%m-%d %H:%M:%S UTC')"
+    fi
     local -a extra=(--collect -p "TimeoutStartSec=$WAKE_RUNTIME_MAX")
     # Background CPU priority, wake-queue.md rule 12a: nobody is waiting on a
     # wake, so it yields the processor to a turn somebody IS waiting on.
@@ -629,7 +694,7 @@ _wake_book() {  # <unit> <delay, e.g. 900s> <kind> <reason> [booked-by] [effort]
     elif [ -n "$effort" ]; then
         fired+=("$effort")
     fi
-    systemd-run --user --quiet --unit="$unit" "${extra[@]}" --on-active="$when" \
+    systemd-run --user --quiet --unit="$unit" "${extra[@]}" "$at" \
         "${fired[@]}"
 }
 
@@ -782,7 +847,7 @@ _wake_book_locked() {  # <by> <cap> <cap-prefix> <effort> <model> <cluster> <clu
     # remembers. And if the timer cannot be armed, the record goes back —
     # a failed booking must not become a phantom promise.
     wake_state_write "$unit" "$fire" "$kind" "$reason" "$now" "$by" "$effort" "$model"
-    if _wake_book "$unit" "${slot}s" "$kind" "$reason" "$by" "$effort" "$model"; then
+    if _wake_book "$unit" "$fire" "$kind" "$reason" "$by" "$effort" "$model"; then
         wake_ledger booked "$unit" "$kind" "$reason" "$by"
         echo "Wake scheduled ($when — $(date -d "@$fire" '+%H:%M:%S')) as $unit, booked by $by"
         return 0
@@ -907,8 +972,8 @@ wake_list() {
 }
 
 # The moment a record-less timer fires, from the next-elapse table. 0 when
-# systemd will not say — a transient --on-active timer reports monotonic time,
-# and inventing a clock reading for it would be worse than admitting the gap.
+# systemd will not say — inventing a clock reading would be worse than
+# admitting the gap.
 _wake_next_epoch() {  # <unit> <table>
     local line
     line="$(printf '%s' "$2" | awk -F'\t' -v u="$1" '$1 == u { print $2; exit }')"
@@ -968,6 +1033,22 @@ _wake_cancel_locked() {
 # staggered (90 s, then +5 min apart) so a long-off machine does not wake a
 # crowd at once.
 #
+# A LIVE timer is checked, never trusted (specs/wake-queue.md rule 30a). This
+# pass used to skip every unit whose timer was merely active, and on 2026-10-02
+# every active timer in the queue stood on a different moment from its record:
+# they had been armed as delays, and each daemon-reload had started the delay
+# again. So each live timer's next elapse is held against the record's epoch,
+# and one that disagrees is stopped and re-armed where the record says — the
+# record is never rewritten to suit a timer.
+#
+# A record already PAST under a live timer is a MISSED booking, not an overdue
+# one (rule 30b): the machine was up, the moment simply went by. A personal
+# sitting missed by more than WAKE_MISSED_GRACE is re-seated at the next
+# occurrence of its own booked clock time rather than fired at whatever minute
+# this pass happens to run — five stale sittings released together are a crowd
+# at that minute, not the sittings. Everything else missed takes the overdue
+# path: something is waiting on the other end of it.
+#
 # Overdue duplicates collapse, and that now covers EVENT wakes too. It used to
 # merge only kind=scheduled with an empty reason, so twenty-two identical-shaped
 # promise wakes came back one for one.
@@ -988,15 +1069,35 @@ wake_restore() {
     _wake_under_lock "wake_restore" _wake_restore_locked
 }
 
+# The next occurrence of a missed sitting's own booked clock time (rule 30b):
+# today at that hour when it is still ahead, otherwise tomorrow. Asked of the
+# calendar rather than added as a day of seconds, so the hour she chose stays
+# that hour across a clock change.
+_wake_reseat_epoch() {  # <missed fire-epoch> <now>
+    local hms cand
+    hms="$(date -d "@$1" '+%H:%M:%S')"
+    cand="$(date -d "today $hms" +%s 2>/dev/null)"
+    case "$cand" in ''|*[!0-9]*) cand=0 ;; esac
+    if [ "$cand" -le "$2" ]; then
+        cand="$(date -d "tomorrow $hms" +%s 2>/dev/null)"
+        case "$cand" in ''|*[!0-9]*) cand=0 ;; esac
+    fi
+    [ "$cand" -gt "$2" ] || cand=$(( $2 + 86400 ))
+    printf '%s\n' "$cand"
+}
+
 _wake_restore_locked() {
-    local now f unit overdue=0 delay key restored=0 failed=0
+    local now f unit overdue=0 delay key restored=0 failed=0 drifted stood gap newfire
     now=$(date +%s)
     local -a seen=()
+    _wake_manager_is_live && _wake_load_timer_elapses
     while IFS=$'\t' read -r _ f; do
         [ -n "$f" ] && [ -e "$f" ] || continue
         unit="${f##*/}"; unit="${unit%.wake}"
-        # A live timer needs nothing from us; a dead one may linger as failed
-        # and would block systemd-run reusing its name.
+        wake_record_read "$f" || continue
+        drifted=""
+        # A dead timer may linger as failed and would block systemd-run reusing
+        # its name; a live one is held against its record.
         if _wake_manager_is_live; then
             # A wake FIRING RIGHT NOW is not an unarmed booking, and its timer
             # is the wrong thing to ask: a one-shot timer goes inactive the
@@ -1006,15 +1107,34 @@ _wake_restore_locked() {
             # itself. tidy has skipped an active service since it was written
             # (rule 36); restore skipped only the timer.
             systemctl --user is-active --quiet "$unit.service" && continue
-            systemctl --user is-active --quiet "$unit.timer" && continue
+            if systemctl --user is-active --quiet "$unit.timer"; then
+                stood="${_WAKE_TIMER_ELAPSE[$unit]:-}"
+                # The ordinary case: the shadow stands where the record says.
+                [ "$stood" = "$WK_FIRE" ] && continue
+                if [ -z "$stood" ]; then
+                    # A delay timer. Inside the near lane's window it is about
+                    # to fire or has just — left alone. Outside it, it is the
+                    # old arming, and where it stands is anybody's guess.
+                    gap=$(( WK_FIRE - now )); [ "$gap" -lt 0 ] && gap=$(( -gap ))
+                    [ "$gap" -le "$WAKE_ABSOLUTE_MARGIN" ] && continue
+                    drifted="on a delay"
+                else
+                    drifted="at $(date -d "@$stood" '+%F %H:%M')"
+                fi
+                systemctl --user stop "$unit.timer" >/dev/null 2>&1
+            fi
             systemctl --user reset-failed "$unit.timer" "$unit.service" 2>/dev/null
         fi
-        wake_record_read "$f" || continue
         if [ "$WK_FIRE" -gt "$now" ]; then
-            if _wake_book "$unit" "$(( WK_FIRE - now ))s" "$WK_KIND" "$WK_REASON" "$WK_BOOKED_BY" "$WK_EFFORT" "$WK_MODEL"; then
-                wake_ledger restored "$unit" "$WK_KIND" "$WK_REASON" "$WK_BOOKED_BY"
+            if _wake_book "$unit" "$WK_FIRE" "$WK_KIND" "$WK_REASON" "$WK_BOOKED_BY" "$WK_EFFORT" "$WK_MODEL"; then
                 restored=$(( restored + 1 ))
-                echo "restored: $unit fires $(date -d "@$WK_FIRE" '+%F %H:%M') (${WK_KIND:-scheduled}${WK_REASON:+ — $WK_REASON}, booked by $WK_BOOKED_BY)"
+                if [ -n "$drifted" ]; then
+                    wake_ledger reconciled "$unit" "$WK_KIND" "$WK_REASON" "restore (timer stood $drifted)"
+                    echo "reconciled: $unit fires $(date -d "@$WK_FIRE" '+%F %H:%M') as recorded — its timer stood $drifted (${WK_KIND:-scheduled}${WK_REASON:+ — $WK_REASON}, booked by $WK_BOOKED_BY)"
+                else
+                    wake_ledger restored "$unit" "$WK_KIND" "$WK_REASON" "$WK_BOOKED_BY"
+                    echo "restored: $unit fires $(date -d "@$WK_FIRE" '+%F %H:%M') (${WK_KIND:-scheduled}${WK_REASON:+ — $WK_REASON}, booked by $WK_BOOKED_BY)"
+                fi
             else
                 failed=$(( failed + 1 ))
                 wake_ledger restore-failed "$unit" "$WK_KIND" "$WK_REASON" "$WK_BOOKED_BY"
@@ -1037,7 +1157,6 @@ _wake_restore_locked() {
             continue
         fi
         seen+=("$key")
-        delay=$(( 90 + overdue * 300 )); overdue=$(( overdue + 1 ))
         # Record first, timer second — rule 4 — and the record goes BACK if the
         # timer will not arm. Without the rollback a failed re-arm left the
         # booking claiming a moment that will never come: still overdue, but now
@@ -1046,9 +1165,31 @@ _wake_restore_locked() {
         local WAS_FIRE="$WK_FIRE" WAS_KIND="$WK_KIND" WAS_REASON="$WK_REASON"
         local WAS_AT="$WK_BOOKED_AT" WAS_BY="$WK_BOOKED_BY" WAS_EFFORT="$WK_EFFORT"
         local WAS_MODEL="$WK_MODEL"
+        # Missed, and a personal sitting long past its hour (rule 30b): back to
+        # the hour she chose, on a moment nothing else holds. The slot search
+        # reads every record, so it runs after this one's fields are saved.
+        if [ -n "$drifted" ] && [ "$WAS_KIND" = "scheduled" ] && [ "$WAS_BY" = "herself" ] \
+                && [ -n "$WAS_REASON" ] && [ $(( now - WAS_FIRE )) -gt "$WAKE_MISSED_GRACE" ]; then
+            newfire="$(_wake_reseat_epoch "$WAS_FIRE" "$now")"
+            newfire=$(( now + $(wake_free_slot $(( newfire - now ))) ))
+            wake_state_write "$unit" "$newfire" "$WAS_KIND" "$WAS_REASON" \
+                "$WAS_AT" "$WAS_BY" "$WAS_EFFORT" "$WAS_MODEL"
+            if _wake_book "$unit" "$newfire" "$WAS_KIND" "$WAS_REASON" "$WAS_BY" "$WAS_EFFORT" "$WAS_MODEL"; then
+                wake_ledger reseated "$unit" "$WAS_KIND" "$WAS_REASON" "restore (missed $(date -d "@$WAS_FIRE" '+%F %H:%M'), timer stood $drifted)"
+                restored=$(( restored + 1 ))
+                echo "reseated: $unit missed $(date -d "@$WAS_FIRE" '+%F %H:%M') — its timer stood $drifted — and now fires $(date -d "@$newfire" '+%F %H:%M'), its own hour ($WAS_REASON)"
+            else
+                wake_state_write "$unit" "$WAS_FIRE" "$WAS_KIND" "$WAS_REASON" "$WAS_AT" "$WAS_BY" "$WAS_EFFORT" "$WAS_MODEL"
+                wake_ledger restore-failed "$unit" "$WAS_KIND" "$WAS_REASON" "$WAS_BY"
+                failed=$(( failed + 1 ))
+                echo "could not re-arm: $unit (still recorded, still missed)"
+            fi
+            continue
+        fi
+        delay=$(( 90 + overdue * 300 )); overdue=$(( overdue + 1 ))
         wake_state_write "$unit" "$(( now + delay ))" "$WAS_KIND" "$WAS_REASON" \
             "$WAS_AT" "$WAS_BY" "$WAS_EFFORT" "$WAS_MODEL"
-        if _wake_book "$unit" "${delay}s" "$WAS_KIND" "$WAS_REASON" "$WAS_BY" "$WAS_EFFORT" "$WAS_MODEL"; then
+        if _wake_book "$unit" "$(( now + delay ))" "$WAS_KIND" "$WAS_REASON" "$WAS_BY" "$WAS_EFFORT" "$WAS_MODEL"; then
             wake_ledger overdue "$unit" "$WAS_KIND" "$WAS_REASON" "$WAS_BY"
             restored=$(( restored + 1 ))
             echo "overdue: $unit (was due $(date -d "@$WAS_FIRE" '+%F %H:%M')) fires in ${delay}s"
@@ -1157,7 +1298,7 @@ _wake_tidy_locked() {
             newfire=$(( now + $(wake_free_slot $(( fire - now )) ) ))
             newunit="$(_wake_new_unit)"
             wake_state_write "$newunit" "$newfire" "$kind" "$reason" "$at" "$by" "$effort" "$model"
-            if _wake_book "$newunit" "$(( newfire - now ))s" "$kind" "$reason" "$by" "$effort" "$model"; then
+            if _wake_book "$newunit" "$newfire" "$kind" "$reason" "$by" "$effort" "$model"; then
                 spread=$(( spread + 1 ))
                 wake_ledger spread "$newunit" "$kind" "$reason" "tidy (was $unit)"
                 echo "spread: $unit -> $(date -d "@$newfire" '+%H:%M:%S') (was sharing a moment with another wake)"

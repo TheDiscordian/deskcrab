@@ -43,9 +43,25 @@ for reduction here — every rule below makes the queue **visible and bounded**,
      could not take the lock MUST report that and change nothing.
 7. Unit names MUST be minted by the module's own collision-avoiding namer. No caller may build a
    unit name inline.
-8. Every booking MUST be made as a **delay**, never by passing a calendar specification through to
-   systemd. A bare calendar specification makes a timer that returns every day while the record
-   covers only the next firing.
+8. Every timer MUST be armed against its record's own **absolute fire epoch**: one fully dated
+   instant, written in UTC, that elapses exactly once. Never a bare calendar specification — a bare
+   `09:45` makes a timer that returns every day while the record covers only the next firing — and
+   never an activation-relative delay, which was this rule until 2026-10-02 and is how the queue
+   came apart from its own records: the user manager restarts an activation-relative delay from
+   zero on every `daemon-reload` (and, by systemd.timer(5), the monotonic clock behind it pauses
+   while the machine is suspended), while the record keeps the civil time that was booked. Found
+   live that night: seven pending sittings, every timer later than its record, five of them
+   already past the recorded moment — a wake booked for a Thursday at 14:00 stood armed for the
+   Friday of the week after — while `crab status`, which reads the records, went on naming the
+   times that had been promised. A dated instant is recomputed from the calendar on a reload and
+   lands exactly where it did; one that elapses while the machine sleeps fires on resume.
+   - **The near lane.** A booking due within `WAKE_ABSOLUTE_MARGIN` seconds (default 120) of the
+     moment it is armed is armed as a delay — the seconds remaining to the record's epoch. An
+     instant that close can already be behind the manager's clock by the time the unit exists,
+     and a dated instant that is in the past when its timer starts has no next elapse: the
+     manager accepts it, answers zero, and never fires it (measured the same night, an instant
+     in the manager's own current second included). The delay's own length is the most a reload
+     can cost a near-lane booking, and the one-second urgent lane (rule 13c) lives here whole.
 9. Every booking MUST snap to a moment no pending booking already holds. Two wakes cannot run at
    once, so two bookings on one second are one wake and one deferral.
 10. A near-duplicate booking MUST NOT be stacked: a scheduled booking with the same reason firing
@@ -461,6 +477,32 @@ for reduction here — every rule below makes the queue **visible and bounded**,
 
 30. `restore()` MUST rebuild still-future timers at their original moment and fire overdue ones
     once, promptly, staggered.
+30a. **A live timer is checked, never trusted.** `restore()` MUST compare every live timer's next
+    elapse — read from the manager in one call, not one per record — with its record's fire
+    epoch, and MUST re-arm at the record's epoch any timer that disagrees: a timer armed as a
+    delay whose record lies outside the near lane (rule 8), or a dated timer standing on some
+    other instant. The record is never rewritten by this — it is the authority, and the timer is
+    its shadow — and each re-arm lands on the durable ledger under its own action (`reconciled`)
+    and in restore's output. A timer that already agrees is left alone, and so is a near-lane
+    delay timer whose record is within the margin of now: that one is about to fire, or has just.
+    Until 2026-10-02 restore skipped every unit whose timer was merely *active*, so a timer that
+    had drifted days off its record was, to the one pass that could have healed it, a booking
+    that needed nothing.
+30b. **A missed sitting is re-seated, never fired blind.** A live timer whose record is already
+    past — the moment came and went while the timer stood armed for some other one — is a booking
+    that was MISSED, which is not rule 30's overdue: the machine was up, and nobody is arriving
+    at a login. A missed booking that is a personal sitting — kind `scheduled`, booked by
+    `herself`, carrying a reason: the same identity rule 10c gates — and that is more than
+    `WAKE_MISSED_GRACE` seconds (default 3600) past its moment MUST NOT be fired promptly. A
+    sitting was booked for an hour she chose, and five of them released together at whatever
+    minute a repair happened to land are a crowd at that minute, not the sittings. It is
+    RE-SEATED at the next occurrence of its own booked clock time, snapped to a free slot
+    (rule 9), record first and rolled back on a failed arm (rules 4 and 5), ledgered under its
+    own action (`reseated`) and named in restore's output with the moment it missed. Every other
+    missed booking — an event wake, a reason-less return, another booker's follow-up, or a
+    sitting found inside the grace — takes rule 30's prompt staggered path: something is waiting
+    on the other end of it, or its own hour has not yet passed. Identical missed promises
+    collapse first, exactly as overdue ones do (rule 32).
 31. `restore()` MUST log every restoration to the durable ledger. Its output MUST NOT go to
     `/dev/null`. A bulk restore means a cancellation was undone or the machine rebooted, and that is
     a fact she has to be able to read.
@@ -710,7 +752,7 @@ for reduction here — every rule below makes the queue **visible and bounded**,
 | `${STATE_PREFIX}-wake-defer-<key>` | consecutive blocked-lock deferrals of one kind-and-reason; cleared when that wake takes the lock (rule 21a) |
 | `${STATE_PREFIX}-stale-check.log` | the staleness gate's trace (rule 27b): one line per decision — skipped, said, dropped, or judge failure |
 | `${STATE_PREFIX}-stale-judge-<pid>.log` | the staleness judge's own stream, ledgered for tokens and removed by the gate |
-| transient units `deskcrab-wake-<epoch>-<pid>[.timer]` | systemd user manager; the record's shadow |
+| transient units `deskcrab-wake-<epoch>-<pid>[.timer]` | systemd user manager; the record's shadow, armed at the record's fire epoch as one dated UTC instant — or as the remaining delay inside the near lane (rule 8) |
 | `systemd/deskcrab-wake.timer` | the random background interval |
 | `systemd/deskcrab-wake-restore.service` | restore at login |
 
@@ -747,7 +789,7 @@ flowchart TD
   B4 -->|yes| B5["not booked — say which one covers it"]
   B4 -->|no| B6["snap to a free slot"]
   B6 --> B7["write the record<br/>fire, kind, reason, booked_at, booked_by"]
-  B7 --> B8["book the transient timer<br/>--collect + TimeoutStartSec"]
+  B7 --> B8["arm the transient timer at the record's epoch<br/>--collect + TimeoutStartSec"]
   B8 -->|failed| B9["roll the record back"]
   B8 -->|armed| B10["ledger: booked"]
   T1["background timer<br/>3h + jitter"] --> W
@@ -773,7 +815,7 @@ flowchart TD
   G3 -->|yes, otherwise| G3a["suppress speech<br/>journal what was swallowed"]
   G3 -->|no| G4["append to the conversation<br/>then speak, then show"]
   G1a & G2a & G3a & G4 --> E["ensure_next_wake"]
-  E --> E1["restore — ledger every restoration"]
+  E --> E1["restore — hold live timers to their records,<br/>ledger every restoration"]
   E1 --> E2["tidy — only demonstrably fired, record-less timers"]
   E2 --> E3["book the floor if no scheduled booking is pending"]
 ```
@@ -840,7 +882,16 @@ change it.
 
 ## TESTS
 
-**Existing:** `tests/test_wake_queue.sh` (spacing, coalescing, tidy semantics, with systemd stubbed),
+**Existing:** `tests/test_wake_queue.sh` (spacing, coalescing, tidy semantics, with systemd stubbed;
+and rule 8 from the argv side: a booking beyond the margin is armed as the dated UTC instant of
+its own record and never as a delay, a near-lane booking as the remaining delay and never as an
+instant),
+`tests/test_wake_restore.sh` (rules 30 to 34 — a cancelled queue stays cancelled, an overdue queue
+collapses, every restoration is ledgered — and rules 30a and 30b with the manager's answers
+scripted: an agreeing live timer is not touched, a disagreeing one is stopped and re-armed at the
+record's epoch, a near-lane delay timer inside its window is left to fire, a long-missed sitting
+is re-seated at its own clock time while one inside the grace, an event wake and another booker's
+wake take the prompt path, and a failed re-seat puts the record back),
 `tests/test_silent_wake.sh` (the delivery gates), `tests/test_regroup.sh` (a whole wake beside a live
 voice), `tests/test_wake_filler.sh` (measured from the speaker side), `tests/test_wake_reinforce.sh`,
 `tests/test_wake_lock_priority.sh` (rules 21a and 21b: the event backoff — short, escalating, capped,
@@ -918,6 +969,16 @@ beneath it, between the fact and the shelf heading, the conscious-return questio
 terminal-state document and a titleless one are passed over even when they are the newest files in
 the drawer; a wake carrying a reason gets neither the line nor the question; a missing or empty
 drawer costs both and never the prompt),
+`tests/test_wake_reload_drift.sh` (rules 8, 30a and 30b against a REAL user manager — a private
+one the test starts under its own root, never the live one: a wake booked through the one door is
+armed as a dated instant equal to its record's epoch, and a `daemon-reload` of that manager leaves
+both the timer and the record exactly where they were, while a delay timer armed beside it as the
+control is moved by the same reload — which is what makes the first claim mean something; a
+delay timer left by the old arming is re-armed at its record's epoch by restore with the record
+untouched and the ledger saying `reconciled`; a personal sitting whose moment passed under such a
+timer is re-seated at the next occurrence of its own clock time and never armed for the prompt
+overdue slot, while a missed event wake still is; nothing the test armed ever fired. Skips, out
+loud, on a box where no private manager can be started),
 `tests/test_wake_no_model.sh` (rule 24a beside 23 and 24, and account-fallback rule 4a's wake half:
 with no account variable set anywhere the wake still invokes the CLI exactly once; a CLI that dies
 writing nothing is journaled with its exit code and its agenda is re-booked; the launcher's own

@@ -520,9 +520,9 @@ echo "the unit a booking asks for carries --collect and a runtime ceiling:"
 rm -f "$T"/wakes/*.wake
 : > "$SANDBOX_SYSTEMD_LOG"
 book_by --by wake-chain-floor 90min scheduled "" > /dev/null
-argv="$(grep -m1 'on-active' "$SANDBOX_SYSTEMD_LOG" 2>/dev/null)"
+argv="$(grep -m1 -- '--on-' "$SANDBOX_SYSTEMD_LOG" 2>/dev/null)"
 count_arg() { local n; n="$(grep -c -- "$1" "$SANDBOX_SYSTEMD_LOG" 2>/dev/null)"; printf '%s' "${n:-0}"; }
-check_eq "exactly one unit was asked for" "$(count_arg 'on-active')" "1"
+check_eq "exactly one unit was asked for" "$(count_arg '--on-')" "1"
 case "$argv" in
     *"--collect"*) ok "it is booked with --collect, so a failed unit does not leak" ;;
     *) fail "every wake unit carries --collect" "$argv" ;;
@@ -542,10 +542,19 @@ case "$argv" in
     *"-p Nice="*) ok "and at a background niceness" ;;
     *) fail "every wake unit carries the background niceness (rule 12a)" "$argv" ;;
 esac
+# Rule 8. The timer is armed at the RECORD's own epoch, as one dated UTC
+# instant — never as a delay, which the user manager counts from activation
+# and starts again on every daemon-reload (2026-10-02: seven pending sittings,
+# every timer later than its record), and never as a bare time of day, which
+# would come back every morning.
+fire="$(cut -f1 "$T"/wakes/*.wake)"
+instant="$(date -u -d "@$fire" '+%Y-%m-%d %H:%M:%S UTC')"
 case "$argv" in
-    *"--on-active="*) ok "booked as a delay, never as a calendar spec that would repeat daily" ;;
-    *) fail "a booking is a delay" "$argv" ;;
+    *"--on-calendar=$instant "*) ok "armed at the record's own epoch, as a dated UTC instant ($instant)" ;;
+    *) fail "a booking is armed at its record's absolute instant" "$argv" ;;
 esac
+check_eq "and never as a delay, which a reload of the manager would restart" \
+    "$(count_arg 'on-active')" "0"
 case "$argv" in
     *"--setenv=DESKCRAB_CONF=$DESKCRAB_CONF"*) ok "the instance's config travels into the unit" ;;
     *) fail "a scratch instance's wakes must fire back into the scratch instance" "$argv" ;;
@@ -585,4 +594,34 @@ rm -f "$T"/wakes/*.wake "$T/wakes/ledger.log"
 : > "$SANDBOX_SYSTEMD_LOG"
 book_by 3h scheduled "" > /dev/null
 check_eq "with the opt-in back, the same booking does reach the stub" \
-    "$(count_arg 'on-active')" "1"
+    "$(count_arg 'on-calendar')" "1"
+
+echo
+echo "the near lane — a booking due at once is armed as its remaining delay:"
+# Rule 8's one exception, and it is load-bearing: a dated instant that is
+# already behind the manager's clock when its timer starts is accepted,
+# answered with zero, and never fired. A one-second urgent booking would be
+# exactly that, so inside WAKE_ABSOLUTE_MARGIN the timer is the delay left to
+# the record's epoch — and outside it, never.
+rm -f "$T"/wakes/*.wake "$T/wakes/ledger.log"
+: > "$SANDBOX_SYSTEMD_LOG"
+book_by --by job-runner 1s event "a job that just finished" > /dev/null
+argv="$(grep -m1 -- '--on-' "$SANDBOX_SYSTEMD_LOG" 2>/dev/null)"
+case "$argv" in
+    *"--on-active=1s "*) ok "a one-second booking is a one-second delay" ;;
+    *) fail "an urgent booking is armed as a delay" "$argv" ;;
+esac
+check_eq "and not as an instant that may already have passed" \
+    "$(count_arg 'on-calendar')" "0"
+
+rm -f "$T"/wakes/*.wake "$T/wakes/ledger.log"
+: > "$SANDBOX_SYSTEMD_LOG"
+book_by --by job-runner 119s event "inside the margin" > /dev/null
+check_eq "the lane holds right up to the margin" "$(count_arg 'on-active=11[0-9]s ')" "1"
+rm -f "$T"/wakes/*.wake "$T/wakes/ledger.log"
+: > "$SANDBOX_SYSTEMD_LOG"
+book_by --by job-runner 125s event "just past the margin" > /dev/null
+fire="$(cut -f1 "$T"/wakes/*.wake)"
+check_eq "and one second past it the booking is a dated instant again" \
+    "$(count_arg "on-calendar=$(date -u -d "@$fire" '+%Y-%m-%d %H:%M:%S UTC') ")" "1"
+check_eq "with no delay beside it" "$(count_arg 'on-active')" "0"
