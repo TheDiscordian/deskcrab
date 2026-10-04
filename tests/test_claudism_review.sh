@@ -3,8 +3,10 @@
 # bash tests/test_claudism_review.sh
 #
 # What the judge is shown (spoken halves, never a job's entry or the display
-# half; the flags; the persona sheet; the conduct drawer; the recalled records
-# with their ids), and what the review may change: a record reworded or
+# half; the tidy's prose under its own housekeeping heading, never as speech;
+# the score, speech and housekeeping apart and each over its own words; the
+# flags; the persona sheet; the conduct drawer; the recalled records with
+# their ids), and what the review may change: a record reworded or
 # retired through `crab memory`, an exact-once text replacement in the persona
 # sheet or a conduct file, a `- replace:` line in the phrase list, and nothing
 # else — with every edited file copied aside first, the cap held, and no wake.
@@ -54,6 +56,7 @@ chmod +x "$T/crab"
 
 mkdir -p "$T/journal" "$T/flags" "$H/conduct"
 cat > "$T/journal/$DAY.jsonl" <<'EOF'
+{"epoch": 1758315600, "time": "2026-09-20T03:20:00-0400", "kind": "tidy", "user": "", "reply": "Nightly tidy 2026-09-20: TIDYNOTE two shelf lines refreshed."}
 {"epoch": 1758340000, "time": "2026-09-20T10:00:00-0400", "kind": "desktop", "pid": 201, "user": "how are you?", "reply": "Status: three wakes booked, two jobs running.\n---DISPLAY---\nDISPLAYNOISE table"}
 {"epoch": 1758343600, "time": "2026-09-20T11:00:00-0400", "kind": "job", "pid": 202, "user": "builder brief", "reply": "BUILDERNOISE: 47 passed"}
 EOF
@@ -93,6 +96,24 @@ P="$(cat "$T/prompt-last" 2>/dev/null)"
 check "her spoken half reaches the judge" contains "$P" "Status: three wakes booked"
 refute "the display half does not" contains "$P" "DISPLAYNOISE"
 refute "a job's entry does not" contains "$P" "BUILDERNOISE"
+# Rule 40: the tidy's note is hers, so it is shown — under its own heading,
+# labelled as housekeeping, never as something she said aloud.
+SPEECH="${P#*=== THE DAY (}"; SPEECH="${SPEECH%%=== THE DAY\'S HOUSEKEEPING*}"
+HOUSE="${P#*=== THE DAY\'S HOUSEKEEPING}"; HOUSE="${HOUSE%%=== THE SCORE*}"
+check "the tidy's prose is kept, under the housekeeping heading" \
+    contains "$HOUSE" "her, in a housekeeping note no one hears: Nightly tidy 2026-09-20: TIDYNOTE"
+refute "and is not in her speech" contains "$SPEECH" "TIDYNOTE"
+refute "nor labelled as said aloud anywhere" contains "$P" "her, aloud: Nightly tidy"
+check "her speech stays under its own heading" contains "$SPEECH" "her, aloud: Status: three wakes booked"
+refute "and is not in the housekeeping" contains "$HOUSE" "three wakes booked"
+check "the judge is told what housekeeping is" \
+    contains "$P" "never change what governs her speech on housekeeping evidence alone"
+check "the score reaches the judge" \
+    contains "$P" "$DAY, spoken: 7 words — status-report-cadence 1 use, 142.86 per 1,000."
+check "and the night log, in the review's name" \
+    contains "$OUT" "claudism-review: $DAY, spoken: 7 words — status-report-cadence 1 use, 142.86 per 1,000."
+check "housekeeping scored over its own words" \
+    contains "$OUT" "claudism-review: $DAY, housekeeping: 8 words — status-report-cadence 0 uses, 0.00 per 1,000."
 check "the flag reaches the judge" contains "$P" "status-report cadence"
 check "the persona sheet reaches the judge" contains "$P" "Report your state as a status list"
 check "the conduct drawer reaches the judge" contains "$P" "Policy 4.2"
@@ -182,3 +203,179 @@ OUT="$(review CLAUDISM_REVIEW_DRY_RUN=1)"
 check "prints what it would do" contains "$OUT" 'claudism-review: would {"route": "memory-retire"'
 check_eq "and changes nothing" "$(snap)" "$BEFORE"
 refute "and asks crab memory for nothing but recall" contains "$(cat "$T/crab-calls")" "memory forget"
+
+# --- Rule 40a: the score --------------------------------------------------
+# The fixture holds 2026-08-18's own counts: eleven wake replies of 546 spoken
+# words with no proof-of-work use, the tidy's note of 178 words with two, and
+# a builder's 492-word log. Pooled, that day read 2.76 per 1,000 — wrong about
+# both registers. Every place a count could leak in from carries bait: the
+# job's entry, every display half, a fenced block, and a quoted mention.
+python3 - "$T" <<'FIXTURE'
+import json, os, sys
+T = sys.argv[1]
+HIT = "The shelf check ran and 33 passed."            # 7 words, one use
+MENTION = 'The phrase list still carries "33 passed" as an entry.'
+DISPLAY = "\n---DISPLAY---\n47 passed, 0 failed in the table"
+
+def filler(n):
+    """n words in short sentences, none of them a listed move."""
+    return " ".join(" ".join(["rain"] * (min(i + 12, n) - i)) + "."
+                    for i in range(0, n, 12))
+
+def spoken(n, lead=""):
+    return (lead + " " + filler(n - len(lead.split()))).strip() if n else ""
+
+def day(name, date, wakes, tidy, job=True):
+    os.makedirs(os.path.join(T, name), exist_ok=True)
+    rows, epoch = [], 1787040000
+    if tidy is not None:
+        rows.append({"epoch": epoch, "time": date + "T03:22:00-0400",
+                     "kind": "tidy", "user": "", "reply": tidy})
+    if job:
+        rows.append({"epoch": epoch + 1, "time": date + "T03:17:03-0400",
+                     "kind": "job", "pid": 9, "user": "builder brief",
+                     "reply": "33 passed. " + filler(490)})
+    for i, text in enumerate(wakes):
+        rows.append({"epoch": epoch + 100 + i,
+                     "time": "%sT%02d:00:00-0400" % (date, 4 + i),
+                     "kind": "wake", "pid": 100 + i, "user": "a wake",
+                     "reply": text + DISPLAY})
+    with open(os.path.join(T, name, date + ".jsonl"), "w") as f:
+        for r in rows:
+            f.write(json.dumps(r) + "\n")
+
+def tidy(n):
+    return HIT + " The drawer check ran and 12 passed. " + filler(n - 14)
+
+SIZES = [86, 61, 43, 57, 60, 102, 0, 0, 85, 49, 3]    # the real day's replies
+def wakes(scale=1, hit=False):
+    out = []
+    for i, n in enumerate(SIZES):
+        if i == 0 and hit:
+            out.append(spoken(n * scale, HIT))
+        elif i == 1:
+            out.append(spoken(n * scale, MENTION))
+        elif i == 2:
+            out.append(spoken(n * scale) + "\n```\n47 passed in a fence\n```")
+        else:
+            out.append(spoken(n * scale))
+    return out
+
+# The curve's earlier nights: one without a tidy note, one with.
+for name in ("j818", "j818-loud", "j818-hit", "j818-hit-long"):
+    day(name, "2026-08-16", [spoken(500)], None)
+    day(name, "2026-08-17", [spoken(1000, HIT)], HIT + " " + filler(193))
+day("j818", "2026-08-18", wakes(), tidy(178))
+day("j818-loud", "2026-08-18", wakes(scale=10), tidy(178))
+day("j818-hit", "2026-08-18", wakes(hit=True), tidy(178))
+day("j818-hit-long", "2026-08-18", wakes(hit=True), tidy(1780))
+day("j-house", "2026-08-18", [], "Nightly tidy 2026-08-18: HOUSEONLY note.", job=False)
+FIXTURE
+cat > "$T/list818.md" <<'EOF'
+## reciting counts as proof — "33 passed, 0 failed"
+- pattern: `\b\d+ passed\b`
+- function: proof-of-work
+- fix: delete
+- live: no
+EOF
+
+score() {   # <journal dir> [VAR=value ...]
+    local dir="$1"; shift
+    env DAY_JOURNAL_DIR="$T/$dir" CLAUDISMS_FILE="$T/list818.md" \
+        "$@" "$REPO/lib/claudism-review" score 2026-08-18 2>&1
+}
+run818() {  # <journal dir>
+    env CRAB_BIN="$T/crab" DAY_JOURNAL_DIR="$T/$1" CLAUDISM_FLAGS_DIR="$T/flags" \
+        CLAUDISMS_FILE="$T/list818.md" CUSTOM_PROMPT="$T/persona.md" \
+        WANTS_FILE="$H/wants.md" NIGHT_JUDGE_MODEL=gpt-5.6-sol \
+        DESKCRAB_CODEX_STATE="$T/cx-state" \
+        "$REPO/lib/claudism-review" run 2026-08-18 2>&1
+}
+photo() { find "$T/j818" "$H" -type f -exec md5sum {} + | sort | md5sum; }
+
+echo
+echo "the score — speech and housekeeping apart (rule 40a):"
+BEFORE="$(photo)"
+S="$(score j818)"
+check "546 spoken words with no proof-of-work use read 0.00 per 1,000" \
+    contains "$S" "2026-08-18, spoken: 546 words — proof-of-work 0 uses, 0.00 per 1,000."
+check "178 tidy words with two read 11.24 per 1,000" \
+    contains "$S" "2026-08-18, housekeeping: 178 words — proof-of-work 2 uses, 11.24 per 1,000."
+refute "the pooled 2.76 is printed nowhere" contains "$S" "2.76"
+refute "nor the pooled 724 words" contains "$S" "724"
+check "the spoken denominator is printed under its own rates" \
+    contains "$S" "| spoken words | 500 | 1000 | 546 |"
+check "with the rate one use prints there" contains "$S" "| one use reads as | 2.00 | 1.00 | 1.83 |"
+check "the spoken curve, night over night" contains "$S" "| proof-of-work | 0.00 | 1.00 | 0.00 |"
+check "the housekeeping denominator is its own; a night with no note is a gap" \
+    contains "$S" "| housekeeping words |  | 200 | 178 |"
+check "the housekeeping curve, the gap not a zero" \
+    contains "$S" "| proof-of-work |  | 5.00 | 11.24 |"
+check "and its own resolution row" contains "$S" "| one use reads as |  | 5.00 | 5.62 |"
+check_eq "the score door writes nothing" "$(photo)" "$BEFORE"
+
+echo
+echo "neither rate moves with the other series' words:"
+S="$(score j818-loud)"
+check "ten times the speech: the spoken denominator grows" \
+    contains "$S" "2026-08-18, spoken: 5460 words — proof-of-work 0 uses, 0.00 per 1,000."
+check "and the housekeeping rate holds still" \
+    contains "$S" "2026-08-18, housekeeping: 178 words — proof-of-work 2 uses, 11.24 per 1,000."
+S="$(score j818-hit)"
+check "one spoken use in 546 words reads 1.83" \
+    contains "$S" "2026-08-18, spoken: 546 words — proof-of-work 1 use, 1.83 per 1,000."
+S="$(score j818-hit-long)"
+check "ten times the housekeeping: its own rate falls" \
+    contains "$S" "2026-08-18, housekeeping: 1780 words — proof-of-work 2 uses, 1.12 per 1,000."
+check "and the spoken rate holds still" \
+    contains "$S" "2026-08-18, spoken: 546 words — proof-of-work 1 use, 1.83 per 1,000."
+
+echo
+echo "the curve's length, and a list that cannot be read:"
+S="$(score j818 CLAUDISM_REVIEW_TREND_NIGHTS=2)"
+check "the knob shortens the curve" contains "$S" "| spoken words | 1000 | 546 |"
+refute "and the night before it is gone" contains "$S" "2026-08-16"
+{ cat "$T/list818.md"; printf '%s\n' '## a broken entry' '- pattern: `(unclosed`'; } > "$T/list-broken.md"
+S="$(score j818 CLAUDISMS_FILE="$T/list-broken.md")"
+check "an entry that will not compile is counted on the score's own line" \
+    contains "$S" "1 line(s) of the phrase list could not be read and scored nothing"
+check "and the entries that ran still score" \
+    contains "$S" "2026-08-18, housekeeping: 178 words — proof-of-work 2 uses, 11.24 per 1,000."
+S="$(score j818 CLAUDISMS_FILE="$T/no-such-list.md")"
+check "no phrase list: said plainly" contains "$S" "No phrase list was found"
+check "and the words are still counted" \
+    contains "$S" "2026-08-18, housekeeping: 178 words — nothing caught."
+S="$(env DAY_JOURNAL_DIR="$T/j818" CLAUDISMS_FILE="$T/list818.md" \
+        "$REPO/lib/claudism-review" score 2026-08-01 2>&1)"
+check "a day with no journal has nothing to score" contains "$S" "no journal for 2026-08-01"
+
+echo
+echo "the same score reaches the judge and the night log:"
+echo "NOTHING — a quiet day" > "$T/reply.txt"
+rm -f "$T/prompt-last"
+OUT="$(run818 j818)"
+P="$(cat "$T/prompt-last" 2>/dev/null)"
+for line in \
+    "2026-08-18, spoken: 546 words — proof-of-work 0 uses, 0.00 per 1,000." \
+    "2026-08-18, housekeeping: 178 words — proof-of-work 2 uses, 11.24 per 1,000." \
+    "| proof-of-work |  | 5.00 | 11.24 |"; do
+    check "the judge reads: $line" contains "$P" "$line"
+    check "the night log carries it" contains "$OUT" "claudism-review: $line"
+done
+HOUSE="${P#*=== THE DAY\'S HOUSEKEEPING}"; HOUSE="${HOUSE%%=== THE SCORE*}"
+check "the tidy's caught sentences are in front of the judge, as housekeeping" \
+    contains "$HOUSE" "The drawer check ran and 12 passed."
+refute "every night-log line of the score opens with the review's name" \
+    contains "$(printf '%s\n' "$OUT" | grep -v '^claudism-review: ')" "per 1,000"
+
+echo
+echo "a day of housekeeping alone is still reviewed:"
+rm -f "$T/prompt-last"
+OUT="$(run818 j-house)"
+P="$(cat "$T/prompt-last" 2>/dev/null)"
+check "the judge is asked" contains "$OUT" "claudism-review: reviewing the day of 2026-08-18"
+check "the note is shown" \
+    contains "$P" "her, in a housekeeping note no one hears: Nightly tidy 2026-08-18: HOUSEONLY note."
+check "and her speech is said to be empty" contains "$P" "(she said nothing aloud today)"
+check "the spoken series has no point on its curve" \
+    contains "$OUT" "claudism-review: 2026-08-18, spoken: no words — no point on this curve."

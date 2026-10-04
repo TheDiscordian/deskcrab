@@ -2,16 +2,19 @@
 """The claudism review's three steps (specs/nightly.md rules 39-44), driven by
 lib/claudism-review through CR_* environment variables:
 
-  material  print the judge's prompt: the day, the flags, the persona sheet,
-            the conduct drawer, the phrase-list entries whose replacements
-            fired, and the records recall put in front of her
+  material  print the judge's prompt: the day in its two series (her speech,
+            and her housekeeping apart from it), the score, the flags, the
+            persona sheet, the conduct drawer, the phrase-list entries whose
+            replacements fired, and the records recall put in front of her
+  score     print the score alone (rule 40a): no model call, nothing written
   plan      read the judge's answer, keep the edits that pass every guard,
             print the files they will touch (one per line)
   apply     copy those files aside, then make the edits
   show      print the planned edits (the dry run)
 
 Between steps the work directory carries `shown.json` (what the judge was
-shown, so no edit can reach anything else) and `plan.json`.
+shown, so no edit can reach anything else), `score.txt` (the score, for the
+night log) and `plan.json`.
 """
 import json
 import os
@@ -23,7 +26,15 @@ import sys
 E = os.environ
 WORK = E.get("CR_WORK", "")
 DISPLAY_RE = re.compile(r"(?m)^[ \t]*---DISPLAY---[ \t]*$")
+FENCE_RE = re.compile(r"```.*?```", re.S)
 WAKE_KINDS = ("wake", "quiet", "tidy")
+# The two series of rule 40, never pooled. The tidy's own prose is hers, so it
+# is reviewed — but it is a note to no listener, and scoring it with what the
+# user could hear made one number that was wrong about both (2026-08-18: 2.76
+# per 1,000 pooled; 0.00 spoken, 11.24 in the tidy's 178 words).
+SERIES = (("spoken", "her replies aloud: desk, phone, wake"),
+          ("housekeeping", "the tidy's own note, written to no listener"))
+HOUSEKEEPING_KINDS = ("tidy",)
 
 
 def say(msg):
@@ -98,19 +109,180 @@ def recall(turn):
         return []
 
 
-def material():
-    day = E["CR_DAY"]
-    turns = [t for t in rows(E["CR_JFILE"]) if t.get("kind") != "job"]
+def prose(turn):
+    """Her own half of a journal row: the reply up to the display delimiter."""
+    return DISPLAY_RE.split(turn.get("reply") or "", 1)[0]
+
+
+def series_of(turn):
+    return "housekeeping" if turn.get("kind") in HOUSEKEEPING_KINDS else "spoken"
+
+
+def her_turns(jfile):
+    """One journal day, oldest first, hers only: a job's entry is a builder's
+    log, not her voice, and is in neither series (rule 40)."""
+    turns = [t for t in rows(jfile)
+             if isinstance(t, dict) and t.get("kind") != "job"]
     turns.sort(key=lambda t: t.get("epoch", 0))
-    spoken = [t for t in turns
-              if DISPLAY_RE.split(t.get("reply") or "", 1)[0].strip()]
-    if not spoken:
-        say(f"no reply of her own on {day} — nothing to review")
+    return turns
+
+
+def mirror():
+    """lib/claudism-mirror's library half — the phrase list's one parser, one
+    mention test and one sentence splitter (import-safe by its own contract).
+    The score reads the list through these and never through a copy."""
+    import importlib.machinery
+    import importlib.util
+    path = os.path.join(os.path.dirname(os.path.realpath(__file__)),
+                        "claudism-mirror")
+    loader = importlib.machinery.SourceFileLoader("claudism_mirror", path)
+    spec = importlib.util.spec_from_loader("claudism_mirror", loader)
+    mod = importlib.util.module_from_spec(spec)
+    loader.exec_module(mod)
+    return mod
+
+
+def function_of(entry):
+    """The move an entry scores under: its declared function, else its own
+    short name — the heading before the em-dash."""
+    if entry.get("function"):
+        return entry["function"]
+    short = re.split(r"\s+—\s+", entry.get("note") or "")[0]
+    return re.sub(r"[^a-z0-9]+", "-", short.lower()).strip("-")[:48] or "unnamed"
+
+
+def score_day(jfile, patterns, mod):
+    """{series: {"words": n, "uses": {function: n}}} for one journal day. Each
+    series is counted over its own prose alone. A function counts once per
+    sentence however many sibling patterns name it; a mention is not a use;
+    a mention test that fails counts the hit, never loses it."""
+    out = {name: {"words": 0, "uses": {}} for name, _ in SERIES}
+    for t in her_turns(jfile):
+        text = FENCE_RE.sub(" ", prose(t))
+        s = out[series_of(t)]
+        s["words"] += len(text.split())
+        if not patterns:
+            continue
+        for sent in mod.sentences(text):
+            caught = set()
+            for e in patterns:
+                fn = function_of(e)
+                if fn in caught:
+                    continue
+                try:
+                    used = any(
+                        mod.classify_use(sent, m.start(), m.end(), e["note"]) == "use"
+                        for m in e["rx"].finditer(sent))
+                except Exception:
+                    used = bool(e["rx"].search(sent))
+                if used:
+                    caught.add(fn)
+                    s["uses"][fn] = s["uses"].get(fn, 0) + 1
+    return out
+
+
+def trend_nights(jfile, day, want):
+    """The journal days the curve runs over: the last `want` on disk ending
+    at the reviewed day, oldest first."""
+    jdir = os.path.dirname(jfile)
+    try:
+        names = os.listdir(jdir)
+    except OSError:
+        names = []
+    days = sorted({n[:-6] for n in names
+                   if re.fullmatch(r"\d{4}-\d{2}-\d{2}\.jsonl", n) and n[:-6] <= day}
+                  | {day})
+    return [(d, os.path.join(jdir, d + ".jsonl")) for d in days[-max(want, 1):]]
+
+
+def rate(uses, words):
+    return "%.2f" % (1000.0 * uses / words) if words else ""
+
+
+def score_text():
+    """The score of rule 40a: per series, each function's uses per 1,000 of
+    that series' own words, night over night, the denominators printed under
+    the rates they divide. Recomputed from the journals every time; nothing
+    is read from or written to a counts file."""
+    day, jfile = E["CR_DAY"], E["CR_JFILE"]
+    list_path = E.get("CR_LIST", "")
+    mod, patterns, notes = None, [], []
+    try:
+        mod = mirror()
+        if os.path.isfile(list_path):
+            patterns, bad = mod.load_patterns(list_path)
+            if bad:
+                notes.append(f"{bad} line(s) of the phrase list could not be read and "
+                             "scored nothing — a pattern that never ran is not a "
+                             "move that never happened.")
+        else:
+            notes.append("No phrase list was found — the words are counted, "
+                         "nothing is scored.")
+    except Exception as exc:
+        patterns = []
+        notes.append(f"The phrase list could not be read ({exc}) — the words are "
+                     "counted, nothing is scored.")
+    try:
+        want = int(E.get("CR_TREND_NIGHTS") or 7)
+    except ValueError:
+        want = 7
+    nights = trend_nights(jfile, day, want)
+    scored = {d: score_day(path, patterns, mod) for d, path in nights}
+    fns = sorted({fn for d in scored for name, _ in SERIES
+                  for fn, n in scored[d][name]["uses"].items() if n})
+
+    lines = ["Listed moves per 1,000 words, night over night. Two series, each "
+             "over its own words; nothing is pooled.",
+             f"Every night is re-scored from its journal against tonight's "
+             f"phrase list ({len(patterns)} patterns): once per sentence and "
+             "function, mentions set aside, jobs and display halves in neither "
+             "series."]
+    lines += notes
+    if not fns and patterns:
+        lines.append("No listed move was caught in either series on these nights.")
+    for name, what in SERIES:
+        lines += ["",
+                  f"| {name} — {what} | " + " | ".join(d for d, _ in nights) + " |",
+                  "|---" * (len(nights) + 1) + "|",
+                  f"| {name} words | "
+                  + " | ".join(str(scored[d][name]["words"] or "") for d, _ in nights)
+                  + " |",
+                  "| one use reads as | "
+                  + " | ".join(rate(1, scored[d][name]["words"]) for d, _ in nights)
+                  + " |"]
+        for fn in fns:
+            lines.append(f"| {fn} | " + " | ".join(
+                rate(scored[d][name]["uses"].get(fn, 0), scored[d][name]["words"])
+                for d, _ in nights) + " |")
+    lines.append("")
+    tonight = scored[day]
+    caught = sorted({fn for name, _ in SERIES
+                     for fn, n in tonight[name]["uses"].items() if n})
+    for name, _ in SERIES:
+        words = tonight[name]["words"]
+        if not words:
+            lines.append(f"{day}, {name}: no words — no point on this curve.")
+        elif not caught:
+            lines.append(f"{day}, {name}: {words} words — nothing caught.")
+        else:
+            lines.append(f"{day}, {name}: {words} words — " + "; ".join(
+                "%s %d use%s, %s per 1,000"
+                % (fn, tonight[name]["uses"].get(fn, 0),
+                   "" if tonight[name]["uses"].get(fn, 0) == 1 else "s",
+                   rate(tonight[name]["uses"].get(fn, 0), words))
+                for fn in caught) + ".")
+    return "\n".join(lines)
+
+
+def score():
+    if not os.path.isfile(E["CR_JFILE"]):
+        say(f"no journal for {E['CR_DAY']} — nothing to score")
         return 0
+    print(score_text())
+    return 0
 
-    flags = [f for f in rows(E["CR_FLAGS"]) if f.get("use") != "mention"]
-    flagged = {(f.get("epoch"), f.get("pid")) for f in flags}
 
+def day_lines(turns, label, flagged):
     lines = []
     for t in turns:
         stamp = (t.get("time") or "")[11:16] or "??:??"
@@ -118,11 +290,44 @@ def material():
         lines.append(f"[{stamp} {t.get('kind', '?')}{mark}]")
         if t.get("user"):
             lines.append(f"  the user: {t['user'].strip()}")
-        said = DISPLAY_RE.split(t.get("reply") or "", 1)[0].strip()
+        said = prose(t).strip()
         if said:
-            lines.append(f"  her, aloud: {said}")
+            lines.append(f"  {label}: {said}")
         lines.append("")
-    day_text = clip("\n".join(lines), int(E["CR_JOURNAL_BUDGET"]), "the day")
+    return "\n".join(lines)
+
+
+def material():
+    day = E["CR_DAY"]
+    turns = her_turns(E["CR_JFILE"])
+    # Everything she wrote today, speech and housekeeping alike: a day of
+    # housekeeping alone is still reviewed (rule 40).
+    voiced = [t for t in turns if prose(t).strip()]
+    if not voiced:
+        say(f"no reply of her own on {day} — nothing to review")
+        return 0
+
+    flags = [f for f in rows(E["CR_FLAGS"]) if f.get("use") != "mention"]
+    flagged = {(f.get("epoch"), f.get("pid")) for f in flags}
+
+    # The two series reach the judge under their own headings (rule 40): the
+    # tidy's note is never labelled as something she said aloud.
+    day_text = clip(day_lines(
+        [t for t in turns if series_of(t) == "spoken"], "her, aloud", flagged),
+        int(E["CR_JOURNAL_BUDGET"]), "the day")
+    house_text = clip(day_lines(
+        [t for t in turns if series_of(t) == "housekeeping"],
+        "her, in a housekeeping note no one hears", flagged),
+        int(E["CR_JOURNAL_BUDGET"]), "the housekeeping")
+
+    # The score costs only itself (rule 40a): a review that cannot count
+    # still reviews, and says so.
+    try:
+        score_block = score_text()
+    except Exception as exc:
+        score_block = f"The score could not be computed tonight ({exc})."
+    with open(os.path.join(WORK, "score.txt"), "w", encoding="utf-8") as f:
+        f.write(score_block + "\n")
 
     flag_lines, swapped = [], set()
     for f in flags:
@@ -152,7 +357,7 @@ def material():
         for n in conduct_files), int(E["CR_CONDUCT_BUDGET"]), "the conduct drawer")
 
     # Flagged turns first, then the rest, up to the cap.
-    order = sorted(spoken, key=lambda t: (t.get("epoch"), t.get("pid")) not in flagged)
+    order = sorted(voiced, key=lambda t: (t.get("epoch"), t.get("pid")) not in flagged)
     records = {}
     for t in order[:int(E["CR_RECALL_TURNS"])]:
         for r in recall(t):
@@ -170,7 +375,9 @@ def material():
     print(PROMPT.format(
         name=E.get("CR_NAME") or "the assistant",
         day=day,
-        day_text=day_text,
+        day_text=day_text or "(she said nothing aloud today)",
+        housekeeping=house_text or "(no housekeeping note today)",
+        score=score_block,
         flags="\n".join(flag_lines) or "(nothing was flagged today)",
         persona=persona or "(no persona sheet)",
         conduct=conduct_text or "(no conduct drawer)",
@@ -196,7 +403,18 @@ of the assistant's voice tomorrow. Typical causes: a record written about her \
 in the third person or as procedure ("He wants her to..."), a conduct body \
 that reads like a policy document or an incident report, a persona line that \
 invites the move, a replacement line that swapped in something that reads \
-badly. Her spoken lines are evidence only; you never rewrite them.
+badly. Her own lines are evidence only; you never rewrite them.
+
+Her day comes to you in two parts, and they are never to be read as one. Her \
+speech is what he could hear. Her housekeeping is the note her nightly tidy \
+leaves: she wrote it, but to no listener — nobody hears it and nobody reads \
+it. A slip there is evidence about how she writes to herself, and tells you \
+nothing about how she speaks to him. Trace a housekeeping slip to the \
+material that shaped the note if you can; never change what governs her \
+speech on housekeeping evidence alone. The score counts the two apart, each \
+over its own words. Like the flags it is a pointer, not a verdict: weigh the \
+move, not the tally, and remember that on a short night a single use prints \
+a large rate.
 
 Most nights need no edit. NOTHING is a normal answer. Change only what you \
 can tie to a slip in today's material, keep the meaning of every rule and \
@@ -225,8 +443,14 @@ or
 EDITS
 <a JSON array of edits>
 
-=== THE DAY ({day}) — her replies' spoken halves beside the user's words ===
+=== THE DAY ({day}) — HER SPEECH: her replies' spoken halves beside the user's words ===
 {day_text}
+
+=== THE DAY'S HOUSEKEEPING — her tidy's own note: written to no listener, never spoken ===
+{housekeeping}
+
+=== THE SCORE — speech and housekeeping apart, each over its own words ===
+{score}
 
 === TODAY'S FLAGS — lines her phrase list caught (pointers, not verdicts) ===
 {flags}
@@ -400,6 +624,8 @@ if __name__ == "__main__":
     step = sys.argv[1] if len(sys.argv) > 1 else ""
     if step == "material":
         sys.exit(material())
+    if step == "score":
+        sys.exit(score())
     SHOWN = json.load(open(os.path.join(WORK, "shown.json")))
     if step == "plan":
         sys.exit(plan())
@@ -409,4 +635,4 @@ if __name__ == "__main__":
         for edit in json.load(open(os.path.join(WORK, "plan.json")))["edits"]:
             print("claudism-review: would " + json.dumps(edit, ensure_ascii=False))
         sys.exit(0)
-    sys.exit("usage: claudism_review.py material|plan|apply")
+    sys.exit("usage: claudism_review.py material|score|plan|apply|show")

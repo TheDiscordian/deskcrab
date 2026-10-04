@@ -488,16 +488,55 @@ which fails silently is worse than one that does not exist.
 
 39. After the ingest and the key backfill, sleep reviews the day for claudisms: the moments she
     sounded like a generic assistant instead of herself. The review is part of sleep's work on her
-    prompt and her memories, and its only outputs are edits to them, so she wakes with the change
-    already made. It writes no report, books no wake, keeps no counts or rates, and never speaks.
-40. The review reads the day's journal (her replies' spoken halves beside the user's words; a
-    job's entry is a builder's log, not her voice, and is excluded), the day's flag log
-    ([turn-pipeline.md](turn-pipeline.md) rules 30-32) as pointers to moments worth a look, her
-    persona sheet, her conduct files, and the active memory records recall puts in front of her
-    for the day's turns. It looks for the material that pulled her voice toward the assistant
-    register — a record written about her in the third person or in procedure-speak, a conduct
-    body that reads like a policy document, a persona line that invites the move — and fixes that
-    material. The spoken lines themselves are evidence; they are never rewritten.
+    prompt and her memories, and the only things it changes are those, so she wakes with the
+    change already made. It writes no report file, books no wake, and never speaks. It keeps no
+    counts: the score of rule 40a is recomputed from the journals each night, stated, and stored
+    nowhere.
+40. The review reads the day's journal in two series that are never pooled. Her SPEECH is every
+    reply the user could hear — desk, phone, wake — its spoken half beside the user's words. Her
+    HOUSEKEEPING is the tidy's own prose (`kind=tidy`): she wrote it, so it is reviewed rather
+    than dropped, but it is a note to no listener, never spoken and read by no one (`MIN-31`),
+    and it MUST reach the judge under its own heading, labelled as housekeeping, never as
+    something she said aloud. A job's entry is a builder's log, not her voice, and is in neither
+    series. A day that holds housekeeping and no speech is still reviewed. Beside the journal the
+    review reads the day's flag log ([turn-pipeline.md](turn-pipeline.md) rules 30-32) as
+    pointers to moments worth a look, her persona sheet, her conduct files, and the active memory
+    records recall puts in front of her for the day's turns. It looks for the material that
+    pulled her voice toward the assistant register — a record written about her in the third
+    person or in procedure-speak, a conduct body that reads like a policy document, a persona
+    line that invites the move — and fixes that material. Her own lines are evidence; they are
+    never rewritten. The judge is told what housekeeping is: a slip there is evidence about how
+    she writes to herself, traced like any other to the material that shaped the note, and never
+    evidence about how she speaks — nothing that governs her speech is to be changed on
+    housekeeping evidence alone. Unlabelled, the note was judged as speech: on 2026-10-03 the
+    judge took the 03:18 tidy line for a report given to the user and edited the conduct index,
+    which sits in every prompt she speaks from, on that evidence.
+40a. The review scores the two series apart, and neither series' rate may depend on how much of
+    the other was written. A USE is a listed move found in a sentence of the journal's prose,
+    read by the phrase list's one parser and one mention test (the capture's rules 32a and 32b
+    in [turn-pipeline.md](turn-pipeline.md)): every entry counts, the `live: no` wide net
+    included; a function counts once per sentence however many sibling patterns name it; a
+    mention is set aside; an entry that declares no function scores under its own short name. A
+    series' rate for a function is its uses per 1,000 of THAT series' words — spoken halves
+    only, fences out — and the denominator is printed under the rates it divides: the series'
+    words on each night, and the rate a single use prints there, because on a short night one
+    use reads as a spike. The curve runs over the last `CLAUDISM_REVIEW_TREND_NIGHTS` journal
+    days (default 7) ending at the reviewed day, every night re-scored from its own journal
+    against tonight's list, so one ruler measures the whole curve and nothing is kept between
+    nights (rule 39). A night with no words in a series is a gap in that series' curve, never a
+    zero. Both tables carry the same rows — every function caught in either series on any night
+    shown — so a move that lives in only one of them reads 0.00 in the other instead of
+    vanishing from it. Entries the parser could not read are counted on the score's own line: a
+    pattern that never ran MUST NOT read as a move that never happened. The score reaches the
+    judge as a section of its material and the night log as `claudism-review:` lines, and
+    `claudism-review score [day]` prints it alone, with no model call and no write. It is a
+    pointer, like the flags, and a score that cannot be computed costs only itself: the review
+    runs without it and says so.
+    The pooled rate this replaces was wrong about both registers at once. On 2026-08-18 the day
+    held 724 words and two proof-of-work uses, 2.76 per 1,000 — the highest single-function
+    figure the old table had carried. By series, the 546 spoken words carried neither (0.00) and
+    the tidy's 178 carried both (11.24). The blend moved with how much the user happened to say
+    to her that day, and on a quiet day it silently changed what it was measuring.
 41. An edit takes one of three routes and no other:
     - a directive or note record rewritten in her voice through `crab memory rewrite`
       ([memory-recall.md](memory-recall.md) rule 28e); the old record is superseded, never
@@ -1027,7 +1066,15 @@ running, a `running` sidecar older than the ceiling claims no new byte but keeps
 inside it, and no report calls the orphan running.
 `tests/test_claudism_review.sh` — rules 39-44: the judge is handed the spoken halves and never a
 job's entry, the flag log, the persona sheet, the conduct files, and the recalled records with
-their ids; a NOTHING answer writes nothing; a record rewrite supersedes the old record, a retire
+their ids; the tidy's prose reaches the judge under the housekeeping heading and never as
+something said aloud, and a day of housekeeping alone is still reviewed (rule 40); the score of
+rule 40a on a fixture holding 2026-08-18's own counts — 546 spoken words with no proof-of-work
+use read 0.00 per 1,000 while the tidy's 178 words with two read 11.24, the pooled 2.76 printed
+nowhere, a job's entry and the display halves in neither numerator nor denominator; each rate
+holds still while the other series' words are multiplied; a night without a tidy note is a gap
+in the housekeeping curve and not a zero; a mention scores nothing, an entry that will not
+compile is counted on the score's own line, and the same score reaches the judge and the night
+log; a NOTHING answer writes nothing; a record rewrite supersedes the old record, a retire
 retires it, and a file edit lands only when its old text occurs exactly once, with the file copied
 to the night's backup directory first; an edit outside the persona sheet and the conduct drawer is
 refused; the cap holds; and no wake is booked.

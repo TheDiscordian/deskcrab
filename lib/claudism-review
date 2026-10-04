@@ -6,9 +6,13 @@
 # material, so she wakes with the change already made. Its only outputs are
 # edits — a memory record reworded or retired, an exact-text replacement in
 # her persona sheet or a conduct file, a replacement line in her phrase list
-# revised or revoked. No report, no wake, no counts, no speech.
+# revised or revoked. No report file, no wake, no speech, and no counts kept:
+# the score it states (rule 40a) — her speech and her housekeeping apart, each
+# over its own words — is recomputed from the journals every night.
 #
-#   claudism-review run [YYYY-MM-DD]   review that day (default: yesterday)
+#   claudism-review run [YYYY-MM-DD]     review that day (default: yesterday)
+#   claudism-review score [YYYY-MM-DD]   print that day's score alone: no
+#                                        model call, nothing written
 #
 # Knobs, environment or deskcrab.conf (this file sources lib/common.sh):
 #   CLAUDISM_REVIEW_ENABLED=1          0/no/off/false switches the phase off
@@ -16,8 +20,11 @@
 #   CLAUDISM_REVIEW_TIMEOUT=900        seconds for the one call
 #   CLAUDISM_REVIEW_MAX_EDITS=6        edits applied in one night (rule 42)
 #   CLAUDISM_REVIEW_RECALL_TURNS=40    turns whose recalled records are shown
-#   CLAUDISM_REVIEW_JOURNAL_BUDGET=60000   bytes of the day, cut announced
+#   CLAUDISM_REVIEW_JOURNAL_BUDGET=60000   bytes of the day's speech, cut
+#                                          announced; the housekeeping note
+#                                          is held to the same number apart
 #   CLAUDISM_REVIEW_CONDUCT_BUDGET=160000  bytes of conduct bodies, same
+#   CLAUDISM_REVIEW_TREND_NIGHTS=7     journal days on the score's curves
 #   CLAUDISM_REVIEW_DRY_RUN=0          1 prints the planned edits, makes none
 #
 # Every failure path exits 0 with a line on the night log: a broken review
@@ -37,6 +44,17 @@ CRAB="${CRAB_BIN:-$HOME/.local/bin/crab}"
 SESSION_KIND=claudism-review
 
 say() { printf 'claudism-review: %s\n' "$1"; }
+
+# The score alone (rule 40a): the same arithmetic the judge is shown, printed
+# for any day on demand. Reads the journals and the phrase list, calls no
+# model, writes nothing.
+cmd_score() {
+    local DAY
+    DAY="${1:-$(date -d yesterday +%F 2>/dev/null || date +%F)}"
+    CR_DAY="$DAY" CR_JFILE="$DAY_JOURNAL_DIR/$DAY.jsonl" CR_LIST="$CLAUDISMS_FILE" \
+        CR_TREND_NIGHTS="${CLAUDISM_REVIEW_TREND_NIGHTS:-7}" \
+        python3 "$LIB_DIR/claudism_review.py" score
+}
 
 cmd_run() {
     case "${CLAUDISM_REVIEW_ENABLED:-1}" in
@@ -65,7 +83,8 @@ cmd_run() {
         CR_MAX_EDITS="${CLAUDISM_REVIEW_MAX_EDITS:-6}" \
         CR_RECALL_TURNS="${CLAUDISM_REVIEW_RECALL_TURNS:-40}" \
         CR_JOURNAL_BUDGET="${CLAUDISM_REVIEW_JOURNAL_BUDGET:-60000}" \
-        CR_CONDUCT_BUDGET="${CLAUDISM_REVIEW_CONDUCT_BUDGET:-160000}"
+        CR_CONDUCT_BUDGET="${CLAUDISM_REVIEW_CONDUCT_BUDGET:-160000}" \
+        CR_TREND_NIGHTS="${CLAUDISM_REVIEW_TREND_NIGHTS:-7}"
 
     if ! python3 "$LIB_DIR/claudism_review.py" material > "$WORK/prompt.txt"; then
         say "could not assemble the day's material — nothing is reviewed tonight"
@@ -76,6 +95,12 @@ cmd_run() {
     fi
 
     say "reviewing the day of $DAY — most nights change nothing"
+    # The score on the night log, line for line what the judge is shown
+    # (rule 40a): speech and housekeeping apart, each over its own words.
+    local LINE
+    while IFS= read -r LINE; do
+        [ -n "$LINE" ] && say "$LINE"
+    done < "$WORK/score.txt" 2>/dev/null
     local OUT
     if ! OUT="$(nightly_judge_walk "$CLAUDISM_REVIEW_MODEL" "$CLAUDISM_REVIEW_EFFORT" \
             "${CLAUDISM_REVIEW_TIMEOUT:-900}" claudism-review \
@@ -109,7 +134,8 @@ cmd_run() {
 
 if [ "${BASH_SOURCE[0]}" = "$0" ]; then
     case "${1:-}" in
-        run) shift; cmd_run "$@" ;;
-        *)   echo "Usage: claudism-review run [YYYY-MM-DD]" >&2; exit 2 ;;
+        run)   shift; cmd_run "$@" ;;
+        score) shift; cmd_score "$@" ;;
+        *)     echo "Usage: claudism-review run|score [YYYY-MM-DD]" >&2; exit 2 ;;
     esac
 fi
