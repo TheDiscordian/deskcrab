@@ -3,9 +3,6 @@ Description=DeskCrab Signal daemon (signal-cli, JSON-RPC on a UNIX socket)
 Documentation=https://github.com/TheDiscordian/deskcrab/blob/main/specs/signal.md
 After=network-online.target
 StartLimitIntervalSec=0
-# signal-cli is a separate install; until it exists the unit is skipped, not
-# failed in a loop. `crab signal register` starts it (specs/signal.md rule 4b).
-ConditionPathExists=/usr/bin/signal-cli
 
 [Service]
 Type=simple
@@ -13,7 +10,12 @@ Type=simple
 # receive so nothing is taken off Signal's servers until the bridge
 # subscribes (specs/signal.md rule 1). The socket defaults to
 # $XDG_RUNTIME_DIR/signal-cli/socket, which crab signal and the bridge read.
-ExecStart=/usr/bin/signal-cli daemon --socket --receive-mode manual --no-receive-stdout
+# signal-cli is a separate install, found on PATH (a package, or a build
+# linked into ~/.local/bin). Until it exists the unit is skipped, not failed
+# in a loop; `crab signal register` starts it (specs/signal.md rule 4b).
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecCondition=/bin/sh -c 'command -v signal-cli'
+ExecStart=/usr/bin/env signal-cli daemon --socket --receive-mode manual --no-receive-stdout
 Restart=always
 RestartSec=10
 
