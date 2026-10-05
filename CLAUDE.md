@@ -43,6 +43,7 @@ A push-to-talk desktop assistant for Linux, powered by the Claude Code CLI. The 
 | `lib/serve.py` | stdlib HTTP front end for the phone (`crab serve`) |
 | `lib/webapp/` | the phone client: one page, a manifest, a service worker |
 | `lib/webpush.py` | Web Push: RFC 8291 crypto, RFC 8292 VAPID, subscription store |
+| `lib/signal_chat.py` | Signal (`crab signal`): the daemon client, her inbox and log, contacts, groups, sending, and the bridge |
 | `lib/midturn-mail` | PostToolUse hook: hands a running turn the messages queued behind it, between two tool calls |
 | `lib/gen-cert` | self-signed TLS material for the server |
 | `lib/memory.py` | vector store (`crab memory`): sqlite-vec plus local ollama |
@@ -88,6 +89,7 @@ work here, the defect identifiers, the data-flow graph, and the lock table.
 | [speech-output](specs/speech-output.md) | extraction, display split, the streamer, the mutex, never-silent |
 | [debug-view](specs/debug-view.md) | which logs the viewer follows, and what it may never drop |
 | [phone](specs/phone.md) | the server and the PWA: turns, the watch cursor, voice, auth, push |
+| [signal](specs/signal.md) | her own Signal number: daemon, bridge, inbox, contacts, groups, sending |
 | [memory-recall](specs/memory-recall.md) | query composition, retrieval, the recall block, reinforcement |
 | [engineering-records](specs/engineering-records.md) | threads with state: the record format, `crab eng`, the prompt block, the job hook |
 | [wants](specs/wants.md) | the wants drawer: want records over the record spine, the shelf, `crab want`, migration |

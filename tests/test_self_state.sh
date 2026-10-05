@@ -215,6 +215,9 @@ booked_by_values() {
         grep -rhE -- '--by ' "$REPO/lib" "$REPO/crab" | grep -v '^[[:space:]]*#' \
             | grep -oE -- '--by "\$\{[A-Z_]+:-[a-z0-9-]+\}"' \
             | sed -E 's/.*:-([a-z0-9-]+)\}"/\1/'
+        # A python booker spells the flag as an argv list item.
+        grep -rhE -- '"--by", "[a-z]' "$REPO/lib" | grep -v '^[[:space:]]*#' \
+            | grep -oE -- '"--by", "[a-z][a-z0-9-]*"' | sed -E 's/.*, "([a-z0-9-]+)"/\1/'
         # ...and what the module writes when nobody says at all.
         sed -nE 's/.*by="\$\{DESKCRAB_WAKE_ORIGIN:-([a-z]+)\}".*/\1/p' "$REPO/lib/wake-queue.sh"
     } | sort -u

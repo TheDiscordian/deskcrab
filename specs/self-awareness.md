@@ -45,11 +45,12 @@ below is a fact placed before her, never a gate placed behind her.
 
 8. A booking record MUST carry, at minimum: fire epoch, kind, reason, booked-at epoch, and
    **booked-by**.
-9. Booked-by MUST name the subsystem that booked it. Seven hands book wakes in her name: the promise
+9. Booked-by MUST name the subsystem that booked it. Nine hands book wakes in her name: the promise
    auditor (`promise-audit`), the promise checker (`promise-check`), the job runner (`job-runner`),
    the self-change watcher
    (`notice-selfchange`), the new-file watcher (`notice-newfiles`), the watcher's canary (`canary`),
-   and the chain floor (`wake-chain-floor`). Two more identities reach a record without being
+   the chain floor (`wake-chain-floor`), the chess bridge (`chessweb`), and the Signal bridge
+   (`signal-bridge`). Two more identities reach a record without being
    subsystems: `outage-retry`, when a wake that failed before the model ran re-books itself and
    cannot name its original booker, and `herself`, the default when nobody says.
 10. **The prompt MUST name every identity the queue can stamp**, by the word the record will carry,
