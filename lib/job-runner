@@ -290,12 +290,15 @@ for JOB_TRY_MODEL in $JOB_MODEL_WALK; do
         if codex_available "$JOB_TRY_MODEL"; then
             echo "job-runner: building on codex ($CODEX_SLUG)" >> "$LOG"
             ATT_OFF=$(wc -c < "$STREAMLOG" 2>/dev/null || echo 0)
+            codex_mcp_args
             (
-                env -u OPENAI_API_KEY "$CODEX_BIN" exec \
+                env -u OPENAI_API_KEY ${CODEX_MCP_ENV[@]+"${CODEX_MCP_ENV[@]}"} \
+                    "$CODEX_BIN" exec \
                     --ignore-user-config --skip-git-repo-check \
                     --dangerously-bypass-approvals-and-sandbox --json --color never \
                     -C "$PWD" -m "$CODEX_SLUG" \
                     -c "model_reasoning_effort=$JOB_EFFORT" \
+                    -c "$CODEX_MCP_ARG" \
                     "$SYS
 
 --- the task ---

@@ -118,11 +118,17 @@ WHISPER_MODEL="/usr/share/whisper.cpp-model-small.en/ggml-small.en.bin"
 #
 # Every built-in tool is worth roughly 1,900 tokens on every session, so this
 # list is the biggest single lever in the whole prompt. ToolSearch and Agent
-# are deliberately absent: with no MCP servers there is nothing for ToolSearch
-# to search, and a subagent holds the turn open while the user waits.
+# are deliberately absent: her own MCP servers (MCP_CONFIG) are few and their
+# tools are inlined, and a subagent holds the turn open while the user waits.
 # CLAUDE_TOOLS_TURN="Bash,Read,Write,Edit,WebFetch,WebSearch"
 # CLAUDE_TOOLS_WAKE="$CLAUDE_TOOLS_TURN"
 # CLAUDE_TOOLS_JOB=""          # empty = no restriction; a builder needs its tools
+#
+# Her own MCP servers, in Claude's {"mcpServers": {...}} format, for turns,
+# wakes and builders on both engines (specs/model-backends.md rule 6b). Unset,
+# she has none. Codex takes only the "http" servers; header values reach it
+# through the environment, never the argv.
+# MCP_CONFIG="$HOME/.config/deskcrab/mcp.json"
 #
 # The skills catalogue is 6,690 tokens on every session and she used one skill.
 # Set to 1 to buy it back.

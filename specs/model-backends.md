@@ -63,6 +63,15 @@ watchdog expects a trickle, so the translator carries a heartbeat.
    `config.toml` (MCP servers, plugins, hooks, trust grants) out of every run — the codex
    counterpart of the empty MCP config — while auth still reads `CODEX_HOME`. Everything a run
    needs is on its own argv.
+6b. Her own MCP servers are named in ONE file, `MCP_CONFIG`, in Claude's `{"mcpServers": {...}}`
+   format; unset or unreadable means she has none. They reach her turns, wakes and builder jobs
+   on both engines, and nothing else: classifiers, the night judge, chess and the game player
+   keep the empty config. On Claude the file takes the empty config's place under the same
+   `--strict-mcp-config`. On Codex each `http` server becomes part of one
+   `-c mcp_servers={...}` override (its `url`, and `env_http_headers` naming one environment
+   variable per header); the header values ride the child's environment, never the argv, where
+   any process listing would show them. A server of another type is left out on Codex. With no
+   file, app-server gets `mcp_servers={}`.
 
 ### The prompt
 
@@ -96,6 +105,9 @@ watchdog expects a trickle, so the translator carries a heartbeat.
     * each `command_execution` becomes an `assistant` `tool_use` Bash event carrying the command,
       and each `file_change` a `tool_use` Write event per path — the shapes `stream_written_files`
       and the work trace already read;
+    * each `mcp_tool_call` becomes a `tool_use` event named `mcp__<server>__<tool>` with its
+      arguments, followed by its `tool_result` (the result's text, or its error) — the name the
+      Claude CLI gives the same call, so her tool record holds what she did on her servers;
     * `turn.completed` becomes a `result` event whose usage maps cached input to `cache_read`,
       cache writes to `cache_creation`, and input net of cache to `input_tokens`;
     * a failure becomes a `result` with `is_error` AND the raw codex line passes through, so the
@@ -112,8 +124,8 @@ watchdog expects a trickle, so the translator carries a heartbeat.
     `thread/start`'s `baseInstructions` (rule 7's file is still written and named, for the
     driver to read); approvals are `never` and any server request is answered with an error at
     once, because a driver that sits on a request is a turn that hangs; the user's own MCP and
-    plugin tables are overridden empty on the spawn argv, since
-    app-server has no `--ignore-user-config`. Exit 75 — the protocol refused BEFORE any turn
+    plugin tables are overridden on the spawn argv — plugins empty, MCP servers to hers alone
+    (rule 6b) — since app-server has no `--ignore-user-config`. Exit 75 — the protocol refused BEFORE any turn
     began — is the only shape that falls through to the exec pipeline of rule 11, and only when
     `CODEX_STREAM_MODE` is `auto` (the default; `app` and `exec` pin one road for tests and
     triage). A turn that started and died is a failed run, never a fallback: falling back after
@@ -211,6 +223,7 @@ watchdog expects a trickle, so the translator carries a heartbeat.
 | `CODEX_BIN` | every codex launch | default `codex` on PATH, else `~/.local/bin/codex`; exported to every detached child (rule 5a) |
 | `CODEX_HOME` | auth, the wrap's writable set | default `~/.codex`; never copied, never symlinked; exported to every detached child (rule 5a) |
 | `CODEX_MODEL_SOL` | `codex_model_resolve` | default `gpt-5.6-sol` |
+| `MCP_CONFIG` | `claude_profile_flags`, `codex_mcp_args` | her MCP servers (rule 6b); default none |
 | `CODEX_LIMIT_RE` | `codex_stream_refusal` | liberal on purpose: only codex-owned error text is ever tested |
 | `CODEX_CAPACITY_RE` | `codex_stream_capacity` and the speech streamer | fallback recognition when structured `serverOverloaded` metadata is unavailable |
 | `CODEX_CAPACITY_RETRIES` | turn/wake capacity retry | additional same-Codex attempts, default 2 |
@@ -248,7 +261,11 @@ text extracted whole, the completed assistant behind them, usage on the result; 
 app-server falling through to the exec pipeline with the note on the record, in auto mode only;
 `CODEX_STREAM_MODE=exec` pinning the old road; and the exact structured `serverOverloaded` event
 after a tool call, proving both turn and wake retry the same Codex model, never enter the Claude
-walk, write no Codex limit cooldown, and extract only the successful retry's answer.
+walk, write no Codex limit cooldown, and extract only the successful retry's answer; and rule
+6b — an `http` server in `MCP_CONFIG` becomes the one inline `mcp_servers` table with its header
+moved to the environment, other types are left out, and no file still yields the empty table.
+`tests/test_prompt_profiles.sh` covers rule 6b's Claude half: turn, wake and job name
+`MCP_CONFIG` under `--strict-mcp-config`, and classify keeps the empty config.
 
 `tests/test_limit_expiry.sh` — rule 13's expiry, both recorders (`lib/common.sh` and
 `lib/memory.py`): the wild refusal sentence parses to the provider's own epoch and records it

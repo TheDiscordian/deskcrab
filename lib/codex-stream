@@ -100,6 +100,17 @@ def tool_result(item_id, item):
         "content": summary}]}}
 
 
+def mcp_output(item):
+    """An MCP call's result as text: its content blocks' text, else its error."""
+    err = item.get("error")
+    if isinstance(err, dict) and err.get("message"):
+        return str(err["message"])
+    result = item.get("result")
+    blocks = result.get("content") if isinstance(result, dict) else None
+    return "\n".join(str(b["text"]) for b in blocks or []
+                     if isinstance(b, dict) and b.get("text"))
+
+
 def on_item(item):
     kind = item.get("type") or item.get("item_type") or ""
     item_id = item.get("id") or ""
@@ -128,8 +139,20 @@ def on_item(item):
             emit(assistant(item_id, {"type": "tool_use", "name": "Write",
                                      "input": {"file_path": p}}))
         return None
-    # reasoning, web_search, todo_list, mcp_tool_call: nothing downstream
-    # reads them, and an error item passes through with its own line below.
+    if kind == "mcp_tool_call":
+        # One of her MCP servers (rule 6b), named the way the Claude CLI names
+        # it, so the tool record holds what she did there.
+        args = item.get("arguments")
+        emit(assistant(item_id, {"type": "tool_use", "id": item_id,
+                                 "name": "mcp__%s__%s" % (
+                                     item.get("server") or "mcp",
+                                     item.get("tool") or "call"),
+                                 "input": args if isinstance(args, dict) else {}}))
+        emit(tool_result(item_id, {"status": item.get("status"),
+                                   "aggregated_output": mcp_output(item)}))
+        return None
+    # reasoning, web_search, todo_list: nothing downstream reads them, and an
+    # error item passes through with its own line below.
     return None
 
 

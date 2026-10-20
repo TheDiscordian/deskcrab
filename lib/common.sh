@@ -5464,12 +5464,33 @@ wake_stream_last_words() {
 # any API call — and it is confirmed in the probe results.
 CLAUDE_EMPTY_MCP="${CLAUDE_EMPTY_MCP:-$LIB_DIR/empty-mcp.json}"
 
+# Her own MCP servers (specs/model-backends.md rule 6b): one Claude-format
+# file, read at call time, for her turns, wakes and builders on both engines.
+# Prints the path when there is one to use; prints nothing otherwise.
+deskcrab_mcp_config() {
+    [ -n "${MCP_CONFIG:-}" ] && [ -r "$MCP_CONFIG" ] && printf '%s' "$MCP_CONFIG"
+}
+
+# The same servers as a codex run takes them: the one -c override value in
+# CODEX_MCP_ARG (the empty table when she has none), and the header values in
+# CODEX_MCP_ENV as NAME=value words for `env`, so they never ride the argv.
+codex_mcp_args() {
+    CODEX_MCP_ARG='mcp_servers={}'
+    CODEX_MCP_ENV=()
+    local file words
+    file="$(deskcrab_mcp_config)" || return 0
+    mapfile -d '' -t words < <(python3 "$LIB_DIR/codex-mcp-args" "$file")
+    [ "${#words[@]}" -gt 0 ] || return 0
+    CODEX_MCP_ARG="${words[0]}"
+    CODEX_MCP_ENV=("${words[@]:1}")
+}
+
 # Her tool set, as a comma-separated list. Budget ~1,900 tokens per built-in
 # tool: this is the single biggest line item in a session, over half the
-# unflagged baseline. ToolSearch is deliberately absent — with no MCP servers
-# there is nothing left for it to search — and so is Agent, which the identity
-# layer forbids anyway because a subagent holds the turn open while the user
-# waits.
+# unflagged baseline. ToolSearch is deliberately absent — her own MCP servers
+# are few, and their tools are simply inlined — and so is Agent, which the
+# identity layer forbids anyway because a subagent holds the turn open while
+# the user waits.
 CLAUDE_TOOLS_TURN="${CLAUDE_TOOLS_TURN:-Bash,Read,Write,Edit,WebFetch,WebSearch}"
 CLAUDE_TOOLS_WAKE="${CLAUDE_TOOLS_WAKE:-$CLAUDE_TOOLS_TURN}"
 # A builder arrives to work in a project and needs whatever that work needs, so
@@ -5498,8 +5519,14 @@ claude_profile_flags() {  # <turn|wake|job|classify>
     # The precondition, always first, and the only thing that makes --tools
     # safe. Skipped when the file is missing rather than emitted half — half
     # of this lever is the 116k-token shape.
+    # Her own servers take the empty config's place on the profiles that are
+    # her (rule 6b); a classifier never sees them.
     if [ -r "$CLAUDE_EMPTY_MCP" ]; then
-        CLAUDE_PROFILE_FLAGS+=(--strict-mcp-config --mcp-config "$CLAUDE_EMPTY_MCP")
+        local mcp="$CLAUDE_EMPTY_MCP" own
+        case "$1" in
+            turn|wake|job) own="$(deskcrab_mcp_config)" && mcp="$own" ;;
+        esac
+        CLAUDE_PROFILE_FLAGS+=(--strict-mcp-config --mcp-config "$mcp")
         case "$1" in
             classify) CLAUDE_PROFILE_FLAGS+=(--tools "") ;;
             *) [ -n "$tools" ] && CLAUDE_PROFILE_FLAGS+=(--tools "$tools") ;;
@@ -6389,17 +6416,19 @@ _codex_stream_run() {  # <turn|wake> <model> <effort> <prompt text>
         # through to the exec pipeline, and only in auto mode. The user's
         # own codex configuration stays out of her sessions here as
         # --ignore-user-config keeps it out of exec runs: app-server has no
-        # such flag, so the MCP and plugin tables are overridden empty on
-        # the argv.
+        # such flag, so the plugin table is overridden empty on the argv and
+        # the MCP table to her own servers (rule 6b).
+        codex_mcp_args
         if [ "${CODEX_STREAM_MODE:-auto}" != "exec" ]; then
             printf '%s' "$PROMPT" | env -u OPENAI_API_KEY \
+                ${CODEX_MCP_ENV[@]+"${CODEX_MCP_ENV[@]}"} \
                 CODEX_APP_MODEL="$SLUG" CODEX_APP_EFFORT="$REFFORT" \
                 CODEX_APP_CWD="$PROJECT_DIR" \
                 CODEX_APP_INSTRUCTIONS="$INSTR" \
                 CODEX_STREAM_MODEL="$SLUG" \
                 "$LIB_DIR/codex-app-stream" -- \
                 "$CODEX_BIN" app-server \
-                -c 'mcp_servers={}' -c 'plugins={}' \
+                -c "$CODEX_MCP_ARG" -c 'plugins={}' \
                 >> "$DEBUGLOG" 2>> "$DEBUGLOG"
             APP_RC=$?
             [ "$APP_RC" -ne 75 ] && exit "$APP_RC"
@@ -6411,10 +6440,12 @@ _codex_stream_run() {  # <turn|wake> <model> <effort> <prompt text>
             --dangerously-bypass-approvals-and-sandbox --json --color never \
             -C "$PROJECT_DIR" -m "$SLUG" -c "model_reasoning_effort=$REFFORT")
         [ -n "$INSTR" ] && ARGS+=(-c "model_instructions_file=$INSTR")
+        ARGS+=(-c "$CODEX_MCP_ARG")
         # The subscription, never a stray key (rule 5); stdin closed because
         # an open stdin is an invitation codex accepts (rule 10). Codex's own
         # stderr appends raw — the refusal detector reads it as codex-owned.
-        env -u OPENAI_API_KEY "$CODEX_BIN" "${ARGS[@]}" "$PROMPT" \
+        env -u OPENAI_API_KEY ${CODEX_MCP_ENV[@]+"${CODEX_MCP_ENV[@]}"} \
+            "$CODEX_BIN" "${ARGS[@]}" "$PROMPT" \
             </dev/null 2>> "$DEBUGLOG" \
             | CODEX_STREAM_MODEL="$SLUG" "$LIB_DIR/codex-stream" >> "$DEBUGLOG"
         exit "${PIPESTATUS[0]}"

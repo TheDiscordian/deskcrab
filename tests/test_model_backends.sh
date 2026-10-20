@@ -70,6 +70,12 @@ for line in sys.stdin:
                      "command": "crab face-window", "status": "completed",
                      "exitCode": 0,
                      "aggregatedOutput": "viewer restarted, new pid 2468\n"}})
+        notify("item/completed", {"threadId": "th-1", "turnId": "tu-1",
+            "item": {"type": "mcpToolCall", "id": "mcp_1", "server": "world",
+                     "tool": "whoami", "arguments": {"verbose": True},
+                     "status": "completed", "error": None,
+                     "result": {"content": [{"type": "text",
+                                             "text": "handle: example.test"}]}}})
         for d in ("codex ", "stub ", "reply."):
             notify("item/agentMessage/delta",
                    {"threadId": "th-1", "turnId": "tu-1",
@@ -175,6 +181,7 @@ CODEX_STREAM_HEARTBEAT=0 CODEX_STREAM_MODEL="gpt-test" \
 {"type":"item.completed","item":{"id":"item_1","type":"command_execution","command":"echo hi","status":"completed","exit_code":0,"aggregated_output":"hi"}}
 {"type":"item.completed","item":{"id":"item_2","type":"file_change","changes":[{"path":"/tmp/a.txt","kind":"add"}]}}
 {"type":"item.completed","item":{"id":"item_3","type":"agent_message","text":"the answer."}}
+{"type":"item.completed","item":{"id":"item_4","type":"mcp_tool_call","server":"world","tool":"place_piece","arguments":{"origin":[1,2,3]},"status":"failed","error":{"message":"overlaps another piece"}}}
 not json at all
 {"type":"some.future.event","x":1}
 {"type":"turn.completed","usage":{"input_tokens":100,"cached_input_tokens":60,"cache_write_input_tokens":5,"output_tokens":7}}
@@ -196,6 +203,11 @@ check "a file change becomes a Write tool_use" \
     contains "$(cat "$TR")" '"file_path": "/tmp/a.txt"'
 check_eq "one Bash tool_use, not one per item state" \
     "$(grep -c '"name": "Bash"' "$TR")" "1"
+check "an MCP call becomes a tool_use named as the Claude CLI names it" \
+    contains "$(cat "$TR")" '"name": "mcp__world__place_piece"'
+check "…carrying its arguments" contains "$(cat "$TR")" '"origin": [1, 2, 3]'
+check "…and a failed call's result is an error carrying its message" \
+    contains "$(cat "$TR")" '"is_error": true, "content": "status=failed\noverlaps another piece"'
 check "a non-JSON line passes through verbatim" \
     contains "$(cat "$TR")" 'not json at all'
 check "an unknown event passes through verbatim" \
@@ -383,6 +395,10 @@ check "the app-server stream records the command result" \
     contains "$(cat "$SANDBOX/turn-debug.log")" '"type": "tool_result"'
 check "the checker can see what the command actually returned" \
     contains "$(cat "$SANDBOX/turn-debug.log")" 'viewer restarted, new pid 2468'
+check "the app-server stream records an MCP call by its Claude name" \
+    contains "$(cat "$SANDBOX/turn-debug.log")" '"name": "mcp__world__whoami"'
+check "…with what the server answered" \
+    contains "$(cat "$SANDBOX/turn-debug.log")" 'status=completed\nhandle: example.test'
 check_eq "…with no Claude account walked" \
     "$(sandbox_count_in '--model' "$SANDBOX_CLAUDE_LOG")" "0"
 rm -f "$CODEX_STATE" "$CODEX_LOG"; : > "$SANDBOX_CLAUDE_LOG"
@@ -579,3 +595,31 @@ PYEOF
     check "the fallback accounts run a Claude model" contains "$OUT" "fallback-model sonnet"
     check "the first attempt is the codex one" contains "$OUT" "order ['codex']"
 fi
+
+echo
+echo "her MCP servers reach codex as one table, header values in the environment (rule 6b):"
+refute() { local desc="$1"; shift; if "$@"; then fail "$desc"; else ok "$desc"; fi; }
+MCPF="$SANDBOX/mcp.json"
+cat > "$MCPF" <<'JSON'
+{"mcpServers": {
+  "world": {"type": "http", "url": "https://example.test/mcp",
+            "headers": {"Authorization": "Bearer SECRET-TOKEN"}},
+  "local": {"command": "some-binary", "args": []}
+}}
+JSON
+OUT="$(sb "MCP_CONFIG='$MCPF'; codex_mcp_args; printf '%s\n' \"\$CODEX_MCP_ARG\" \"\${CODEX_MCP_ENV[@]}\"")"
+check "the http server is in the table with its url" \
+    contains "$OUT" 'mcp_servers={"world"={url="https://example.test/mcp",'
+check "…naming its header's environment variable" \
+    contains "$OUT" 'env_http_headers={"Authorization"="DESKCRAB_MCP_0_AUTHORIZATION"}'
+check "the header's value is in the environment words" \
+    contains "$OUT" 'DESKCRAB_MCP_0_AUTHORIZATION=Bearer SECRET-TOKEN'
+refute "the header's value is never in the argv table" \
+    contains "$(sb "MCP_CONFIG='$MCPF'; codex_mcp_args; printf '%s' \"\$CODEX_MCP_ARG\"")" "SECRET-TOKEN"
+refute "a server codex cannot reach is left out" contains "$OUT" '"local"'
+check_eq "no file still yields the empty table" \
+    "$(sb "MCP_CONFIG=''; codex_mcp_args; printf '%s|%s' \"\$CODEX_MCP_ARG\" \"\${#CODEX_MCP_ENV[@]}\"")" \
+    "mcp_servers={}|0"
+check_eq "an unreadable file yields the empty table" \
+    "$(sb "MCP_CONFIG='$SANDBOX/missing.json'; codex_mcp_args; printf '%s' \"\$CODEX_MCP_ARG\"")" \
+    "mcp_servers={}"

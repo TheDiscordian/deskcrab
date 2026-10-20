@@ -1,0 +1,54 @@
+#!/usr/bin/env python3
+"""Her MCP servers, from MCP_CONFIG's Claude-format file, as codex takes them.
+
+specs/model-backends.md rule 6b. Prints NUL-separated words: first the value
+of one `-c` override, the whole `mcp_servers` table inline, then one
+NAME=value word per header for the child's environment. A header's value
+never goes into the table, because the table rides the argv and any process
+listing shows the argv; the table names the environment variable instead
+(`env_http_headers`). Codex speaks only streamable HTTP to a remote server,
+so a server of any other type is left out. A missing or unreadable file, or
+one that is not the expected shape, prints the empty table.
+"""
+import json
+import re
+import sys
+
+
+def toml_str(s):
+    # A JSON string is a valid TOML basic string: the same quotes, the same
+    # backslash escapes, \\uXXXX included.
+    return json.dumps(str(s))
+
+
+def main(path):
+    try:
+        with open(path) as f:
+            servers = json.load(f).get("mcpServers") or {}
+    except (OSError, ValueError, AttributeError):
+        servers = {}
+    if not isinstance(servers, dict):
+        servers = {}
+
+    tables, env = [], []
+    for name, spec in servers.items():
+        if not isinstance(spec, dict) or not spec.get("url") \
+                or spec.get("type", "http") != "http":
+            continue
+        headers = []
+        for header, value in (spec.get("headers") or {}).items():
+            var = "DESKCRAB_MCP_%d_%s" % (
+                len(env), re.sub(r"[^A-Z0-9]", "_", str(header).upper()))
+            env.append("%s=%s" % (var, value))
+            headers.append("%s=%s" % (toml_str(header), toml_str(var)))
+        fields = ["url=" + toml_str(spec["url"])]
+        if headers:
+            fields.append("env_http_headers={%s}" % ",".join(headers))
+        tables.append("%s={%s}" % (toml_str(name), ",".join(fields)))
+
+    words = ["mcp_servers={%s}" % ",".join(tables)] + env
+    sys.stdout.write("\0".join(words) + "\0")
+
+
+if __name__ == "__main__":
+    main(sys.argv[1] if len(sys.argv) > 1 else "")

@@ -66,7 +66,8 @@ A push-to-talk desktop assistant for Linux, powered by the Claude Code CLI. The 
 | `lib/sleep-nightly` | the nightly memory ingest, and its rot check |
 | `lib/claudism-review` | sleep's claudism review: the day's slips into the assistant register, traced to the records, conduct files and persona lines behind them, and those fixed |
 | `lib/day-journal` | the durable per-day record of every finished turn |
-| `lib/empty-mcp.json` | the empty MCP config her sessions run against |
+| `lib/empty-mcp.json` | the empty MCP config her sessions run against when `MCP_CONFIG` names no servers of her own |
+| `lib/codex-mcp-args` | her `MCP_CONFIG` servers as codex takes them: one `-c` table, header values in the environment |
 | `systemd/` | user units: wake, restore, sleep, canary, watchers, server |
 | `specs/` | the contract |
 | `docs/` | engineering history |

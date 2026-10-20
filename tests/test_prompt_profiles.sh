@@ -302,6 +302,22 @@ check "a classifier is given no tools at all" \
              "[--tools][]"
 
 echo
+echo "her own MCP servers ride her profiles, never a classifier's (model-backends rule 6b):"
+MCPF="$SANDBOX/mcp.json"
+printf '%s' '{"mcpServers":{}}' > "$MCPF"
+for p in turn wake job; do
+    check "$p: names MCP_CONFIG under --strict-mcp-config" \
+        contains "$(run "MCP_CONFIG='$MCPF'; claude_profile_flags $p; printf '%s ' \"\${CLAUDE_PROFILE_FLAGS[@]}\"")" \
+                 "--strict-mcp-config --mcp-config $MCPF"
+done
+check "classify keeps the empty config" \
+    contains "$(run "MCP_CONFIG='$MCPF'; claude_profile_flags classify; printf '%s ' \"\${CLAUDE_PROFILE_FLAGS[@]}\"")" \
+             "empty-mcp.json"
+check "no MCP_CONFIG is the empty config" \
+    contains "$(run "MCP_CONFIG=''; claude_profile_flags turn; printf '%s ' \"\${CLAUDE_PROFILE_FLAGS[@]}\"")" \
+             "empty-mcp.json"
+
+echo
 echo "the wake's user message is the wake's agenda:"
 
 # Rule 12. The agenda reaches the model as the USER message and nowhere else,

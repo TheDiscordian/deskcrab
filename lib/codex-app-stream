@@ -279,6 +279,35 @@ class Driver:
                                    "tool_use_id": item_id,
                                    "is_error": status not in ("completed", "success"),
                                    "content": summary}]}})
+        elif kind == "mcpToolCall":
+            # One of her MCP servers (rule 6b), named the way the Claude CLI
+            # names it, so the tool record holds what she did there.
+            args = item.get("arguments")
+            emit({"type": "assistant",
+                  "message": {"id": item_id, "model": MODEL,
+                              "content": [{"type": "tool_use",
+                                           "id": item_id,
+                                           "name": "mcp__%s__%s" % (
+                                               item.get("server") or "mcp",
+                                               item.get("tool") or "call"),
+                                           "input": args if isinstance(args, dict) else {}}]}})
+            status = item.get("status") or "unknown"
+            output = ""
+            err = item.get("error")
+            result = item.get("result")
+            if isinstance(err, dict) and err.get("message"):
+                output = str(err["message"])
+            elif isinstance(result, dict):
+                output = "\n".join(str(b["text"]) for b in result.get("content") or []
+                                   if isinstance(b, dict) and b.get("text"))
+            summary = "status=%s" % status
+            if output:
+                summary += "\n" + clip_tool_output(output)
+            emit({"type": "user", "message": {"role": "user",
+                  "content": [{"type": "tool_result",
+                               "tool_use_id": item_id,
+                               "is_error": status not in ("completed", "success"),
+                               "content": summary}]}})
         elif kind == "fileChange":
             for c in item.get("changes") or []:
                 p = c.get("path") if isinstance(c, dict) else None
