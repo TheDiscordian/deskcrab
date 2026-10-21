@@ -1,0 +1,233 @@
+#!/usr/bin/env python3
+"""Refresh existing user-unit copies; never install or activate a new unit."""
+import argparse
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import stat
+import subprocess
+import sys
+import tempfile
+from datetime import datetime, timezone
+
+
+def stamp():
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def atomic_write(path, data, mode=0o600):
+    """The parent already exists, especially for installed unit files."""
+    fd, name = tempfile.mkstemp(prefix=".unit-sync-", dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb") as out:
+            os.fchmod(out.fileno(), mode)
+            out.write(data)
+            out.flush()
+            os.fsync(out.fileno())
+        os.replace(name, path)
+        directory = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
+    finally:
+        if os.path.exists(name):
+            os.unlink(name)
+
+
+def read_state(path):
+    try:
+        value = json.loads(path.read_text())
+        if not isinstance(value, dict) or value.get("version") != 1:
+            raise ValueError("unrecognised unit-sync state")
+        for field in ("pending", "errors", "last_files"):
+            entries = value.get(field, [])
+            if not isinstance(entries, list) or not all(isinstance(item, str) for item in entries):
+                raise ValueError(f"invalid {field}")
+        hashes = value.get("linked_hashes", {})
+        if not isinstance(hashes, dict) or not all(isinstance(k, str) and isinstance(v, str) for k, v in hashes.items()):
+            raise ValueError("invalid linked hashes")
+        return value
+    except FileNotFoundError:
+        return {"version": 1, "pending": [], "linked_hashes": {}, "errors": []}
+    except (ValueError, TypeError):
+        # A damaged journal must not become a permanent manual-clear gate.
+        # The loaded manager state is unknown, so reconcile and reload once.
+        return {"version": 1, "pending": ["deployment journal recovery"],
+                "linked_hashes": {}, "errors": ["damaged deployment journal; reload owed"],
+                "recover_journal": True}
+
+
+def inventory(source, installed, known):
+    changes, linked, skipped, errors = [], {}, [], []
+    if not source.is_dir():
+        return changes, linked, skipped, ["repository systemd directory is missing"]
+    for src in sorted(source.rglob("*")):
+        if not src.is_file() or src.is_symlink():
+            continue
+        relative = src.relative_to(source)
+        name = relative.as_posix()
+        dest = installed / relative
+        try:
+            # Never follow a linked drop-in directory into a different installation.
+            if any(p.is_symlink() for p in dest.parents if p != installed and installed in p.parents):
+                skipped.append(name)
+                continue
+            try:
+                info = dest.lstat()
+            except FileNotFoundError:
+                continue
+            body = src.read_bytes()
+            digest = hashlib.sha256(body).hexdigest()
+            if stat.S_ISLNK(info.st_mode):
+                if dest.resolve() != src.resolve():
+                    skipped.append(name)  # Includes masks such as /dev/null.
+                    continue
+                linked[name] = digest
+                if known.get(name) != digest:
+                    changes.append((name, dest, body, info, True))
+            elif stat.S_ISREG(info.st_mode):
+                if dest.read_bytes() != body:
+                    changes.append((name, dest, body, info, False))
+            else:
+                skipped.append(name)
+        except OSError as exc:
+            errors.append(f"{name}: {exc.strerror or exc}")
+    return changes, linked, skipped, errors
+
+
+def report(state):
+    errors = state.get("errors", [])
+    pending = state.get("pending", [])
+    if errors or pending:
+        detail = "; ".join(errors) if errors else "manager reload pending"
+        print(f"Unit refresh: ATTENTION — {detail}; automatic retry on watcher/canary")
+    elif state.get("last_refresh"):
+        print(f"Unit refresh: {state['last_refresh']} — " + ", ".join(state["last_files"]))
+    else:
+        print("Unit refresh: no installed files have needed refreshing")
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--status", action="store_true", help="read evidence only")
+    parser.add_argument("--check", action="store_true", help="preview without writing or reloading")
+    parser.add_argument("--source-dir", type=Path, default=Path(__file__).resolve().parent.parent / "systemd")
+    args = parser.parse_args()
+    state_dir = Path(os.environ.get("XDG_STATE_HOME", Path.home() / ".local/state")) / "deskcrab"
+    installed = Path(os.environ.get("XDG_CONFIG_HOME", Path.home() / ".config")) / "systemd/user"
+    state_file = state_dir / "unit-sync.json"
+    if args.status:
+        if not state_file.exists():
+            print("Unit refresh: not yet checked")
+        else:
+            report(read_state(state_file))
+        return 0
+    if args.check:
+        state = read_state(state_file)
+        changes, _, skipped, errors = inventory(args.source_dir, installed, state.get("linked_hashes", {}))
+        print(json.dumps({"refresh": [item[0] for item in changes], "pending": state.get("pending", []),
+                          "preserved": skipped, "errors": errors}, indent=2))
+        return int(bool(errors))
+
+    state_dir.mkdir(parents=True, exist_ok=True)
+    with (state_dir / "unit-sync.lock").open("a") as lock:
+        # A competing caller owns this work, never delay its watcher or turn.
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return 0
+        state = read_state(state_file)
+        changes, linked, skipped, errors = inventory(args.source_dir, installed, state.get("linked_hashes", {}))
+        old_pending = set(state.get("pending", []))
+        pending = set(old_pending)
+        pending.update(item[0] for item in changes)
+        previous = json.dumps(state, sort_keys=True)
+
+        def sync_attention():
+            attention = state_dir / "unit-sync.attention"
+            if state.get("errors") or state.get("pending"):
+                detail = "; ".join(state.get("errors", [])) or "manager reload pending"
+                body = (f"Unit refresh: ATTENTION — {detail}; automatic retry on watcher/canary\n").encode()
+                if not attention.exists() or attention.read_bytes() != body:
+                    atomic_write(attention, body)
+            elif attention.exists():
+                attention.unlink()
+
+        def save():
+            atomic_write(state_file, (json.dumps(state, indent=2, sort_keys=True) + "\n").encode())
+            sync_attention()
+
+        def log(message):
+            with (state_dir / "unit-sync.log").open("a") as out:
+                out.write(f"{stamp()} {message}\n")
+
+        if state.pop("recover_journal", False):
+            fd, backup = tempfile.mkstemp(prefix="unit-sync-damaged-", suffix=".json", dir=state_dir)
+            with os.fdopen(fd, "wb") as out:
+                out.write(state_file.read_bytes())
+            log("damaged journal retained; reconciling manager state")
+        if changes:
+            # Persist BEFORE copying: a crash after replacement must still owe a reload.
+            state["pending"] = sorted(pending)
+            save()
+        for name, dest, body, info, is_link in changes:
+            if is_link:
+                log(f"repository link changed: {name}")
+                continue
+            try:
+                current = dest.lstat()
+                if (current.st_ino, current.st_mtime_ns, current.st_mode) != (info.st_ino, info.st_mtime_ns, info.st_mode):
+                    raise OSError("installed file changed during reconciliation")
+                atomic_write(dest, body, stat.S_IMODE(info.st_mode))
+                log(f"refreshed: {name}")
+            except OSError as exc:
+                errors.append(f"{name}: {exc.strerror or exc}")
+                try:
+                    # An error after replace (e.g. directory fsync) still owes
+                    # a reload. Only discard a new intention if no bytes landed.
+                    if name not in old_pending and dest.read_bytes() != body:
+                        pending.discard(name)
+                except OSError:
+                    pass  # Unknown installed bytes: conservatively reload.
+        # A failed copy owes another copy, not a reload of unchanged bytes.
+        # Previously pending names remain crash/reload recovery obligations.
+        state["pending"] = sorted(pending)
+        if changes:
+            save()
+        if pending:
+            try:
+                result = subprocess.run(["systemctl", "--user", "daemon-reload"],
+                                        capture_output=True, text=True, timeout=20, check=False)
+                if result.returncode:
+                    raise OSError(f"daemon-reload exited {result.returncode}: {result.stderr.strip()[:500]}")
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                errors.append(str(exc))
+                log(f"reload failed: {exc}")
+            else:
+                state["pending"] = []
+                state["linked_hashes"] = linked
+                state["last_refresh"] = stamp()
+                state["last_files"] = sorted(pending)
+                log("manager reloaded: " + ", ".join(sorted(pending)))
+        else:
+            state["linked_hashes"] = linked
+        state["errors"] = errors
+        if errors:
+            log("attention: " + "; ".join(errors))
+        if json.dumps(state, sort_keys=True) != previous or not state_file.exists():
+            state["checked_at"] = stamp()
+            save()
+        else:
+            sync_attention()  # Recover a crash between saving and clearing attention.
+        return int(bool(errors))
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except (OSError, ValueError) as error:
+        print(f"unit-sync: {error}", file=sys.stderr)
+        sys.exit(1)

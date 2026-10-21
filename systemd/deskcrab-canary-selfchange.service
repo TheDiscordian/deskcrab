@@ -2,6 +2,7 @@
 Description=DeskCrab: prove the self-change watcher is still alive
 
 [Service]
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 Type=oneshot
 ExecStart=%h/.local/lib/deskcrab/canary-selfchange --quiet
 # Must NOT run inside deskcrab-notice-selfchange.service: the canary waits on

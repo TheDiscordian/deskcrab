@@ -2,6 +2,7 @@
 Description=DeskCrab: notice new meeting transcripts
 
 [Service]
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 Type=oneshot
 ExecStart=%h/.local/lib/deskcrab/notice-newfiles transcriptions %h/Documents/Transcriptions "a new meeting transcript was just saved"
 # The wake session runs inside this unit. Same last-resort ceiling as

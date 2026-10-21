@@ -226,7 +226,16 @@ life, and she re-reads that store every single turn.
     explicit routes. A nominated overlap is not a new file or index entry. `--distinct` records the
     judgement and admits it; `--supersedes SLUG` removes the old rule from the active index while
     retaining its body under `conduct/archive/`. Direct file creation is unsupported because it
-    cannot prove the active memory and conduct sets were checked first.
+    cannot prove the active memory and conduct sets were checked first. A rule leaves the active
+    set through `crab conduct retire <slug> <why>`, which removes its index line and moves its body
+    under `conduct/archive/` in the same act, so the index and the bodies never disagree. The
+    index and the rule bodies change only through these two doors, never by a hand edit, exactly
+    as an engineering record's state moves only through `crab eng`; the prompt's conduct block
+    names both doors. Each door holds one lock over the drawer for its whole transaction and
+    reads the index before its first write: a missing index is a fresh one, any other read
+    fault refuses with nothing written, and two filings at once never drop each other's line.
+    An archived body's name is reserved exclusively, so a slug archived twice in one second
+    keeps both bodies.
 28b. **Reconciliation reaches the stored set, not just new writes.** A judged true-duplicate
     family among active directives is merged by explicit command (`crab memory merge`): one
     survivor stays active — a named existing row (`--into ID`), or a composed union (`--text`)

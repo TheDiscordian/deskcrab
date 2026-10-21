@@ -24,6 +24,10 @@ check "the brief moves engineering work through crab eng new" \
     contains "$brief" "crab eng new"
 refute_open="$(grep -c 'OPEN\.md' <<<"$brief")"
 check_eq "and never names the archive's OPEN.md" "$refute_open" "0"
+check "conduct is filed through crab conduct add" contains "$brief" "crab conduct add"
+check "and an obsolete rule retired through crab conduct retire" contains "$brief" "crab conduct retire"
+check_eq "and no step tells the tidy to move or prune CONDUCT.md by hand" \
+    "$(grep -c 'MOVE it to conduct/CONDUCT.md\|Prune conduct/CONDUCT.md' <<<"$brief")" "0"
 
 echo
 echo "the brief declares before it edits:"

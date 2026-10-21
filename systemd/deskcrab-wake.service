@@ -2,6 +2,7 @@
 Description=DeskCrab autonomous wake
 
 [Service]
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 Type=oneshot
 ExecStart=%h/.local/bin/crab wake
 # Background CPU priority, specs/wake-queue.md rule 12a: nobody is waiting on

@@ -119,6 +119,9 @@ work here, the defect identifiers, the data-flow graph, and the lock table.
 
 **systemd user units** live in `systemd/` and install by copying to `~/.config/systemd/user/`. They
 ship disabled: enabling one changes how the machine behaves towards its user, which is their call.
+Already installed copies refresh automatically from the repository through `lib/unit-sync`, called
+by the self-change watcher and its canary. It reloads the manager, never starts or enables units,
+and preserves masks and local drop-ins. `crab status` reports its last refresh or pending failure.
 
 **State.** `$STATE_PREFIX-*` (default `/tmp/deskcrab-*`) is ephemeral: conversation, stream logs,
 locks, live records. `~/.local/share/deskcrab/` is durable: wakes, jobs, journal, memory, archive,

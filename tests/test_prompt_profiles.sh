@@ -282,6 +282,8 @@ refute "a want body is not" contains "$TURN" "WANT_BODY_MARKER"
 check "the binding test is verbatim" \
     contains "$TURN" "Everything below is owed, not chosen: it is here because it was asked for."
 check "a conduct title is in the prompt" contains "$TURN" "Exactly TWO things I ask about"
+check "the conduct block names the only doors a rule passes through (memory-recall 28a)" \
+    contains "$TURN" 'A rule is filed only through `crab conduct add` and leaves only through `crab conduct retire`'
 refute "a conduct body is not" contains "$TURN" "CONDUCT_BODY_MARKER"
 
 echo

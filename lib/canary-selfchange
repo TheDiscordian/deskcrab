@@ -64,6 +64,13 @@ fail() { log "FAIL $*"; say "canary: $*"; VERDICT="$*"; }
 
 VERDICT=""
 
+# An independent recovery caller even when the watcher cannot take a trigger.
+# This never starts/enables a unit; the helper only reloads existing copies.
+if [ -x "$SCRIPT_DIR/lib/unit-sync" ]; then
+    "$SCRIPT_DIR/lib/unit-sync" >> "$LOGFILE" 2>&1 \
+        || log 'unit refresh failed; automatic retry on next watcher/canary'
+fi
+
 # --- 1. is the watcher even installed and armed? -----------------------------
 ACTIVE="$(systemctl --user is-active "$UNIT_PATH" 2>/dev/null)"
 ENABLED="$(systemctl --user is-enabled "$UNIT_PATH" 2>/dev/null)"

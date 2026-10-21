@@ -12,6 +12,7 @@ Description=DeskCrab: notice outside changes to the assistant's own files
 StartLimitIntervalSec=0
 
 [Service]
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
 Type=oneshot
 ExecStart=%h/.local/lib/deskcrab/notice-selfchange
 # When a change survives attribution, the wake session runs inside this unit.

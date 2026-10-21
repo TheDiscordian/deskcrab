@@ -1911,6 +1911,10 @@ self_state_report() {
     printf '%s' "$body"
 
     if [ "$brief" = 1 ]; then
+        # A shell-only attention read keeps deployment failures visible without
+        # adding a Python process to every prompt (nightly.md rules 5/6b).
+        local unit_attention="${XDG_STATE_HOME:-$HOME/.local/state}/deskcrab/unit-sync.attention"
+        [ ! -s "$unit_attention" ] || printf '%s\n' "$(<"$unit_attention")"
         # --defer: the once-only news of a job that ended badly is CONSUMED
         # only when this block is actually delivered to a session that will be
         # heard. Stamping it on every render let a wake that ended silently eat
@@ -1939,6 +1943,12 @@ self_state_report() {
         _state_delta_line "$anchor"
         account_state_line
     else
+        # Deployment evidence only; this must never install or call the manager
+        # on the status/turn path (nightly.md rule 6b).
+        if [ -x "$LIB_DIR/unit-sync" ]; then
+            "$LIB_DIR/unit-sync" --status 2>/dev/null \
+                || printf '%s\n' 'Unit refresh: ATTENTION — sync evidence unreadable'
+        fi
         local jobs_body
         jobs_body="$(jobs_report)"
         printf 'Detached background jobs: %d listed (they outlive turns — launch: crab job <description>; list: crab jobs)\n' \
@@ -3186,7 +3196,7 @@ This is a snapshot taken when your turn began, and it is deliberately only the n
             local BINDING TITLES
             BINDING="$(conduct_binding "$CONDUCT_FILE")"
             TITLES="$(conduct_titles "$CONDUCT_FILE")"
-            CONDUCT_BLOCK="YOUR CONDUCT — how you have agreed to behave. A want is chosen; a conduct entry is owed, and the two drawers never mix: a correction, a rule, a failure not to repeat, something he asked for is conduct or a job, never a want. Each rule's body is the file named beside it, in $H/conduct/.${BINDING:+
+            CONDUCT_BLOCK="YOUR CONDUCT — how you have agreed to behave. A want is chosen; a conduct entry is owed, and the two drawers never mix: a correction, a rule, a failure not to repeat, something he asked for is conduct or a job, never a want. Each rule's body is the file named beside it, in $H/conduct/. A rule is filed only through \`crab conduct add\` and leaves only through \`crab conduct retire\`; each writes the body and its index line together, so neither is ever edited by hand.${BINDING:+
 $BINDING}
 $TITLES"
         fi

@@ -220,6 +220,18 @@ ensure_shadows() {  # <snapshot file> — the one-time full seed. After it, the
 # pokes a watched directory and waits for this number to move.
 printf '%s\n' "$NOW" > "$HEARTBEAT" 2>/dev/null
 
+# Deployment is independent of attribution: her own declared edits must also
+# reach installed units. Check again on exit for edits made during this run.
+# The helper owns its lock and retries; a failure must not abort noticing.
+sync_units() {
+    [ -x "$SCRIPT_DIR/lib/unit-sync" ] || return 0
+    "$SCRIPT_DIR/lib/unit-sync" >> "$LOGFILE" 2>&1 \
+        || log 'unit refresh failed; automatic retry on next watcher/canary'
+    return 0
+}
+trap sync_units EXIT
+sync_units
+
 # --- the watch set: one "sig<TAB>path" line per file, sorted by path --------
 # sig is size.mtime — an opaque token; any difference means "modified".
 snapshot() {
@@ -934,4 +946,6 @@ exec 8>&- 2>/dev/null
 # its own identity, "nothing scheduled by me" was unanswerable. Booking rather
 # than firing also gets the session out of THIS unit, where it used to run as
 # a child of the very watcher it might be reporting on.
+# exec does not run EXIT traps.
+sync_units
 exec "$CRAB" wake-at --by notice-selfchange 5s event "Files that are part of you changed on disk, and not by your own hand — $SUMMARY. What, when, and diffs where git knows them: $REPORT. This is awareness, not a task: inquire, examine, or quietly take note, as you see fit."

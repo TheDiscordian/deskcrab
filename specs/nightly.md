@@ -33,6 +33,31 @@ which fails silently is worse than one that does not exist.
     green over them — until 2026-08-11. The suite MUST invoke at least one script through a
     symlinked directory and assert it sources the library and runs.
 
+6b. Repository `systemd/` files automatically refresh their **already installed** counterparts
+    under `${XDG_CONFIG_HOME:-~/.config}/systemd/user/`, including already installed drop-in
+    files. Missing counterparts MUST NOT be created; installed-only files MUST NOT be removed.
+    Masks and links outside the matching repository file MUST remain untouched. A link to the
+    matching repository file MUST retain its link and still trigger a reload when its bytes
+    change. Replacements are atomic, preserve installed permissions, and reload the user manager
+    once per changed batch. Sync MUST NEVER start, stop, restart, enable or disable a unit.
+    Running jobs finish with their current settings; new settings apply on their next start.
+    Where a unit needs a local-tool PATH, its repository definition MUST carry the portable
+    `%h/.local/bin` setting, so refresh preserves access to the deployed tools.
+    The existing self-change watcher reconciles before any attribution, seeding or deferral
+    exit and again on exit, so declared own writes and edits made during its session still
+    deploy. Its existing daily canary independently reconciles even when the watcher is busy
+    or unavailable. No manual installation step or additional enabled unit is required.
+    Concurrent reconciliations share a lock. A pending reload is recorded durably before any
+    replacement, retained after a failed reload, and retried automatically on the next caller,
+    even when installed bytes already match. Sync never runs on a turn; failures MUST NOT abort
+    the watcher or canary. Failures remain in a durable sync log, a concise `crab status` line,
+    and the prompt's state block
+    until reconciliation succeeds. The prompt reads a plain attention file without launching
+    a sync process. A damaged deployment journal recovers automatically with a manager reload,
+    retaining the damaged bytes for diagnosis rather than requiring a manual clear.
+    No-op runs retain the last actual refresh evidence and do not reload the manager. Status
+    reads evidence without performing an installation or a manager call.
+
 ### Sleep — the nightly ingest
 
 7. Sleep runs the ingest and then stamps the last-slept record.
@@ -155,7 +180,10 @@ which fails silently is worse than one that does not exist.
     naming the concrete ask and how to verify it. The shelf line is removed only once the record
     holds it. Nothing is ever filed into the frozen pre-records archive (`engineering.md`,
     `OPEN.md`, `INDEX.md`), which nothing reads and nothing can close, so work filed there is
-    lost.
+    lost. A shelf line that is a rule to keep becomes conduct through `crab conduct add`, and a
+    conduct rule that has gone obsolete leaves through `crab conduct retire`
+    ([memory-recall.md](memory-recall.md) rule 28a); tidy never edits `CONDUCT.md` or a rule body
+    by hand, because a hand edit writes one half of a rule and orphans the other.
 16. Tidy MUST NOT touch the memory store.
 17. Tidy MUST declare its writes before it makes them.
 18. Anything tidy writes MUST be reachable from the index block. See
@@ -1009,6 +1037,7 @@ that was asked for, and promised work must stop waiting for a live turn to perso
 | `~/.local/share/deskcrab/self-shadows/` | the watcher | rule 25e: private (0700 tree, 0600 copies) shadows of the non-git text constituents, mirrored by absolute path; refreshed only after a report lands, or at judgement for her own quiet writes |
 | `~/.local/share/deskcrab/self-baselines/` | her, by hand | the 2026-08-28 manual stopgap copies; rule 25e seeds a conf-dir file's first shadow from its same-named baseline, and the drawer stays as history |
 | `~/.local/state/deskcrab/canary-self.log` | the canary | one line per check |
+| `~/.local/state/deskcrab/unit-sync.json`, `unit-sync.log`, `unit-sync.attention` | installed-unit sync | pending reload journal, last refresh/failure evidence, and the prompt's plain attention line (rule 6b) |
 | `~/.local/share/deskcrab/claudisms.md` | her, by hand | the phrase list: what is borrowed, and why |
 | `~/.local/share/deskcrab/sleep/claudism-review/<date>/` | the claudism review | rule 43: the pre-edit copy of every file the night's review edited |
 | `~/.local/share/deskcrab/promise-ledger.jsonl` | the promise checker; the sweep appends its records (rule 53) and any hand appends resolutions through the resolve door (rule 53f) | live catches, end-of-day misses and their resolutions ([turn-pipeline.md](turn-pipeline.md) DATA); the night's work reads the unresolved sweep records back as owed-work material (rules 53f, 58b), through `lib/promise_ledger.py` alone |
@@ -1064,6 +1093,16 @@ reaches her through an event wake or through a record she reads.
 | `MIN-32` | The canary reports the path unit disabled and only revives it in-session, so it will not come back after a reboot. |
 
 ## TESTS
+
+`tests/test_unit_sync.sh` — rule 6b: only existing copies and drop-ins are refreshed, installed
+permissions retained, masks and external links preserved, repository links reloaded on byte
+changes without replacing the link, and one reload per changed batch with no unit activation.
+No-op/status calls leave the manager alone. Reload refusal and a crash after copying recover
+without another source edit; copy refusal retries, a post-rename durability error still reloads,
+and a damaged journal and interrupted attention clear repair themselves. Failures reach the
+prompt's state block. Concurrent callers return promptly. The real watcher deploys before seed
+and no-change exits and again after an edit during its run; the real canary reconciles while
+the watcher is busy. Every destination and manager command is sandboxed.
 
 **Existing:** `tests/test_notice_selfchange.sh` — 125 assertions in the most hermetic sandbox in the
 suite, and the model for every other test; among them, `.git` internals under a watched drawer and
