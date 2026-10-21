@@ -231,7 +231,8 @@ life, and she re-reads that store every single turn.
     under `conduct/archive/` in the same act, so the index and the bodies never disagree. The
     index and the rule bodies change only through these two doors, never by a hand edit, exactly
     as an engineering record's state moves only through `crab eng`; the prompt's conduct block
-    names both doors. Each door holds one lock over the drawer for its whole transaction and
+    names both doors. Each door holds one lock (`~/.local/state/deskcrab/conduct.lock`, outside the
+    watched drawer) for its whole transaction and
     reads the index before its first write: a missing index is a fresh one, any other read
     fault refuses with nothing written, and two filings at once never drop each other's line.
     An archived body's name is reserved exclusively, so a slug archived twice in one second

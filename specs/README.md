@@ -156,6 +156,8 @@ flowchart LR
 | `${STATE_PREFIX}-speech.lock` | `speak_once`, the streamer's voice thread | the speakers |
 | `notice-self.suppress.lock` | `touch_suppress` | write declarations |
 | `notice-self.numb.lock` | `numb_set`, `numb_clear` | the numb ledger |
+| `~/.local/state/deskcrab/conduct.lock` | `crab conduct add`, `crab conduct retire` | the conduct index and its rule bodies, one filing at a time ([memory-recall.md](memory-recall.md) rule 28a) |
+| `~/.local/state/deskcrab/unit-sync.lock` | `lib/unit-sync` (watcher, canary) | installed unit copies and the reload journal ([nightly.md](nightly.md) rule 6b) |
 
 Advisory records that never block: `crab claim`, `crab checkpoint`, `crab touching`, `live-turn`,
 `live-speech`, `last-origin`, the face broker's state snapshot (`face-state.json`).

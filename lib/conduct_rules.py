@@ -30,9 +30,14 @@ def touch(*paths):
 
 def drawer_lock(root):
     """One lock over the whole filing transaction, add and retire alike, so two
-    writers can never read the same index and each drop the other's line."""
+    writers can never read the same index and each drop the other's line. The
+    lock file lives in the state directory, outside the watched drawer, so
+    taking it never reads to her watcher as another hand's write."""
     os.makedirs(root, exist_ok=True)
-    fd = os.open(os.path.join(root, ".conduct.lock"), os.O_RDWR | os.O_CREAT, 0o600)
+    state = os.path.join(os.environ.get("XDG_STATE_HOME")
+                         or os.path.expanduser("~/.local/state"), "deskcrab")
+    os.makedirs(state, exist_ok=True)
+    fd = os.open(os.path.join(state, "conduct.lock"), os.O_RDWR | os.O_CREAT, 0o600)
     fcntl.flock(fd, fcntl.LOCK_EX)
     return fd
 
