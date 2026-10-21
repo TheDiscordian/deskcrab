@@ -266,7 +266,8 @@ printf '%s\n' '{"type":"result","result":"ok"}'
 STUB
 out="$(night_work NIGHT_WORK_CUTOFF="@$(( NOW + 3600 ))")"; rc=$?
 check_eq "exits clean" "$rc" "0"
-check "names the dry backlog as its stop" contains "$out" "the backlog is dry"
+check "names the judged-out shelf as its stop" \
+    contains "$out" "every open record was judged tonight and nothing more is actionable"
 check_eq "one selection call, not a poll loop" "$(claude_n)" "1"
 
 echo
@@ -384,3 +385,97 @@ out="$(night_work NIGHT_WORK=0 NIGHT_WORK_CUTOFF="@$(( NOW + 3600 ))")"; rc=$?
 check_eq "exits clean" "$rc" "0"
 check "says it is off" contains "$out" "off (NIGHT_WORK=0)"
 check_eq "and does nothing" "$(claude_n)$(job_calls)" "00"
+
+echo
+echo "the whole backlog is judged in batches, and the ledger excludes only work that can still land (rules 58, 58c, 59):"
+reset
+B="$T/eng-backlog"; BJ="$T/jobs-backlog"; BP="$T/backlog-prompts"
+rm -rf "$B" "$BJ" "$BP"; mkdir -p "$B/records" "$BJ" "$BP" "$T/night-work"
+PAD="$(printf 'filler %.0s' $(seq 1 420))"
+for i in $(seq -w 1 12); do
+    cat > "$B/records/backlog-thread-$i.md" <<EOF
+---
+id: backlog-thread-$i
+title: backlog thread $i
+opened: 2026-08-01 00:00:00
+last_touched: 2026-09-$i 00:00:00
+state: open
+summary: open work number $i
+---
+
+## 2026-09-$i 00:00:00
+
+BODY-MARK-$i real open work in /tmp/greenhouse. $PAD
+EOF
+done
+# Fifty older promise picks first, so the record rows sit past any 40-row tail.
+for i in $(seq 1 50); do
+    printf '2026-08-%02d\tan-old-promise-pick-%s\tp-%s\tan old promise\n' $(( i % 28 + 1 )) "$i" "$i"
+done > "$LEDGER"
+printf '2026-08-24\tbacklog-thread-03\tjob-finished\tthree\n2026-08-25\tbacklog-thread-05\tjob-running\tfive\n2026-08-26\tbacklog-thread-07\tjob-gone\tseven\n' >> "$LEDGER"
+printf '{"id": "job-finished", "state": "finished"}\n' > "$BJ/job-finished.json"
+printf '{"id": "job-running", "state": "running"}\n' > "$BJ/job-running.json"
+# A night restarted after tonight's dispatch finished, and a daytime job
+# carrying a record with no ledger row at all: both still exclude.
+printf '%s\tbacklog-thread-09\tjob-tonight\tnine\n' "$(date +%F)" >> "$LEDGER"
+printf '{"id": "job-tonight", "state": "finished"}\n' > "$BJ/job-tonight.json"
+printf '{"id": "job-daytime", "state": "dispatched", "record": "backlog-thread-11"}\n' > "$BJ/job-daytime.json"
+sandbox_stub claude <<STUB
+#!/bin/bash
+printf '%s\n' "\$*" >> "${SANDBOX_CLAUDE_LOG}"
+cat > "$BP/\$(date +%s%N)"
+printf '%s\n' '{"type":"assistant","message":{"model":"stub","content":[{"type":"text","text":"NOTHING: none of this batch is actionable"}]}}'
+printf '%s\n' '{"type":"result","result":"ok"}'
+STUB
+out="$(night_work NIGHT_WORK_THREADS_DIR="$B" JOBS_DIR="$BJ" NIGHT_WORK_CAP=4 NIGHT_WORK_CUTOFF="@$(( NOW + 3600 ))")"; rc=$?
+check_eq "exits clean" "$rc" "0"
+calls_n="$(claude_n)"
+if [ "$calls_n" -gt 1 ] 2>/dev/null; then
+    ok "a backlog past one batch takes more than one judge call ($calls_n)"
+else
+    fail "a backlog past one batch must take more than one judge call" "$calls_n"
+fi
+missing=""
+for i in 01 02 03 04 06 07 08 10 12; do
+    n="$(cat "$BP"/* | grep -c "BODY-MARK-$i ")"
+    [ "$n" = 1 ] || missing="$missing $i:$n"
+done
+check_eq "every eligible record is judged with its body exactly once tonight" "$missing" ""
+check_eq "a record whose ledgered job is still running never reaches the prompt" \
+    "$(cat "$BP"/* | grep -c 'BODY-MARK-05 ')" "0"
+check_eq "a record dispatched tonight is not bought again by a restarted night" \
+    "$(cat "$BP"/* | grep -c 'BODY-MARK-09 ')" "0"
+check_eq "a record a daytime job carries never reaches the prompt" \
+    "$(cat "$BP"/* | grep -c 'BODY-MARK-11 ')" "0"
+check "the night log names the records it left out" \
+    contains "$out" "left out while their ledgered work can still land (rule 59): backlog-thread-11 backlog-thread-09 backlog-thread-05"
+check "a record whose earlier job finished is judged again, its attempt shown" \
+    grep -q "night 2026-08-24: job job-finished, now finished" "$BP"/*
+check "a record whose earlier job is gone is judged again, its attempt shown" \
+    grep -q "night 2026-08-26: job job-gone, now missing" "$BP"/*
+check "the oldest promise pick on the ledger still reaches the selector" \
+    grep -q "an-old-promise-pick-1	" "$BP"/*
+check_eq "record keys are not in the promise-pick ledger section" \
+    "$(cat "$BP"/* | grep -c 'job-finished	three')" "0"
+check "the night ends only once the whole shelf is judged" \
+    contains "$out" "every eligible open record has been judged tonight"
+refute_out="$(printf '%s' "$out" | grep -c 'the backlog is dry')"
+check_eq "and never calls the backlog dry" "$refute_out" "0"
+
+echo
+echo "a record pick must come from the batch the judge was shown:"
+reset
+rm -rf "$BP"; mkdir -p "$BP" "$T/night-work"
+: > "$LEDGER"
+sandbox_stub claude <<STUB
+#!/bin/bash
+printf '%s\n' "\$*" >> "${SANDBOX_CLAUDE_LOG}"
+cat > "$BP/\$(date +%s%N)"
+printf '%s\n' '{"type":"assistant","message":{"model":"stub","content":[{"type":"text","text":"TASK: backlog-thread-01 | - | Work the oldest thread\nBRIEF:\nIn /tmp/greenhouse, from the thread backlog-thread-01: do the open work it records and run its tests before reporting done, verifying the result by hand.\nEND"}]}}'
+printf '%s\n' '{"type":"result","result":"ok"}'
+STUB
+out="$(night_work NIGHT_WORK_THREADS_DIR="$B" JOBS_DIR="$BJ" NIGHT_WORK_CAP=4 NIGHT_WORK_CUTOFF="@$(( NOW + 3600 ))" NIGHT_WORK_ROUNDS_MAX=1)"; rc=$?
+check_eq "exits clean" "$rc" "0"
+check "a pick from the waiting list is refused and named" \
+    contains "$out" "'backlog-thread-01' was not in this batch — skipped"
+check_eq "and never reaches the door" "$(job_calls)" "0"

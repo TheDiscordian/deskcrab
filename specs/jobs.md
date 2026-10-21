@@ -299,6 +299,11 @@ and the completion channel a job has back to her.
     exactly the jobs that exist to enforce follow-through. The floor is read at CHECK time, at the
     end of the run, never at worker boot, because the attach lands moments after dispatch and a
     fast worker would otherwise race past it.
+27a. The night's selector MUST attach `--record <id>` when its pick names a live engineering
+    record, so nightly builds carry the same update and submission gates as daytime record
+    builds. It re-reads the record's state immediately before dispatch: only `open` may start
+    a builder; a record moved to `review`, `settled` or `dead` while selection ran is skipped.
+    A promise or wake pick with no engineering record keeps no invented record association.
 28. A clean build whose record was never touched ends `failed`, with a clear reason NAMING the
     record — in the log, in the sidecar summary, and in the completion wake's reason — so the next
     reader knows the work may be real and the record is what is owed. A run that failed on its own
@@ -648,6 +653,10 @@ with the wake reason saying so; a builder that touches its record and submits it
 the review brief booked at the `JOB_REVIEW_EFFORT` override and pinned to the
 `JOB_REVIEW_MODEL` model; a job with no record is untouched by the hook; requeue carries the
 record);
+`tests/test_night_work_record.sh` (rule 27a: nightly engineering picks carry their exact record
+id through the job door, promise picks get no invented association, a concurrent review or
+closure prevents dispatch including in a dry run, and repeated picks or a concurrent record job
+cannot buy the same work twice);
 `tests/test_eng_review.sh` (rules 29a–29b from the record side, with the 2026-08-26 regression —
 narrowed substituted work cannot settle its own ask — described in
 [engineering-records.md](engineering-records.md));

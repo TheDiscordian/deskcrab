@@ -19,6 +19,13 @@ UNIT="$SANDBOX_REPO/systemd/deskcrab-tidy.service"
 brief="$(sed -n 's/^ExecStart=.*crab job .* "\(.*\)"[[:space:]]*$/\1/p' "$UNIT")"
 check "the shipped unit's ExecStart carries the tidy brief" [ -n "$brief" ]
 
+echo "engineering work leaves the shelf as a live record, never into the frozen archive (rule 15):"
+check "the brief moves engineering work through crab eng new" \
+    contains "$brief" "crab eng new"
+refute_open="$(grep -c 'OPEN\.md' <<<"$brief")"
+check_eq "and never names the archive's OPEN.md" "$refute_open" "0"
+
+echo
 echo "the brief declares before it edits:"
 check "the brief contains a crab touching invocation" \
     contains "$brief" "crab touching"

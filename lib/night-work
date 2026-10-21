@@ -156,6 +156,55 @@ running_jobs() {  # every sidecar standing dispatched or running — the whole b
     printf '%s' "$n"
 }
 
+job_state() {  # <job id> — the sidecar's state now, or `missing`
+    local s=""
+    [ -f "$JOBS_DIR/$1.json" ] \
+        && s="$("$SCRIPT_DIR/lib/job-status" get "$JOBS_DIR/$1.json" state 2>/dev/null)"
+    printf '%s' "${s:-missing}"
+}
+
+# The records that a job standing queued, dispatched or running was sent
+# against (its sidecar's `record`, jobs.md rule 7b), however it was sent —
+# the night's own picks and a daytime `crab job --record` alike. One line
+# each, for ACTIVE_RECORDS.
+active_records() {
+    python3 -I - "$JOBS_DIR" <<'PY'
+import glob, json, os, sys
+for f in glob.glob(os.path.join(sys.argv[1], "*.json")):
+    try:
+        with open(f) as fh:
+            j = json.load(fh)
+    except (OSError, ValueError):
+        continue
+    if j.get("state") in ("queued", "dispatched", "running") and j.get("record"):
+        print(j["record"])
+PY
+}
+
+# Rule 59 for one open record: excluded (status 0) while the work bought for
+# it can still land — dispatched tonight (by this run, or on the ledger under
+# tonight's date, so a restarted night never buys it twice), a ledgered job
+# still queued, dispatched or running, or any such job carrying the record.
+# Anything else is open work again. Leaves the record's earlier dispatches,
+# one line each, in RECORD_PRIOR for rule 58c's header.
+record_excluded() {  # <record id>
+    local rid="$1" night key jid title st hit=1 today
+    RECORD_PRIOR=""
+    today="$(date +%F)"
+    case " $TONIGHT_KEYS " in *" $rid "*) hit=0 ;; esac
+    case " $ACTIVE_RECORDS " in *" $rid "*) hit=0 ;; esac
+    [ -f "$LEDGER" ] || return "$hit"
+    while IFS=$'\t' read -r night key jid title; do
+        [ "$key" = "$rid" ] || continue
+        st="$(job_state "$jid")"
+        RECORD_PRIOR="${RECORD_PRIOR}  - night $night: job $jid, now $st
+"
+        [ "$night" = "$today" ] && hit=0
+        case "$st" in queued|dispatched|running) hit=0 ;; esac
+    done < "$LEDGER"
+    return "$hit"
+}
+
 queued_jobs() {  # the queued backlog's ids, oldest first (nightly.md rule 56a)
     local f id qe
     for f in "$JOBS_DIR"/*.json; do
@@ -254,7 +303,12 @@ cmd_run() {
     # shellcheck disable=SC2064
     trap "rm -rf '$WORK'" EXIT
 
+    # Rule 58's walk: the records judged so far this pass, whether this
+    # pass has bought anything (a pass that did starts the next one), the
+    # record keys dispatched tonight (rule 59), and SELECTION_DONE once a
+    # whole pass found nothing — after that only the queue runs.
     local ROUNDS=0 DISPATCHED=0 OUR_IDS="" REASON="" SKIP_QUEUED=""
+    local JUDGED="" PASS_PICKS=0 PASS_CALLS=0 TONIGHT_KEYS="" SELECTION_DONE=""
     while :; do
         NOW="$(date +%s)"
         if [ "$NOW" -ge "$CUTOFF" ]; then
@@ -346,7 +400,7 @@ cmd_run() {
         # model tokens are spent inventing work from an empty shelf. The
         # night ends when the queue is dry and nothing of tonight's is still
         # running.
-        if [ -n "$NO_THREADS" ]; then
+        if [ -n "$NO_THREADS" ] || [ -n "$SELECTION_DONE" ]; then
             if [ "$SENT_THIS_ROUND" -eq 0 ]; then
                 local ID ANY=""
                 for ID in $OUR_IDS; do
@@ -354,7 +408,11 @@ cmd_run() {
                         && ANY=1 && break
                 done
                 if [ -z "$ANY" ]; then
-                    REASON="the queue is dry and there are no engineering threads to select from"
+                    if [ -n "$SELECTION_DONE" ]; then
+                        REASON="every open record was judged tonight and nothing more is actionable — the queue is dry and nothing of tonight's is still running"
+                    else
+                        REASON="the queue is dry and there are no engineering threads to select from"
+                    fi
                     break
                 fi
             fi
@@ -380,6 +438,9 @@ cmd_run() {
         # overflow section, still live, still selectable.
         local RECORDS_TEXT OVERFLOW LIST_RAW LEDGER_TAIL
         local RID RF RB TAKE BUDGET_LEFT=24000 INCLUDED=0 CLIPPED=0
+        local OPEN_KEYS="" ELIGIBLE="" UNJUDGED="" BATCH_KEYS="" EXCLUDED_KEYS="" NEXCL=0
+        local ACTIVE_RECORDS
+        ACTIVE_RECORDS="$(active_records | tr '\n' ' ')"
         RECORDS_TEXT="" OVERFLOW=""
         if ! LIST_RAW="$(DESKCRAB_ENG_DIR="$RECORDS_DIR" \
                 "$SCRIPT_DIR/lib/eng" list --state open 2>/dev/null)"; then
@@ -390,11 +451,53 @@ cmd_run() {
             OVERFLOW="(unknown tonight)"
             LIST_RAW=""
         fi
+        # Rule 59, applied before the judge is called: a record whose
+        # ledgered work can still land never reaches the prompt. The judge is
+        # never left to infer an exclusion from a view of the ledger — a
+        # ledger tail that hid older rows is how one record already ledgered
+        # was picked, refused and called a dry backlog round after round.
         for RID in $(printf '%s\n' "$LIST_RAW" \
                 | sed -n 's/.* \[\([a-z0-9-]\{1,\}\)\] — opened .*/\1/p'); do
+            [ -f "$RECORDS_DIR/$RID.md" ] || continue
+            OPEN_KEYS="$OPEN_KEYS $RID"
+            if record_excluded "$RID"; then
+                EXCLUDED_KEYS="$EXCLUDED_KEYS $RID"; NEXCL=$(( NEXCL + 1 ))
+                continue
+            fi
+            ELIGIBLE="$ELIGIBLE $RID"
+            case " $JUDGED " in *" $RID "*) ;; *) UNJUDGED="$UNJUDGED $RID" ;; esac
+        done
+        [ "$NEXCL" -gt 0 ] && say "round $ROUNDS: $NEXCL open record(s) left out while their ledgered work can still land (rule 59):$EXCLUDED_KEYS"
+        # Rule 58's walk. Every eligible record judged and this pass bought
+        # something: the backlog moved, so a fresh pass begins. Every one
+        # judged, at least one call made, and nothing bought: selection is
+        # finished for the night. (A pass with no eligible record still makes
+        # its one call — the promises and wakes ride it.)
+        if [ -z "$UNJUDGED" ] && [ "$PASS_CALLS" -gt 0 ]; then
+            if [ "$PASS_PICKS" -gt 0 ]; then
+                JUDGED="" PASS_PICKS=0 PASS_CALLS=0 UNJUDGED="$ELIGIBLE"
+                say "round $ROUNDS: the whole shelf was judged and the pass bought work — a fresh pass begins"
+            else
+                SELECTION_DONE=1
+                say "round $ROUNDS: every eligible open record has been judged tonight and the last pass picked nothing — selection is finished; the queue still runs"
+                continue
+            fi
+        fi
+        for RID in $UNJUDGED; do
             RF="$RECORDS_DIR/$RID.md"
-            [ -f "$RF" ] || continue
+            RB="$(wc -c < "$RF" 2>/dev/null)"
+            # An unreadable record still takes its place in a batch, so the
+            # walk always moves and the judge sees it as it is.
+            case "$RB" in ''|*[!0-9]*|0) RB=1 ;; esac
+            # A record rides at its own size up to the per-record budget. One
+            # that no longer fits what is left of the batch waits for the
+            # next batch whole, rather than riding cut to a sliver of itself;
+            # only the first record of a batch is ever cut to fit.
             TAKE=6000
+            [ "$RB" -lt "$TAKE" ] 2>/dev/null && TAKE="$RB"
+            if [ "$TAKE" -gt "$BUDGET_LEFT" ] && [ "$INCLUDED" -gt 0 ]; then
+                TAKE=0
+            fi
             [ "$TAKE" -gt "$BUDGET_LEFT" ] && TAKE="$BUDGET_LEFT"
             if [ "$TAKE" -le 0 ]; then
                 CLIPPED=$(( CLIPPED + 1 ))
@@ -402,18 +505,22 @@ cmd_run() {
 "
                 continue
             fi
-            RB="$(wc -c < "$RF" 2>/dev/null || echo 0)"
+            record_excluded "$RID"
             section_overrun "open record '$RID'" "$RB" "$TAKE"
             RECORDS_TEXT="$RECORDS_TEXT--- $RID ---
-$(utf8_head "$TAKE" "$RF" 2>/dev/null)
+${RECORD_PRIOR:+(earlier nights already dispatched builders for this record — judge whether revised work is owed, never the same work again:
+$RECORD_PRIOR)
+}$(utf8_head "$TAKE" "$RF" 2>/dev/null)
 
 "
             INCLUDED=$(( INCLUDED + 1 ))
-            [ "$RB" -lt "$TAKE" ] 2>/dev/null && TAKE="$RB"
+            BATCH_KEYS="$BATCH_KEYS $RID"
             BUDGET_LEFT=$(( BUDGET_LEFT - TAKE ))
         done
+        JUDGED="$JUDGED$BATCH_KEYS"
+        say "round $ROUNDS: judging $INCLUDED open record(s) in this batch; $CLIPPED more wait for a later batch tonight (rule 58)"
         if [ "$CLIPPED" -gt 0 ]; then
-            say "round $ROUNDS: the open records outgrew the 24000-byte total — the $INCLUDED newest-touched are in, $CLIPPED more on their list lines only (rule 58a)"
+            say "round $ROUNDS: the open records outgrew the 24000-byte batch — the $INCLUDED next unjudged are in, $CLIPPED more on their list lines only (rule 58a)"
         fi
         [ -n "$RECORDS_TEXT" ] || RECORDS_TEXT="(no open records — the live shelf is empty tonight)"
         # 24000, not less: the live drawer holds sixty open records tonight
@@ -423,8 +530,15 @@ $(utf8_head "$TAKE" "$RF" 2>/dev/null)
         # announced, as ever.
         section_overrun "overflow list" "$(printf '%s' "$OVERFLOW" | wc -c)" 24000
         OVERFLOW="$(printf '%s' "$OVERFLOW" | utf8_head 24000)"
-        [ -n "$OVERFLOW" ] || OVERFLOW="(none — every open record is above in full)"
-        LEDGER_TAIL="$(tail -n 40 "$LEDGER" 2>/dev/null)"
+        [ -n "$OVERFLOW" ] || OVERFLOW="(none — every unjudged open record is above in full)"
+        # Rule 59 for the other sources: their keys are the judge's own, so
+        # the whole ledger is their dedupe, and the selector sees every such
+        # key — not a tail that hides the older rows. Record keys are left
+        # out: their exclusion is already applied above.
+        LEDGER_TAIL="$(awk -F'\t' -v open="$OPEN_KEYS" '
+            BEGIN { n = split(open, o, " "); for (i = 1; i <= n; i++) rec[o[i]] = 1 }
+            !($2 in rec) && !seen[$2]++ { print $1 "\t" $2 "\t" $3 "\t" $4 }' \
+            "$LEDGER" 2>/dev/null)"
         [ -n "$LEDGER_TAIL" ] || LEDGER_TAIL="(none yet)"
 
         # The rest of the owed-work shelf (rule 58b). The sweep's genuine
@@ -494,16 +608,18 @@ PY
         local PROMPT="You do the night's work of a desktop assistant: while she
 sleeps, her open owed work becomes detached builder jobs. Below is the whole
 shelf, and every part of it is LIVE: her open engineering records — one
-stateful record per thread, front matter and all, newest-touched first,
-with an overflow list naming any open record whose body did not fit
-tonight — then the promises the night sweep found genuinely missed at end
+stateful record per thread, front matter and all, newest-touched first —
+this call's batch of them; the open records whose bodies wait for a later
+batch tonight are listed by one line, and are judged in their own batch —
+then the promises the night sweep found genuinely missed at end
 of day, and the wakes already on the books (owed work often parks there —
 and a live waked session cannot commit to her own repository, so
 builder-shaped work on a wake otherwise waits forever). Nothing outside
 these sections is on the shelf: her frozen pre-records archive is closed to
 this selection because everything in it is history. Then
-the current job list, and the ledger of picks the night's work has ALREADY
-dispatched on earlier rounds and nights.
+the current job list, and the keys of promise and wake picks the night's
+work has ALREADY dispatched on earlier rounds and nights. An open record
+whose dispatched work can still land is not in this material at all.
 
 Pick AT MOST $FREE items, from ANY of those sources, that are genuinely
 actionable engineering work right now — work that needs no conversation and
@@ -514,7 +630,9 @@ without exception:
 - anything a RUNNING, QUEUED, or recently finished job already covers — match
   the job list below by substance, not wording; a queued brief dispatches
   tonight on its own, so selecting its subject buys the same work twice;
-- every pick already on the night-work ledger below, whatever its source;
+- every promise or wake pick whose key is on the night-work ledger below;
+- any open record from the waiting list: pick only from the records shown in
+  full in this batch;
 - anything that waits on the user's decision or needs his voice in the room,
   and anything the material says is deliberately parked, held for a quiet
   moment, or claimed by another hand;
@@ -547,7 +665,7 @@ NOTHING: <one line saying why>
 
 === THE OPEN ENGINEERING RECORDS (LIVE — state: open, newest-touched first) ===
 $RECORDS_TEXT
-=== OPEN RECORDS WHOSE BODIES DID NOT FIT TONIGHT (still live, still selectable) ===
+=== OPEN RECORDS WAITING FOR A LATER BATCH TONIGHT (live; judged in their own batch, not this one) ===
 $OVERFLOW
 
 === PROMISES THE NIGHT SWEEP FOUND MISSED (recent nights) ===
@@ -559,10 +677,11 @@ $PENDING
 === THE JOB LIST (running and recently finished) ===
 $JOBS_TEXT
 
-=== ALREADY DISPATCHED BY THE NIGHT'S WORK (night, key, job id, title) ===
+=== PROMISE AND WAKE PICKS ALREADY DISPATCHED BY THE NIGHT'S WORK (night, key, job id, title) ===
 $LEDGER_TAIL"
 
         local OUT
+        PASS_CALLS=$(( PASS_CALLS + 1 ))
         if ! OUT="$(printf '%s' "$PROMPT" | classify_walk '^(TASK|NOTHING)\b')"; then
             REASON="no selection from the night judge ($NIGHT_WORK_MODEL) — nothing more can be judged tonight, and no cheaper model may pick the night's work"
             break
@@ -625,7 +744,31 @@ $LEDGER_TAIL"
                 say "round $ROUNDS: '$KEY' came back with a brief too thin to act on (${#SQUEEZED} chars) — skipped"
                 continue
             fi
-            if awk -F'\t' -v k="$KEY" '$2 == k { found = 1 } END { exit !found }' \
+            # A record pick must be one this batch showed in full; any
+            # other key is a promise or wake pick, deduped by the whole
+            # ledger (rule 59). IS_RECORD tells the dispatch below which.
+            local IS_RECORD=""
+            case " $OPEN_KEYS " in *" $KEY "*) IS_RECORD=1 ;; esac
+            if [ -n "$IS_RECORD" ]; then
+                # Read again at the moment of dispatch: a judge call takes
+                # minutes, and a job sent against the record meanwhile — or
+                # this same answer naming it twice — is work that can still
+                # land (rule 59).
+                ACTIVE_RECORDS="$(active_records | tr '\n' ' ')"
+                if record_excluded "$KEY"; then
+                    say "round $ROUNDS: '$KEY' still has work that can land — skipped (rule 59)"
+                    continue
+                fi
+                case " $BATCH_KEYS " in
+                    *" $KEY "*) ;;
+                    *)  case " $EXCLUDED_KEYS " in
+                            *" $KEY "*) say "round $ROUNDS: '$KEY' still has ledgered work that can land — skipped (rule 59)" ;;
+                            *)          say "round $ROUNDS: '$KEY' was not in this batch — skipped; it is judged with its own body" ;;
+                        esac
+                        continue ;;
+                esac
+            elif case " $TONIGHT_KEYS " in *" $KEY "*) true ;; *) false ;; esac \
+                || awk -F'\t' -v k="$KEY" '$2 == k { found = 1 } END { exit !found }' \
                     "$LEDGER" 2>/dev/null; then
                 say "round $ROUNDS: '$KEY' is already on the ledger — skipped"
                 continue
@@ -662,12 +805,28 @@ $BRIEF"
                     "$ROUNDS" "$KEY" "${WD:-unresolvable}" "$TITLE" >&2
                 continue
             fi
+            # Record picks carry the same update and submission gates as
+            # every other record build (jobs.md rule 27a). Re-read after
+            # selection: a concurrent submission or closure must stand.
+            local OUTPUT RC JOB_ID RECORD_STATE
+            local -a RECORD_ARGS=()
+            if [ -f "$RECORDS_DIR/$KEY.md" ]; then
+                RECORD_STATE="$(DESKCRAB_ENG_DIR="$RECORDS_DIR" \
+                    "$SCRIPT_DIR/lib/eng" field "$KEY" state 2>/dev/null)" || RECORD_STATE=""
+                if [ "$RECORD_STATE" != open ]; then
+                    say "round $ROUNDS: '$KEY' is no longer open (${RECORD_STATE:-unreadable}) — skipped"
+                    continue
+                fi
+                RECORD_ARGS=(--record "$KEY")
+            fi
             # The dry-run stops HERE, before the door: rule 61 promises real
             # selection — the workdir resolved and verified above exactly as
             # a live round would — with nothing started and no ledger
             # written, so the dispatch call itself must never happen.
             if [ -n "$DRY" ]; then
                 say "round $ROUNDS: would dispatch '$KEY' in $WD — $TITLE"
+                TONIGHT_KEYS="$TONIGHT_KEYS $KEY"
+                PASS_PICKS=$(( PASS_PICKS + 1 ))
                 SEL_SENT=$(( SEL_SENT + 1 ))
                 SENT_THIS_ROUND=$(( SENT_THIS_ROUND + 1 ))
                 DISPATCHED=$(( DISPATCHED + 1 ))
@@ -677,8 +836,8 @@ $BRIEF"
             # open (jobs.md rule 31) — without it the daytime policy would
             # queue the night's own picks straight back onto the shelf it is
             # working.
-            local OUTPUT RC JOB_ID
-            OUTPUT="$(DESKCRAB_JOB_NIGHT=1 "$CRAB" job -C "$WD" "$BRIEF" 2>&1)"; RC=$?
+            OUTPUT="$(DESKCRAB_JOB_NIGHT=1 "$CRAB" job -C "$WD" \
+                "${RECORD_ARGS[@]}" "$BRIEF" 2>&1)"; RC=$?
             if [ "$RC" -ne 0 ]; then
                 case "$OUTPUT" in
                     *"the last job never began"*)
@@ -697,6 +856,8 @@ $BRIEF"
             touch_suppress "$(dirname "$LEDGER")" 2>/dev/null
             printf '%s\t%s\t%s\t%s\n' "$(date +%F)" "$KEY" "$JOB_ID" "$TITLE" >> "$LEDGER"
             OUR_IDS="$OUR_IDS $JOB_ID"
+            TONIGHT_KEYS="$TONIGHT_KEYS $KEY"
+            PASS_PICKS=$(( PASS_PICKS + 1 ))
             say "round $ROUNDS: dispatched '$KEY' as job $JOB_ID — $TITLE"
             SEL_SENT=$(( SEL_SENT + 1 ))
             SENT_THIS_ROUND=$(( SENT_THIS_ROUND + 1 ))
@@ -711,18 +872,12 @@ $BRIEF"
             break
         fi
 
-        # Dry backlog: the selector found nothing and nothing of tonight's is
-        # still running, so later rounds have nothing to wait for (rule 58).
+        # Nothing bought this round: the walk at the next round's start
+        # decides at once — the next batch, a fresh pass, or selection
+        # finished — so the backlog is never called dry while a record waits
+        # unjudged, and never polled empty to the cutoff (rule 58).
         if [ "$SENT_THIS_ROUND" -eq 0 ]; then
-            local ID ANY=""
-            for ID in $OUR_IDS; do
-                [ "$("$SCRIPT_DIR/lib/job-status" get "$JOBS_DIR/$ID.json" state 2>/dev/null)" = running ] \
-                    && ANY=1 && break
-            done
-            if [ -z "$ANY" ]; then
-                REASON="the backlog is dry — nothing actionable, nothing of tonight's still running"
-                break
-            fi
+            continue
         fi
 
         NOW="$(date +%s)"

@@ -115,8 +115,8 @@ out="$(env CRAB_BIN="$T/crab" JOBS_DIR="$T/jobs" \
     NIGHT_WORK_CUTOFF="@$(( NOW + 3600 ))" \
     "$REPO/lib/night-work" run 2>&1)"; rc=$?
 check_eq "the night's work exits clean" "$rc" "0"
-check "the selector ran and its NOTHING ended the round" \
-    contains "$out" "the backlog is dry"
+check "the selector ran over the batch" \
+    contains "$out" "in this batch"
 [ -s "$T/model-stdin" ] || die "the selector never received a prompt" "$out"
 
 P="$T/model-stdin"
@@ -182,7 +182,7 @@ check_eq "the clipped record's body never reaches the prompt" \
 check "its eng list one-liner rides the overflow section instead" \
     grep -q '\[record-e\]' "$P"
 check "and the clip is announced on the night log" \
-    contains "$out" "the open records outgrew the 24000-byte total"
+    contains "$out" "the open records outgrew the 24000-byte batch"
 
 # ---------------------------------------------------------------------------
 # Rule 58a's second half: the sheared record and the job list outgrew their
@@ -226,6 +226,6 @@ out2="$(env CRAB_BIN="$T/crab" JOBS_DIR="$T/jobs" \
     "$REPO/lib/night-work" run 2>&1)"; rc2=$?
 check_eq "the night's work exits clean again" "$rc2" "0"
 check "the selector still ran over the small material" \
-    contains "$out2" "the backlog is dry"
+    contains "$out2" "in this batch"
 check_eq "no section is announced as outgrown" \
     "$(printf '%s' "$out2" | grep -c 'outgrew')" "0"

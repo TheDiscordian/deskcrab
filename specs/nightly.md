@@ -147,7 +147,15 @@ which fails silently is worse than one that does not exist.
 
 15. Tidy is the one process that moves lines between the wants shelf, conduct, and the engineering
     threads, and that deletes orphaned want documents. **It MUST be in the repository**, with its
-    prompt under version control and a test that exercises it.
+    prompt under version control and a test that exercises it. A shelf line that is engineering
+    work moves to the live engineering records ([engineering-records.md](engineering-records.md)),
+    where the night's work can see it (rule 58c): when `crab eng search` finds an open record
+    already holding the same work, the line is added to that record with `crab eng touch`, so
+    filing never makes a twin; otherwise it becomes a new record through `crab eng new`, its body
+    naming the concrete ask and how to verify it. The shelf line is removed only once the record
+    holds it. Nothing is ever filed into the frozen pre-records archive (`engineering.md`,
+    `OPEN.md`, `INDEX.md`), which nothing reads and nothing can close, so work filed there is
+    lost.
 16. Tidy MUST NOT touch the memory store.
 17. Tidy MUST declare its writes before it makes them.
 18. Anything tidy writes MUST be reachable from the index block. See
@@ -849,17 +857,25 @@ that was asked for, and promised work must stop waiting for a live turn to perso
     feature. A full slate is waited out, never overridden. Two is the user's standing overnight ceiling — eight
     builders at once burned through two logins inside an hour (2026-08-11 00:51), and he asked
     for two at a time, queued, never parallel swarms while she sleeps.
-58. Selection is judgement — one call per round to the night judge (rules 14c-14e:
+58. Selection is judgement — calls to the night judge (rules 14c-14e:
     `NIGHT_WORK_MODEL` at `NIGHT_WORK_EFFORT`, default `gpt-5.6-sol` at `high`, no fallback
     model, rule 13's engine discipline) —
     and a thread is dispatched only when it is genuinely actionable engineering work: never a note
     or an incident record with no work left in it, never work the threads record as done, never a
     duplicate of a running, queued, or recently finished job (a queued brief dispatches tonight on
-    its own — selecting its subject again buys the same work twice), never a thread already on the
-    night's ledger,
-    never a decision that is the user's to make, and never a thread that names a hand already on
-    it. When nothing qualifies and nothing the night's work dispatched tonight is still running, the
-    night's work ends; it MUST NOT poll an empty backlog to the cutoff.
+    its own — selecting its subject again buys the same work twice), never a thread rule 59
+    excludes, never a decision that is the user's to make, and never a thread that names a hand
+    already on it. The whole eligible shelf is judged every night: the open records are walked in
+    batches that fit rule 58a's budgets, one judge call per batch, newest-touched first, and the
+    night remembers which records it has already judged tonight so no record is judged twice
+    while another waits unjudged. A batch that buys nothing is followed by the next unjudged
+    batch at once; the night waits between rounds only after a dispatch or while the slate is
+    full. A whole pass that bought work is followed by a fresh pass over the shelf as it now
+    stands.
+    When every eligible record has been judged tonight, the last pass picked nothing, and nothing
+    the night's work dispatched tonight is still running, the night's work ends; it MUST NOT poll
+    an empty backlog to the cutoff, and it MUST NOT call the backlog dry while an eligible record
+    is still unjudged. The selection's other sections (rule 58b) ride every batch's call.
 58a. The material the selector reads — each open record, the overflow list of records whose
     bodies did not fit, the job list — is
     bounded by bytes, and every one of those cuts MUST fall on a character boundary, through
@@ -901,10 +917,15 @@ that was asked for, and promised work must stop waiting for a live turn to perso
     `NIGHT_WORK_RECORDS_DIR`, default `$NIGHT_WORK_THREADS_DIR/records`), filtered to
     `state: open` and ordered newest-touched first — the order `crab eng list --state open`
     already produces. Each open record rides whole — front matter and body, so the selector
-    reads the state field with its own eyes — under a per-record budget and a total budget
-    (rule 58a applies to both, cuts announced); a record past the total is never silently
-    dropped: it rides its `eng list` one-liner in a labelled overflow section, still live,
-    still selectable. The frozen pre-records archive (`engineering.md`, `OPEN.md`, `INDEX.md`
+    reads the state field with its own eyes — under a per-record budget and a batch total
+    (rule 58a applies to both, cuts announced); a record that no longer fits what is left of a
+    batch waits whole for the next batch, so only a batch's first record is ever cut to fit.
+    A record outside the current batch is never
+    silently dropped: it rides its `eng list` one-liner in a labelled section that names it as
+    waiting for a later batch tonight, and its body is judged in that batch (rule 58). A record
+    with an earlier night's dispatch carries, above its body, each such dispatch — night, job
+    id, and that job's state now (from its sidecar, or `missing`) — so the judge sees what was
+    already tried and can brief revised work instead of the same work again. The frozen pre-records archive (`engineering.md`, `OPEN.md`, `INDEX.md`
     — read-only history, frozen at the records migration) MUST NOT reach the selector at all:
     everything in it is closed by construction, nothing can ever mark it done, and shopping
     from it bought already-finished work on four separate nights (2026-08-15 to 08-17, the
@@ -916,8 +937,21 @@ that was asked for, and promised work must stop waiting for a live turn to perso
     (the queue still runs, rule 56a); a directory that exists but cannot be read, or holds no
     open record, is presented to the selector as exactly that, in rule 58b's own words.
 59. Every dispatch lands on a durable ledger — night, thread key, job id, title — and the ledger is
-    read back into every later round and every later night, so the night's work never re-dispatches a
-    thread on its own initiative. The ledger is the night's one write and MUST be declared
+    read back into every later round and every later night. For an open engineering record the
+    ledger excludes it from the material, mechanically, before the judge is called, and only
+    while the work it bought can still land: when the record was dispatched tonight (by this
+    run, or on the ledger under tonight's date, so a restarted night never buys it twice), when
+    a job the ledger names for it stands `queued`, `dispatched`, or `running`, or when any job
+    standing so carries the record ([jobs.md](jobs.md) rule 7b), however it was sent. A record whose
+    ledgered jobs are all finished, failed, blocked, or missing is still open work, and is
+    judged again on any later night with no hand needed to release it; rule 58c hands the judge
+    those earlier attempts. Nothing about a record's exclusion is ever left for the judge to
+    infer from the ledger: an excluded record does not reach the prompt at all. A pick from the
+    other sources (rule 58b) is a key the judge makes up; for those the whole ledger is the
+    dedupe, every such key on it — or picked earlier this run, dry run included — is excluded,
+    and the selector is handed the full distinct list of those keys, never a tail of the
+    ledger that hides older rows. The
+    ledger is the night's one write and MUST be declared
     (rule 6). A ledger still standing under the mechanism's former name is moved to the new
     path once, at the next run's start, declared on the night log — the record of what past
     nights dispatched is what keeps this rule honest across the rename.
@@ -1093,9 +1127,14 @@ the three.
 dispatched-or-running job; the live shelf (rule 58c) — a record standing `state: open` under the
 records drawer reaches the selector's prompt whole, front matter and body, newest-touched first,
 while a settled record and the frozen pre-records archive never enter the prompt at all;
-validation skips null-shaped briefs, thin briefs, and threads already on
-the ledger; a
-NOTHING verdict with nothing of tonight's running ends the night's work early; a blocked job door ends it
+validation skips null-shaped briefs, thin briefs, and promise or wake keys already on
+the ledger; a backlog past one batch is judged in several calls, every eligible record's body
+exactly once, a record whose ledgered or daytime job is still live or that was dispatched
+tonight never reaching the prompt, a record whose earlier job finished or vanished judged again
+with its attempts shown, the oldest promise key on the ledger still reaching the selector, and a
+record pick from outside the current batch refused (rules 58, 58c, 59); a
+NOTHING verdict over the whole shelf with nothing of tonight's running ends the night's work early, never
+calling the backlog dry; a blocked job door ends it
 for the night; the cutoff stops dispatch; the owed-work material (rule 58b) — the sweep's ledger
 misses and the pending wake reasons reach the selector as labelled sections, the live checker's
 raw catches do not, and an unreadable ledger is presented as unreadable, never silently omitted;

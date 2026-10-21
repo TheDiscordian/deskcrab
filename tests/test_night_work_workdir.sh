@@ -236,4 +236,4 @@ echo "no dispatch path without -C remains in the script:"
 check_eq "the bare '\"\$CRAB\" job \"\$BRIEF\"' branch is gone" \
     "$(sandbox_count_in '"\$CRAB" job "\$BRIEF"' "$REPO/lib/night-work")" "0"
 check_eq "the one selection dispatch carries -C" \
-    "$(sandbox_count_in '"\$CRAB" job -C "\$WD" "\$BRIEF"' "$REPO/lib/night-work")" "1"
+    "$(sandbox_count_in '"\$CRAB" job -C "\$WD"' "$REPO/lib/night-work")" "1"
