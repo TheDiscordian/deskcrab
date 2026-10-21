@@ -135,7 +135,8 @@ def main():
     lines = read_index(index, "add")
     if lines is None:
         lines = ["# Conduct\n", "\n"]
-    touched = [index, target] + ([old_path] if old_path else [])
+    touched = [index, target] + (
+        [old_path, os.path.join(root, "archive")] if old_path else [])
     touch(*touched)
     body = f"# {args.title}\n\n{text}\n"
     if args.supersedes:

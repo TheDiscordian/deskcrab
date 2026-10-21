@@ -233,8 +233,8 @@ life, and she re-reads that store every single turn.
     as an engineering record's state moves only through `crab eng`; the prompt's conduct block
     names both doors. Each door holds one lock (`~/.local/state/deskcrab/conduct.lock`, outside the
     watched drawer) for its whole transaction and
-    reads the index before its first write: a missing index is a fresh one, any other read
-    fault refuses with nothing written, and two filings at once never drop each other's line.
+    reads the index before its first write: a missing index is a fresh one for `add` and stays
+    absent for `retire`, any other read fault refuses with nothing written, and two filings at once never drop each other's line.
     An archived body's name is reserved exclusively, so a slug archived twice in one second
     keeps both bodies.
 28b. **Reconciliation reaches the stored set, not just new writes.** A judged true-duplicate
