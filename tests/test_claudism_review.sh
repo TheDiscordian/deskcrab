@@ -379,3 +379,202 @@ check "the note is shown" \
 check "and her speech is said to be empty" contains "$P" "(she said nothing aloud today)"
 check "the spoken series has no point on its curve" \
     contains "$OUT" "claudism-review: 2026-08-18, spoken: no words — no point on this curve."
+
+# --- Rule 40b: held at the gate ------------------------------------------
+# The fixture holds 2026-08-16's own shape: a spoken sheet of 2,478 words on
+# which nothing is caught, the tidy's 114-word note beside it, and a flag log
+# of fourteen holds — eleven rewrites (eight vouching, three promising) and
+# three table-swaps whose rows name no function. Around it: a night with a
+# journal and no flag log (08-15), a night whose log holds only rows that are
+# not holds (08-14: a mention, a fire that failed open, the capture's flag-only
+# row, a catch by the user), and a night with a flag log and no journal
+# (08-13). The job's entry carries the bait again.
+python3 - "$T" <<'FIXTURE'
+import json, os, sys
+T = sys.argv[1]
+
+def filler(n):
+    return " ".join(" ".join(["rain"] * (min(i + 12, n) - i)) + "."
+                    for i in range(0, n, 12))
+
+def spoken(n, lead=""):
+    return (lead + " " + filler(n - len(lead.split()))).strip() if n else ""
+
+def day(name, date, replies, tidy):
+    os.makedirs(os.path.join(T, name), exist_ok=True)
+    rows, epoch = [], 1786860000
+    if tidy:
+        rows.append({"epoch": epoch, "time": date + "T03:15:00-0400",
+                     "kind": "tidy", "user": "", "reply": tidy})
+    rows.append({"epoch": epoch + 1, "time": date + "T03:17:00-0400",
+                 "kind": "job", "pid": 9, "user": "builder brief",
+                 "reply": "33 passed. " + filler(490)})
+    for i, (kind, n) in enumerate(replies):
+        rows.append({"epoch": epoch + 100 + i,
+                     "time": "%sT%02d:00:00-0400" % (date, 4 + i),
+                     "kind": kind, "pid": 100 + i, "user": "a word",
+                     "reply": spoken(n) + "\n---DISPLAY---\n47 passed in the table"})
+    with open(os.path.join(T, name, date + ".jsonl"), "w") as f:
+        for r in rows:
+            f.write(json.dumps(r) + "\n")
+
+def flag(date, hh, kind, note, outcome=None, function=None, use="use",
+         stage="live", pid=100):
+    r = {"epoch": 1786860100, "pid": pid, "time": "%sT%s:00-0400" % (date, hh),
+         "kind": kind, "sentence": "I've honestly written it out properly.",
+         "pattern": "\\bhonest(?:y|ly)?\\b", "note": note}
+    if stage:
+        r["stage"] = stage
+    if outcome:
+        r["outcome"] = outcome
+    if use:
+        r["use"] = use
+    if function:
+        r["function"] = function
+    if outcome in ("rewrite", "table-swap"):
+        r["before"], r["after"] = r["sentence"], "I've written it out."
+    return r
+
+def log(path, rows):
+    with open(path, "w") as f:
+        for r in rows:
+            f.write(json.dumps(r) + "\n")
+
+for name, tidy_words, scale in (("j816", 114, 1), ("j816-house-long", 1140, 1),
+                                ("j816-loud", 114, 10)):
+    day(name, "2026-08-14", [("wake", 1000), ("phone", 808)], None)
+    day(name, "2026-08-15", [("wake", 500)], None)
+    day(name, "2026-08-16", [("wake", 2000 * scale), ("phone", 478 * scale)],
+        spoken(tidy_words, "Nightly tidy 2026-08-16:"))
+
+F = os.path.join(T, "flags816")
+os.makedirs(F, exist_ok=True)
+# 08-16: the real night's fourteen, in its real shapes.
+rows = []
+for i in range(8):
+    rows.append(flag("2026-08-16", "0%d:3%d" % (3 + i // 2, i), "wake",
+                     "the honesty family", "rewrite", "vouching"))
+for i in range(3):
+    rows.append(flag("2026-08-16", "05:3%d" % i, "wake",
+                     "dropping it in words only", "rewrite", "promising"))
+rows.append(flag("2026-08-16", "04:06", "wake", "decoration on my own claims",
+                 "table-swap", None))
+rows.append(flag("2026-08-16", "05:33", "wake", "decoration on my own claims",
+                 "table-swap", None))
+rows.append(flag("2026-08-16", "19:58", "phone", "decoration on my own claims",
+                 "table-swap", None))
+log(os.path.join(F, "2026-08-16.jsonl"), rows)
+# 08-14: a log, and nothing on it a hold.
+log(os.path.join(F, "2026-08-14.jsonl"), [
+    flag("2026-08-14", "10:00", "wake", "the honesty family", "mention", "vouching",
+         use="mention"),
+    flag("2026-08-14", "11:00", "wake", "the honesty family",
+         "original-mirror-failed", "vouching"),
+    flag("2026-08-14", "12:00", "phone", "the honesty family", None, "vouching",
+         use=None, stage=None),
+    flag("2026-08-14", "13:00", "phone", "the honesty family", "caught-by-the-user",
+         "vouching"),
+])
+# 08-13: a log and no journal.
+log(os.path.join(F, "2026-08-13.jsonl"), [
+    flag("2026-08-13", "10:00", "wake", "the honesty family", "rewrite", "vouching"),
+    flag("2026-08-13", "11:00", "wake", "decoration on my own claims", "table-swap",
+         None),
+])
+# 08-18, for the judge and the night log: the real night's three.
+log(os.path.join(T, "flags", "2026-08-18.jsonl"), [
+    flag("2026-08-18", "04:10", "wake", "reciting counts as proof", "rewrite",
+         "proof-of-work"),
+    flag("2026-08-18", "05:10", "wake", "reciting counts as proof", "rewrite",
+         "proof-of-work"),
+    flag("2026-08-18", "14:19", "phone", "decoration on my own claims", "table-swap",
+         None),
+])
+FIXTURE
+
+score816() {   # <journal dir> <day> [VAR=value ...]
+    local dir="$1" d="$2"; shift 2
+    env DAY_JOURNAL_DIR="$T/$dir" CLAUDISM_FLAGS_DIR="$T/flags816" \
+        CLAUDISMS_FILE="$T/list818.md" \
+        "$@" "$REPO/lib/claudism-review" score "$d" 2>&1
+}
+HELD816="2026-08-16, held at the gate: 14 events (11 rewrites, 3 table-swaps), 5.65 per 1,000 spoken words — vouching 8; promising 3; 3 with no function on the row."
+
+echo
+echo "held at the gate — what the clean sheet could not say (rule 40b):"
+BEFORE="$(find "$T/j816" "$T/flags816" "$H" -type f -exec md5sum {} + | sort | md5sum)"
+S="$(score816 j816 2026-08-16)"
+check "the spoken sheet reads clean" \
+    contains "$S" "2026-08-16, spoken: 2478 words — nothing caught."
+check "and the held line says which kind of clean: fourteen events, both kinds, by function, the functionless three kept" \
+    contains "$S" "$HELD816"
+check "the count stands on the curve" contains "$S" "| held events | 2 | 0 |  | 14 |"
+check "rewrites, night over night" contains "$S" "| rewrites | 1 | 0 |  | 11 |"
+check "table-swaps, night over night" contains "$S" "| table-swaps | 1 | 0 |  | 3 |"
+check "the ruler is the spoken series' own words, printed under the rate" \
+    contains "$S" "| spoken words, the ruler |  | 1808 | 500 | 2478 |"
+check "the rate: a true zero on a log that held nothing, a gap where there is no log or no words" \
+    contains "$S" "| held per 1,000 spoken words |  | 0.00 |  | 5.65 |"
+check "and what one event reads as" contains "$S" "| one event reads as |  | 0.55 |  | 0.40 |"
+check "held counts by function" contains "$S" "| vouching | 1 | 0 |  | 8 |"
+check "a function held on one night and never on another" \
+    contains "$S" "| promising | 0 | 0 |  | 3 |"
+check "the rows naming no function are an explicit bucket, never dropped" \
+    contains "$S" "| unknown — rows naming no function | 1 | 0 |  | 3 |"
+check "a held function the spoken series never caught still has its spoken row, at 0.00" \
+    contains "$S" "| vouching |  | 0.00 | 0.00 | 0.00 |"
+refute "the unknown bucket is the held table's alone" contains "$S" "| unknown — rows naming no function |  | 0.00"
+refute "the old report header's pooled 2,592 is read nowhere" contains "$S" "2592"
+refute "nor the 5.40 it printed" contains "$S" "5.40"
+check "the judge is told what the series is" contains "$S" "what she reached for and he never heard"
+check_eq "the score door still writes nothing" \
+    "$(find "$T/j816" "$T/flags816" "$H" -type f -exec md5sum {} + | sort | md5sum)" "$BEFORE"
+
+echo
+echo "the gaps are gaps, the zero is a zero:"
+S="$(score816 j816 2026-08-15)"
+check "a night with a journal and no flag log is a gap, said plainly" \
+    contains "$S" "2026-08-15, held at the gate: no flag log — nothing fired, or the gate never ran; a gap, not a zero."
+S="$(score816 j816 2026-08-14)"
+check "a log on which nothing was held — a mention, a failed-open fire, a flag-only row — is a true zero" \
+    contains "$S" "2026-08-14, held at the gate: 0 events — the log is there, and nothing on it was held."
+S="$(score816 j816 2026-08-13)"
+refute "a night with a flag log and no journal is still scored" contains "$S" "no journal for 2026-08-13"
+check "its held count stands, with nothing to rate it against" \
+    contains "$S" "2026-08-13, held at the gate: 2 events (1 rewrite, 1 table-swap), no spoken words to rate against — vouching 1; 1 with no function on the row."
+check "its spoken series is a gap" contains "$S" "2026-08-13, spoken: no words — no point on this curve."
+refute "never a zero-word night" contains "$S" "2026-08-13, spoken: 0 words"
+refute "and never a clean one" contains "$S" "2026-08-13, spoken: nothing caught"
+S="$(score816 j816 2026-08-01)"
+check "a day with neither journal nor flag log has nothing to score" \
+    contains "$S" "no journal for 2026-08-01, and no flag log either"
+
+echo
+echo "the held rate moves with her speech alone:"
+S="$(score816 j816-house-long 2026-08-16)"
+check "ten times the housekeeping" \
+    contains "$S" "2026-08-16, housekeeping: 1140 words — nothing caught."
+check "and the held rate holds still" contains "$S" "$HELD816"
+S="$(score816 j816-loud 2026-08-16)"
+check "ten times the speech" contains "$S" "2026-08-16, spoken: 24780 words — nothing caught."
+check "and the held rate falls with it" \
+    contains "$S" "2026-08-16, held at the gate: 14 events (11 rewrites, 3 table-swaps), 0.56 per 1,000 spoken words — vouching 8; promising 3; 3 with no function on the row."
+
+echo
+echo "the held series reaches the judge and the night log:"
+HELD818="2026-08-18, held at the gate: 3 events (2 rewrites, 1 table-swap), 5.49 per 1,000 spoken words — proof-of-work 2; 1 with no function on the row."
+echo "NOTHING — a quiet day" > "$T/reply.txt"
+rm -f "$T/prompt-last"
+OUT="$(run818 j818)"
+P="$(cat "$T/prompt-last" 2>/dev/null)"
+check "the judge reads the held line beside the spoken one" contains "$P" "$HELD818"
+check "and the spoken line is unchanged beside it" \
+    contains "$P" "2026-08-18, spoken: 546 words — proof-of-work 0 uses, 0.00 per 1,000."
+check "the judge is told it is her reaching, not her speech" \
+    contains "$P" "her reaching, not her speech"
+check "the night log carries the held line in the review's name" \
+    contains "$OUT" "claudism-review: $HELD818"
+rm -f "$T/prompt-last"
+OUT="$(run818 j-house)"
+check "a day of housekeeping alone: the held count stands with no rate, not a rate on the tidy's words" \
+    contains "$OUT" "claudism-review: 2026-08-18, held at the gate: 3 events (2 rewrites, 1 table-swap), no spoken words to rate against — proof-of-work 2; 1 with no function on the row."

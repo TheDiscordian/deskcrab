@@ -536,7 +536,8 @@ which fails silently is worse than one that does not exist.
     something she said aloud. A job's entry is a builder's log, not her voice, and is in neither
     series. A day that holds housekeeping and no speech is still reviewed. Beside the journal the
     review reads the day's flag log ([turn-pipeline.md](turn-pipeline.md) rules 30-32) as
-    pointers to moments worth a look, her persona sheet, her conduct files, and the active memory
+    pointers to moments worth a look and, night over night, as the held series of rule 40b;
+    and her persona sheet, her conduct files, and the active memory
     records recall puts in front of her for the day's turns. It looks for the material that
     pulled her voice toward the assistant register — a record written about her in the third
     person or in procedure-speak, a conduct body that reads like a policy document, a persona
@@ -560,9 +561,10 @@ which fails silently is worse than one that does not exist.
     days (default 7) ending at the reviewed day, every night re-scored from its own journal
     against tonight's list, so one ruler measures the whole curve and nothing is kept between
     nights (rule 39). A night with no words in a series is a gap in that series' curve, never a
-    zero. Both tables carry the same rows — every function caught in either series on any night
-    shown — so a move that lives in only one of them reads 0.00 in the other instead of
-    vanishing from it. Entries the parser could not read are counted on the score's own line: a
+    zero. Every table carries the same function rows — every function caught in either series,
+    or held at the gate (rule 40b), on any night shown — so a move that lives in only one of
+    them reads 0.00 (or 0) in the others instead of vanishing from them; the held table's
+    `unknown` row is its own. Entries the parser could not read are counted on the score's own line: a
     pattern that never ran MUST NOT read as a move that never happened. The score reaches the
     judge as a section of its material and the night log as `claudism-review:` lines, and
     `claudism-review score [day]` prints it alone, with no model call and no write. It is a
@@ -573,6 +575,32 @@ which fails silently is worse than one that does not exist.
     figure the old table had carried. By series, the 546 spoken words carried neither (0.00) and
     the tidy's 178 carried both (11.24). The blend moved with how much the user happened to say
     to her that day, and on a quiet day it silently changed what it was measuring.
+40b. Beside the two, a third series, never pooled with either: HELD AT THE GATE — what the live
+    mirror caught in her draft and she never said ([speech-output.md](speech-output.md) rules
+    41, 45 and 49). Its source is each night's flag log, and only a row whose outcome is
+    `rewrite` or `table-swap` counts: the capture's flag-only rows, mentions, and fires that
+    failed open are not holds. It is reported as counts — events, rewrites, table-swaps, and
+    the count under each function the flag names, a row naming no function counted under
+    `unknown` and never dropped — and as one rate, events per 1,000 of the night's SPOKEN
+    words: the spoken series' own ruler from the journal, so the denominator is the one rule
+    40a already keeps apart from housekeeping, and never a count read back from an old
+    report. A night with no flag log is a gap, not a zero: the log is written only when the
+    mirror fires, so its absence cannot tell a night of restraint from a night the gate never
+    ran; a log on which nothing was held is a true zero. A night with a flag log and no
+    journal is still a night on the curve: its count stands, no rate is printed, and it is
+    not a clean night. The series reaches the judge with the score and the night log as
+    `claudism-review:` lines, and the judge is told what it is: her reaching, not her
+    speech — a held sentence was never heard and is no slip he heard. It says which kind of
+    clean a clean night was.
+    The report this fixes could not. On 2026-08-16 the spoken sheet read 2,478 words and
+    nothing caught, while the gate had held 14 sentences — 11 rewrites, 3 table-swaps; 8
+    vouching, 3 promising, 3 naming no function — 5.65 per 1,000 spoken words, the highest
+    reach of any night measured, under the cleanest sheet. The two curves are inverted, which
+    is what a working gate looks like; a report reading the spoken side alone scored a night
+    of restraint and a night of fourteen catches alike. (The 5.40 the record first figured
+    divided by the old report header's 2,592, which pooled the tidy's 114 words into the
+    spoken count — the blend rule 40a took out.) And 2026-08-11, a night no review ran on,
+    holds 22 held sentences on its flag log and was never a clean night either.
 41. An edit takes one of three routes and no other:
     - a directive or note record rewritten in her voice through `crab memory rewrite`
       ([memory-recall.md](memory-recall.md) rule 28e); the old record is superseded, never

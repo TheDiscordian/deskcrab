@@ -7,8 +7,9 @@
 # edits — a memory record reworded or retired, an exact-text replacement in
 # her persona sheet or a conduct file, a replacement line in her phrase list
 # revised or revoked. No report file, no wake, no speech, and no counts kept:
-# the score it states (rule 40a) — her speech and her housekeeping apart, each
-# over its own words — is recomputed from the journals every night.
+# the score it states (rules 40a-40b) — her speech and her housekeeping apart,
+# each over its own words, and beside them what the gate held, from the flag
+# logs — is recomputed from the journals and the flag logs every night.
 #
 #   claudism-review run [YYYY-MM-DD]     review that day (default: yesterday)
 #   claudism-review score [YYYY-MM-DD]   print that day's score alone: no
@@ -52,6 +53,7 @@ cmd_score() {
     local DAY
     DAY="${1:-$(date -d yesterday +%F 2>/dev/null || date +%F)}"
     CR_DAY="$DAY" CR_JFILE="$DAY_JOURNAL_DIR/$DAY.jsonl" CR_LIST="$CLAUDISMS_FILE" \
+        CR_FLAGS_DIR="$CLAUDISM_FLAGS_DIR" \
         CR_TREND_NIGHTS="${CLAUDISM_REVIEW_TREND_NIGHTS:-7}" \
         python3 "$LIB_DIR/claudism_review.py" score
 }
@@ -77,7 +79,8 @@ cmd_run() {
 
     export CR_DAY="$DAY" CR_JFILE="$JFILE" CR_WORK="$WORK" CR_CRAB="$CRAB" \
         CR_NAME="${ASSISTANT_NAME:-}" \
-        CR_FLAGS="$CLAUDISM_FLAGS_DIR/$DAY.jsonl" CR_LIST="$CLAUDISMS_FILE" \
+        CR_FLAGS="$CLAUDISM_FLAGS_DIR/$DAY.jsonl" CR_FLAGS_DIR="$CLAUDISM_FLAGS_DIR" \
+        CR_LIST="$CLAUDISMS_FILE" \
         CR_PERSONA="${CUSTOM_PROMPT:-}" CR_CONDUCT="$H/conduct" \
         CR_BACKUP="$H/sleep/claudism-review/$DAY" \
         CR_MAX_EDITS="${CLAUDISM_REVIEW_MAX_EDITS:-6}" \
@@ -96,7 +99,8 @@ cmd_run() {
 
     say "reviewing the day of $DAY — most nights change nothing"
     # The score on the night log, line for line what the judge is shown
-    # (rule 40a): speech and housekeeping apart, each over its own words.
+    # (rules 40a-40b): speech and housekeeping apart, each over its own
+    # words, and what the gate held beside them.
     local LINE
     while IFS= read -r LINE; do
         [ -n "$LINE" ] && say "$LINE"

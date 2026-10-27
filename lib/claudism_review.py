@@ -3,10 +3,12 @@
 lib/claudism-review through CR_* environment variables:
 
   material  print the judge's prompt: the day in its two series (her speech,
-            and her housekeeping apart from it), the score, the flags, the
-            persona sheet, the conduct drawer, the phrase-list entries whose
-            replacements fired, and the records recall put in front of her
-  score     print the score alone (rule 40a): no model call, nothing written
+            and her housekeeping apart from it), the score with what the gate
+            held beside it, the flags, the persona sheet, the conduct drawer,
+            the phrase-list entries whose replacements fired, and the records
+            recall put in front of her
+  score     print the score alone (rules 40a-40b): no model call, nothing
+            written
   plan      read the judge's answer, keep the edits that pass every guard,
             print the files they will touch (one per line)
   apply     copy those files aside, then make the edits
@@ -35,6 +37,14 @@ WAKE_KINDS = ("wake", "quiet", "tidy")
 SERIES = (("spoken", "her replies aloud: desk, phone, wake"),
           ("housekeeping", "the tidy's own note, written to no listener"))
 HOUSEKEEPING_KINDS = ("tidy",)
+# The third series (rule 40b), beside the two and never pooled with them: what
+# the live mirror held in her draft before delivery. A flag-log row with one of
+# these outcomes is a hold; everything else on the log — the capture's
+# flag-only rows, mentions, fires that failed open — is not. A night that
+# reads clean on the spoken sheet says which kind of clean it was only with
+# this beside it (2026-08-16: nothing caught in 2,478 spoken words, 14 held).
+HELD_KINDS = ("rewrite", "table-swap")
+UNKNOWN_FN = "unknown"
 
 
 def say(msg):
@@ -181,17 +191,49 @@ def score_day(jfile, patterns, mod):
     return out
 
 
+def flags_path(day):
+    """The day's flag log: in the flags directory when one is named, else
+    beside the reviewed day's own log, else nowhere."""
+    fdir = E.get("CR_FLAGS_DIR") or os.path.dirname(E.get("CR_FLAGS") or "")
+    return os.path.join(fdir, day + ".jsonl") if fdir else ""
+
+
+def held_day(fpath):
+    """What the gate held on one night, from its flag log: {"events": n,
+    "kinds": {"rewrite": n, "table-swap": n}, "uses": {function: n}} — or
+    None when there is no log. No log is not a night of nothing held: the
+    log is written only when the mirror fires, so its absence cannot tell a
+    night of restraint from a night the gate never ran. A row naming no
+    function is counted under `unknown`, never dropped."""
+    if not fpath or not os.path.isfile(fpath):
+        return None
+    out = {"events": 0, "kinds": {k: 0 for k in HELD_KINDS}, "uses": {}}
+    for f in rows(fpath):
+        if not isinstance(f, dict) or f.get("outcome") not in HELD_KINDS:
+            continue
+        fn = f.get("function")
+        fn = fn.strip() if isinstance(fn, str) and fn.strip() else UNKNOWN_FN
+        out["events"] += 1
+        out["kinds"][f["outcome"]] += 1
+        out["uses"][fn] = out["uses"].get(fn, 0) + 1
+    return out
+
+
 def trend_nights(jfile, day, want):
-    """The journal days the curve runs over: the last `want` on disk ending
-    at the reviewed day, oldest first."""
+    """The nights the curve runs over: the last `want` on disk ending at the
+    reviewed day, oldest first. A day with a journal or a flag log is a
+    night: a flag log with no journal beside it is still a night the gate
+    worked, and its held count stands with nothing to rate it against."""
     jdir = os.path.dirname(jfile)
-    try:
-        names = os.listdir(jdir)
-    except OSError:
-        names = []
-    days = sorted({n[:-6] for n in names
-                   if re.fullmatch(r"\d{4}-\d{2}-\d{2}\.jsonl", n) and n[:-6] <= day}
-                  | {day})
+    days = {day}
+    for d in (jdir, os.path.dirname(flags_path(day))):
+        try:
+            names = os.listdir(d) if d else []
+        except OSError:
+            names = []
+        days |= {n[:-6] for n in names
+                 if re.fullmatch(r"\d{4}-\d{2}-\d{2}\.jsonl", n) and n[:-6] <= day}
+    days = sorted(days)
     return [(d, os.path.join(jdir, d + ".jsonl")) for d in days[-max(want, 1):]]
 
 
@@ -200,10 +242,12 @@ def rate(uses, words):
 
 
 def score_text():
-    """The score of rule 40a: per series, each function's uses per 1,000 of
-    that series' own words, night over night, the denominators printed under
-    the rates they divide. Recomputed from the journals every time; nothing
-    is read from or written to a counts file."""
+    """The score of rules 40a-40b: per series, each function's uses per 1,000
+    of that series' own words, night over night, the denominators printed
+    under the rates they divide; and beside them what the gate held, counted
+    from each night's flag log and rated against that night's spoken words.
+    Recomputed from the journals and the flag logs every time; nothing is
+    read from or written to a counts file."""
     day, jfile = E["CR_DAY"], E["CR_JFILE"]
     list_path = E.get("CR_LIST", "")
     mod, patterns, notes = None, [], []
@@ -228,17 +272,33 @@ def score_text():
         want = 7
     nights = trend_nights(jfile, day, want)
     scored = {d: score_day(path, patterns, mod) for d, path in nights}
-    fns = sorted({fn for d in scored for name, _ in SERIES
-                  for fn, n in scored[d][name]["uses"].items() if n})
+    held = {d: held_day(flags_path(d)) for d, _ in nights}
+    # Every table carries the same function rows: a move that lives in one
+    # series alone reads as nothing in the others instead of vanishing. The
+    # unknown bucket is the held table's own — a journal use always has a
+    # function, a flag row may not.
+    jfns = {fn for d in scored for name, _ in SERIES
+            for fn, n in scored[d][name]["uses"].items() if n}
+    fns = sorted(jfns | {fn for d in held if held[d]
+                         for fn, n in held[d]["uses"].items() if n and fn != UNKNOWN_FN})
+    unknown = any(h and h["uses"].get(UNKNOWN_FN) for h in held.values())
 
     lines = ["Listed moves per 1,000 words, night over night. Two series, each "
              "over its own words; nothing is pooled.",
              f"Every night is re-scored from its journal against tonight's "
              f"phrase list ({len(patterns)} patterns): once per sentence and "
              "function, mentions set aside, jobs and display halves in neither "
-             "series."]
+             "series.",
+             "Beside them, held at the gate: the live mirror's rewrites and "
+             "table-swaps from each night's flag log — what she reached for and "
+             "he never heard — counted whole, by kind, and by the function the "
+             "flag names (a row naming none counts under unknown, never dropped), "
+             "and rated per 1,000 of that night's spoken words, the spoken "
+             "series' own ruler. A night with no flag log is a gap, not a zero: "
+             "the log is written only when the gate fires. A night with spoken "
+             "words unknown keeps its count and prints no rate."]
     lines += notes
-    if not fns and patterns:
+    if not jfns and patterns:
         lines.append("No listed move was caught in either series on these nights.")
     for name, what in SERIES:
         lines += ["",
@@ -254,6 +314,35 @@ def score_text():
             lines.append(f"| {fn} | " + " | ".join(
                 rate(scored[d][name]["uses"].get(fn, 0), scored[d][name]["words"])
                 for d, _ in nights) + " |")
+
+    # The held table (rule 40b): counts, then the rate on the spoken ruler.
+    def hcell(d, f):
+        return "" if held[d] is None else f(held[d])
+
+    def spoken_words(d):
+        return scored[d]["spoken"]["words"]
+
+    lines += ["",
+              "| held at the gate — the mirror's rewrites and table-swaps, what she "
+              "reached for and he never heard | " + " | ".join(d for d, _ in nights) + " |",
+              "|---" * (len(nights) + 1) + "|",
+              "| held events | " + " | ".join(
+                  hcell(d, lambda h: str(h["events"])) for d, _ in nights) + " |"]
+    for kind in HELD_KINDS:
+        lines.append(f"| {kind}s | " + " | ".join(
+            hcell(d, lambda h, k=kind: str(h["kinds"][k])) for d, _ in nights) + " |")
+    lines += ["| spoken words, the ruler | " + " | ".join(
+                  str(spoken_words(d) or "") for d, _ in nights) + " |",
+              "| held per 1,000 spoken words | " + " | ".join(
+                  hcell(d, lambda h, d=d: rate(h["events"], spoken_words(d)))
+                  for d, _ in nights) + " |",
+              "| one event reads as | " + " | ".join(
+                  hcell(d, lambda h, d=d: rate(1, spoken_words(d)))
+                  for d, _ in nights) + " |"]
+    for fn in fns + ([UNKNOWN_FN] if unknown else []):
+        label = fn if fn != UNKNOWN_FN else f"{UNKNOWN_FN} — rows naming no function"
+        lines.append(f"| {label} | " + " | ".join(
+            hcell(d, lambda h, fn=fn: str(h["uses"].get(fn, 0))) for d, _ in nights) + " |")
     lines.append("")
     tonight = scored[day]
     caught = sorted({fn for name, _ in SERIES
@@ -271,12 +360,36 @@ def score_text():
                    "" if tonight[name]["uses"].get(fn, 0) == 1 else "s",
                    rate(tonight[name]["uses"].get(fn, 0), words))
                 for fn in caught) + ".")
+    lines.append(held_line(day, held[day], tonight["spoken"]["words"]))
     return "\n".join(lines)
 
 
+def held_line(day, h, spoken_words):
+    """Tonight's held-at-the-gate line (rule 40b): the count by kind and by
+    function, and the rate on the spoken ruler — or the plain reason there is
+    no count, or no rate."""
+    if h is None:
+        return (f"{day}, held at the gate: no flag log — nothing fired, or the "
+                "gate never ran; a gap, not a zero.")
+    if not h["events"]:
+        return (f"{day}, held at the gate: 0 events — the log is there, and "
+                "nothing on it was held.")
+    n = h["events"]
+    kinds = ", ".join("%d %s%s" % (h["kinds"][k], k, "" if h["kinds"][k] == 1 else "s")
+                      for k in HELD_KINDS)
+    r = rate(n, spoken_words)
+    ruler = f"{r} per 1,000 spoken words" if r else "no spoken words to rate against"
+    by_fn = "; ".join(
+        f"{fn} {c}" if fn != UNKNOWN_FN else f"{c} with no function on the row"
+        for fn, c in sorted(h["uses"].items(),
+                            key=lambda kv: (kv[0] == UNKNOWN_FN, -kv[1], kv[0])))
+    return (f"{day}, held at the gate: {n} event{'' if n == 1 else 's'} ({kinds}), "
+            f"{ruler} — {by_fn}.")
+
+
 def score():
-    if not os.path.isfile(E["CR_JFILE"]):
-        say(f"no journal for {E['CR_DAY']} — nothing to score")
+    if not os.path.isfile(E["CR_JFILE"]) and not os.path.isfile(flags_path(E["CR_DAY"])):
+        say(f"no journal for {E['CR_DAY']}, and no flag log either — nothing to score")
         return 0
     print(score_text())
     return 0
@@ -412,9 +525,14 @@ it. A slip there is evidence about how she writes to herself, and tells you \
 nothing about how she speaks to him. Trace a housekeeping slip to the \
 material that shaped the note if you can; never change what governs her \
 speech on housekeeping evidence alone. The score counts the two apart, each \
-over its own words. Like the flags it is a pointer, not a verdict: weigh the \
-move, not the tally, and remember that on a short night a single use prints \
-a large rate.
+over its own words, and beside them a third series, held at the gate: what \
+the live mirror caught in her draft and she never said. That one is her \
+reaching, not her speech — a held sentence was never heard and is no slip he \
+heard — and it tells you which kind of clean a clean night was: a night of \
+restraint and a night the gate caught fourteen times read alike on the spoken \
+sheet. Like the flags the score is a pointer, not a verdict: weigh the move, \
+not the tally, and remember that on a short night a single use prints a large \
+rate.
 
 Most nights need no edit. NOTHING is a normal answer. Change only what you \
 can tie to a slip in today's material, keep the meaning of every rule and \
@@ -449,7 +567,7 @@ EDITS
 === THE DAY'S HOUSEKEEPING — her tidy's own note: written to no listener, never spoken ===
 {housekeeping}
 
-=== THE SCORE — speech and housekeeping apart, each over its own words ===
+=== THE SCORE — speech and housekeeping apart, each over its own words; what the gate held beside them ===
 {score}
 
 === TODAY'S FLAGS — lines her phrase list caught (pointers, not verdicts) ===
