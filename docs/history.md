@@ -1398,6 +1398,14 @@ durable rule, the block renders it under its own label, and `crab memory backfil
 reads the journal oldest first in bounded rounds for the ones already said and lost — starting,
 on the night it landed, with that one.
 
+The completion review of that landing, the same morning (2026-10-27), found the hold itself had
+the hole: `queue_rule_overlap` refreshed only a held row's last-seen and hits, so a self-fact
+re-offered over a rephrase the night before had held bare waited unpinned and unattributed, and a
+journal re-offer's date and file were dropped — the stored row gained standing from a repeat, the
+hold did not. The hold is now monotonic the same way (rule 27b): pin, attribution, date and dated
+source are gained and never lost, every source offered stays listed, and `crab memory overlaps`
+shows the standing where the hand judges.
+
 ## Working in this repo
 
 ### Several sessions edit the same files at once

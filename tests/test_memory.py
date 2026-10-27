@@ -3174,12 +3174,19 @@ class TestSelfFacts(StoreCase):
               "something you tear and throw away.\" Thread is my own word for "
               "them, and the one I told the user I prefer.")
     HIS = "He wants the hall lights off when he leaves the room."
+    REPHRASE = ("I call my engineering records threads, never tickets: a "
+                "thread runs through days and is picked back up, where a "
+                "ticket is torn off and thrown away.")
 
     def write_cands(self, cands):
         path = os.path.join(self.dir, "cands.json")
         with open(path, "w") as f:
             json.dump(cands, f)
         return path
+
+    def pending(self):
+        with open(os.path.join(self.dir, "pending-rule-overlaps.json")) as f:
+            return json.load(f)
 
     def ingest(self, cands):
         out = io.StringIO()
@@ -3267,6 +3274,95 @@ class TestSelfFacts(StoreCase):
         self.assertEqual(pending[0]["status"], "pending")
         self.assertTrue(pending[0]["pinned"])
         self.assertEqual(pending[0]["about"], "self")
+
+    def test_a_held_rephrase_gains_standing_from_a_later_offer_and_keeps_it(self):
+        # The 2026-10-27 review finding, through the real ingest: the base
+        # rule is in the store; a rephrase arrives unmarked and is held; the
+        # same rephrase arrives on a later night marked hers. The hold used
+        # to refresh only its nomination, so the self-fact waited unpinned
+        # and unattributed. The one held row gains the standing — and a
+        # bare offer after it takes nothing back. Still one row in the
+        # store, still one row in the hold.
+        _, rec = self.store.add_deduped(self.THREAD, kind="directive")
+        bare = {"text": self.REPHRASE, "kind": "directive"}
+        rc, out = self.ingest([bare])
+        self.assertIn("1 overlaps held", out)
+        held = self.pending()
+        self.assertEqual([(r["pinned"], r["about"], r["offers"]) for r in held],
+                         [(False, "", 1)])
+        rc, out = self.ingest([dict(bare, about="self")])
+        self.assertIn("[directive, about me, pinned]", out)
+        self.assertIn("1 overlaps held", out)
+        held = self.pending()
+        self.assertEqual([(r["pinned"], r["about"], r["offers"]) for r in held],
+                         [(True, "self", 2)])
+        rc, out = self.ingest([bare])
+        self.assertIn("1 overlaps held", out)
+        held = self.pending()
+        self.assertEqual([(r["pinned"], r["about"], r["offers"]) for r in held],
+                         [(True, "self", 3)])
+        self.assertEqual(held[0]["status"], "pending")
+        self.assertEqual(self.count(), 1)
+        # The listing shows the standing where the hand judges.
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            memory.cmd_overlaps(self.store, Namespace(scan=False, all=False))
+        line = out.getvalue().splitlines()[0]
+        self.assertIn(" PINNED ABOUT ME ", line)
+        self.assertIn("offers=3", line)
+
+    def test_the_hold_takes_a_date_and_its_source_once_and_keeps_every_source(self):
+        # Rule 39's fill, at the hold: a dated re-offer dates an undated
+        # hold and names where she said it, the bare source it displaces
+        # stays listed, a later dated offer never overwrites the known
+        # date — and the reverse order loses nothing either.
+        hits = [{"drawer": "memory", "ref": 1, "similarity": 0.95,
+                 "candidate_clause": "a", "existing_clause": "b"}]
+        journal = "journal 2026-08-20.jsonl @ 2026-08-20T00:48:56-0400"
+        text = "I call my engineering records threads, never tickets."
+        self.store.queue_rule_overlap(text, "conversation", "", None, hits)
+        self.store.queue_rule_overlap(text, journal, "terms",
+                                      "2026-08-20 00:48", hits,
+                                      pinned=True, about="self")
+        row = self.pending()[0]
+        self.assertEqual(
+            (row["occurred"], row["source"], row["sources"], row["topics"],
+             row["pinned"], row["about"], row["offers"]),
+            ("2026-08-20 00:48", journal, ["conversation", journal], "terms",
+             True, "self", 2))
+        self.store.queue_rule_overlap(text, "journal 2026-08-21.jsonl",
+                                      "words", "2026-08-21", hits)
+        row = self.pending()[0]
+        self.assertEqual((row["occurred"], row["source"], row["topics"]),
+                         ("2026-08-20 00:48", journal, "terms"))
+        self.assertEqual(row["sources"],
+                         ["conversation", journal, "journal 2026-08-21.jsonl"])
+        self.assertEqual(len(self.pending()), 1)
+        # Reverse: dated and hers first, bare after.
+        other = "I dislike the word drain for my night's work."
+        self.store.queue_rule_overlap(other, "journal 2026-08-20.jsonl", "",
+                                      "2026-08-20", hits,
+                                      pinned=True, about="self")
+        self.store.queue_rule_overlap(other, "conversation", "", None, hits)
+        row = [r for r in self.pending() if r["text"] == other][0]
+        self.assertEqual(
+            (row["occurred"], row["source"], row["sources"], row["pinned"],
+             row["about"]),
+            ("2026-08-20", "journal 2026-08-20.jsonl",
+             ["journal 2026-08-20.jsonl", "conversation"], True, "self"))
+        # A hold written before `sources` and `offers` existed is read
+        # as one offer from its one source.
+        path = os.path.join(self.dir, "pending-rule-overlaps.json")
+        rows = self.pending()
+        for r in rows:
+            r.pop("sources"), r.pop("offers")
+        with open(path, "w") as f:
+            json.dump(rows, f)
+        self.store.queue_rule_overlap(text, "journal 2026-08-22.jsonl", "",
+                                      None, hits)
+        row = self.pending()[0]
+        self.assertEqual((row["offers"], row["sources"], row["source"]),
+                         (2, [journal, "journal 2026-08-22.jsonl"], journal))
 
     def test_a_pinned_repeat_pins_and_claims_an_unpinned_original(self):
         # The live shape: she wrote the fact by hand in the moment of the
@@ -3496,6 +3592,68 @@ class TestSelfFactBackfill(StoreCase):
         if stated_at is not None:
             cand["stated_at"] = stated_at
         return cand
+
+    def held(self):
+        with open(os.path.join(self.dir, "pending-rule-overlaps.json")) as f:
+            return json.load(f)
+
+    def ingest(self, cands):
+        path = os.path.join(self.dir, "cands.json")
+        with open(path, "w") as f:
+            json.dump(cands, f)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = memory.cmd_ingest(self.store, Namespace(
+                dry_run=False, from_json=path, journal_dir="",
+                transcripts_dir="", model="unused", effort="high",
+                summary_model="unused", max_chars=150000))
+        return rc, out.getvalue()
+
+    def test_a_backfill_reoffer_dates_and_claims_a_held_rephrase(self):
+        # The live shape at the hold: the base rule is in the store, the
+        # night's sift held a rephrase bare — unmarked, undated, source
+        # "conversation" — and the journal backfill offers the same words
+        # with their stamp. The held row gains the pin, her attribution,
+        # the date and the journal source, the bare source kept beside;
+        # the night's bare re-offer afterwards takes none of it back; the
+        # day's cursor still advances; nothing new in the store.
+        self.store.add_deduped(TestSelfFacts.THREAD, kind="directive")
+        bare = {"text": TestSelfFacts.REPHRASE, "kind": "directive"}
+        rc, out = self.ingest([bare])
+        self.assertIn("1 overlaps held", out)
+        self.assertEqual([(r["pinned"], r["about"], r["occurred"], r["source"])
+                          for r in self.held()],
+                         [(False, "", None, "conversation")])
+        self.put("2026-08-20")
+        self.stub(lambda m: [{"text": TestSelfFacts.REPHRASE,
+                              "kind": "directive", "about": "self",
+                              "stated_at": "2026-08-20T00:50:28-0400",
+                              "topics": "terms,threads"}])
+        rc, out = self.run_backfill()
+        self.assertEqual(rc, 0)
+        self.assertIn("1 overlaps held", out)
+        self.assertEqual(list(self.cursor()["files"]), ["2026-08-20.jsonl"])
+        journal = "journal 2026-08-20.jsonl @ 2026-08-20T00:50:28-0400"
+        rows = self.held()
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(
+            (row["pinned"], row["about"], row["occurred"], row["source"],
+             row["sources"], row["topics"], row["offers"]),
+            (True, "self", "2026-08-20 00:50", journal,
+             ["conversation", journal], "terms,threads", 2))
+        rc, out = self.ingest([bare])
+        self.assertIn("1 overlaps held", out)
+        rows = self.held()
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(
+            (row["pinned"], row["about"], row["occurred"], row["source"],
+             row["sources"], row["offers"]),
+            (True, "self", "2026-08-20 00:50", journal,
+             ["conversation", journal], 3))
+        self.assertEqual(self.store.db.execute(
+            "SELECT count(*) FROM memories").fetchone()[0], 1)
 
     def test_bounded_rounds_oldest_first_and_resume(self):
         for day in ("2026-08-19", "2026-08-20", "2026-08-21"):

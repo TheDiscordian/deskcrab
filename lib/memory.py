@@ -1717,7 +1717,18 @@ class Store:
                            pinned=False, about=""):
         """Keep a rejected candidate durable so preflight cannot lose it —
         with its standing: a held self-fact (rule 27b) is still pinned and
-        still hers when a hand admits it."""
+        still hers when a hand admits it. A candidate held AGAIN refreshes
+        its nomination against the current set and gains, never loses, what
+        the later offer knows and the hold did not: the pin, her
+        attribution, the date it was said (rule 39's fill — an unknown date
+        is filled, a known one never overwritten) and the dated source that
+        names where she said it; every source offered stays listed in
+        `sources`, and `offers` counts the nights it came back. The
+        2026-10-27 review finding: the hold refreshed only `last_seen` and
+        `hits`, so a self-fact re-offered over an unmarked hold waited
+        unpinned and unattributed, and a journal re-offer's date and file
+        were dropped on the floor — the stored row gained standing from a
+        repeat (add_deduped), the hold did not."""
         path = os.path.join(self.dir, "pending-rule-overlaps.json")
         try:
             with open(path) as f:
@@ -1730,10 +1741,34 @@ class Store:
             if row.get("id") == key and row.get("status") == "pending":
                 row["last_seen"] = now
                 row["hits"] = hits
+                row["offers"] = int(row.get("offers") or 1) + 1
+                # Standing is monotonic: gained from the offer that has it,
+                # never surrendered to one that lacks it.
+                if pinned and not row.get("pinned"):
+                    row["pinned"] = True
+                if about and not row.get("about"):
+                    row["about"] = about
+                if topics and not row.get("topics"):
+                    row["topics"] = topics
+                sources = list(row.get("sources") or [])
+                if row.get("source") and row["source"] not in sources:
+                    sources.insert(0, row["source"])
+                if source and source not in sources:
+                    sources.append(source)
+                if occurred and not row.get("occurred"):
+                    # The date and where it was said are one piece of
+                    # knowledge: the offer that dates the hold names its
+                    # source, and the bare one it displaces stays listed.
+                    row["occurred"] = occurred
+                    if source:
+                        row["source"] = source
+                row["sources"] = sources
                 break
         else:
             rows.append({"id": key, "status": "pending", "created": now,
-                         "last_seen": now, "text": text, "source": source,
+                         "last_seen": now, "offers": 1, "text": text,
+                         "source": source,
+                         "sources": [source] if source else [],
                          "topics": topics, "occurred": occurred, "hits": hits,
                          "pinned": bool(pinned), "about": about or ""})
         tmp = path + f".tmp.{os.getpid()}"
@@ -3942,9 +3977,22 @@ def cmd_overlaps(store, args):
     if not args.all:
         rows = [r for r in rows if r.get("status") == "pending"]
     for row in rows:
-        print(f"{row.get('id')} [{row.get('status', 'pending')}] "
-              f"source={row.get('source', '')} topics={row.get('topics', '')}  "
-              f"{row.get('text', '')}")
+        # The standing the hold keeps (rule 27b) is shown where the hand
+        # judges: a held self-fact reads PINNED and ABOUT ME, with the date
+        # and source it was offered with, and every other source it came
+        # from since.
+        standing = ((" PINNED" if row.get("pinned") else "")
+                    + (" ABOUT ME" if row.get("about") == "self" else ""))
+        print(f"{row.get('id')} [{row.get('status', 'pending')}]{standing} "
+              f"source={row.get('source', '')} topics={row.get('topics', '')}"
+              + (f" occurred={row['occurred']}" if row.get("occurred") else "")
+              + (f" offers={row['offers']}" if (row.get("offers") or 1) > 1
+                 else "")
+              + f"  {row.get('text', '')}")
+        others = [s for s in row.get("sources") or []
+                  if s != row.get("source")]
+        if others:
+            print(f"  also offered from: {'; '.join(others)}")
         for hit in row.get("hits", [])[:8]:
             print(f"  {hit.get('similarity', 0):.3f} "
                   f"{hit.get('drawer')}:{hit.get('ref')}  "

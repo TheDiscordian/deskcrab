@@ -231,6 +231,15 @@ life, and she re-reads that store every single turn.
     where the earlier write had neither — new standing for an old record, never a second record,
     as rule 39 fills an unknown date), a rephrase is held for a hand's judgement with its pin and
     attribution kept in the hold, and no parallel path writes a self-fact around the preflight.
+    The hold is monotonic the same way: a candidate held again refreshes its nomination against
+    the current set and gains, never loses, what the later offer knows — the pin, her attribution,
+    the date it was said (filled when unknown, never overwritten) and the dated source naming
+    where, with every source it was ever offered from kept listed beside — so a self-fact
+    re-offered over an unmarked hold waits pinned and hers, and an offer without standing takes
+    nothing from one that has it; `crab memory overlaps` shows that standing where the hand
+    judges. (The 2026-10-27 review finding: the hold refreshed only its last-seen and hits, so a
+    self-fact re-offered over a rephrase held bare the night before waited unpinned and
+    unattributed, and a journal re-offer's date and file were dropped.)
     The dated miss: on 2026-08-20 at 00:50, when the user offered to say "thread" because it was
     her word, she answered "It was the better term anyway — a thread runs through days and gets
     picked back up; a ticket is something you tear and throw away. … Fine. Thread." The night
@@ -243,7 +252,8 @@ life, and she re-reads that store every single turn.
     normalised same-kind match bumps last-seen. Every clause of a proposed `directive` is embedded
     separately and compared at `0.86` against every clause of every active directive **and every
     conduct body**: a hit is held, not written, in `pending-rule-overlaps.json` until the caller
-    explicitly admits it as distinct or names the active directive it supersedes. Supersession
+    explicitly admits it as distinct or names the active directive it supersedes; held again, it
+    refreshes its nomination and keeps what the hold already knows (rule 27b). Supersession
     preserves the old row and its provenance while excluding it from retrieval. The threshold
     nominates; it never decides — the measured corpus has two related-but-distinct pairs above it,
     and a later correction must not be mistaken for a duplicate. Clause embeddings are
@@ -679,7 +689,14 @@ own words; a self-fact offered through the real ingest verb landing as a pinned 
 hers while the user's rule beside it lands unpinned and unmarked and a note decorated with the
 marker smuggles neither; the record untouched by the decay pass at any age; the same statement
 ingested again bumping the one row rather than writing a second, a rephrase held in the rule-28
-hold with its pin and attribution, and a pinned repeat pinning an unpinned original; the record
+hold with its pin and attribution, and a pinned repeat pinning an unpinned original; the hold's
+own monotony (since the 2026-10-27 review) — a rephrase held bare through the real ingest verb
+gaining the pin and attribution from a later marked offer and keeping both against a bare one
+after, the listing showing that standing; the helper dating an undated hold once with its source,
+never overwriting a known date, every source offered kept listed, in either order, and a hold
+written before those fields read as one offer; and the journal backfill re-offering the held
+words with their stamp — the hold gaining pin, attribution, date and journal source with the bare
+source kept beside, the day's cursor still advancing, the store gaining no row; the record
 riding the recall block on an unrelated query under its own label and answering the terminology
 question through the shipped CLI; the `about` migration carrying a populated store whole; and the
 journal backfill — bounded rounds oldest first, the per-day cursor resuming, `--from`/`--to`
