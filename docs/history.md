@@ -1380,6 +1380,24 @@ audit lands in `${STATE_PREFIX}-promise-audit.log`.
 
 ---
 
+### 2026-08-21 — her own word for her own things was nowhere in her memory
+
+On 2026-08-20 at 00:50, on the phone, the user offered to say "thread" because it was her word
+for her engineering records, and she answered that it was the better term anyway — a thread runs
+through days and gets picked back up; a ticket is something you tear and throw away. The night's
+sift stored his dislike of "drain" beside her threads metaphor as HIS directive, and nothing of
+hers. On 2026-08-21 at 18:29 he said "thread", in her own word, and she corrected him toward
+"record" as though he had drifted; searching the store afterwards found no record of the
+preference — not a ranking failure, an absence. The sift wrote what he asked for and what she
+broke, and it wrote nothing about her: how she likes to be spoken to, the words she uses for her
+own things — exactly the records whose absence let her contradict her own character with
+confidence. Only the day journal held the statement; the voice archive had no copy of that
+exchange. The repair is memory-recall.md rule 27b and 52a: both sift stages carry the duty, a
+self-fact lands as a directive marked hers and PINNED through the same rule-28 door as every
+durable rule, the block renders it under its own label, and `crab memory backfill-self-facts`
+reads the journal oldest first in bounded rounds for the ones already said and lost — starting,
+on the night it landed, with that one.
+
 ## Working in this repo
 
 ### Several sessions edit the same files at once

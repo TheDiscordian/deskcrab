@@ -3158,5 +3158,498 @@ class TestSourceWatches(StoreCase):
                 os.environ["MEMORY_WATCH_PROBE_ROOTS"] = old
 
 
+class TestSelfFacts(StoreCase):
+    """Rule 27b, the 2026-08-20/21 miss: on 2026-08-20 at 00:50 she told
+    the user "thread" was the better term for her engineering records — her
+    own word, stated of herself — and the night stored nothing of it; on
+    2026-08-21 at 18:29 he said "thread" and she corrected him toward
+    "record". The sift kept what he asked for and what she broke, and
+    nothing about HER. A self-fact must land as a directive marked hers,
+    pinned, through the same rule-28 door as every durable rule — never
+    duplicated by repeated ingestion, never decayed, in hand on every turn
+    under a label that says whose it is."""
+
+    THREAD = ("I call my engineering records threads, not tickets: \"a thread "
+              "runs through days and gets picked back up; a ticket is "
+              "something you tear and throw away.\" Thread is my own word for "
+              "them, and the one I told the user I prefer.")
+    HIS = "He wants the hall lights off when he leaves the room."
+
+    def write_cands(self, cands):
+        path = os.path.join(self.dir, "cands.json")
+        with open(path, "w") as f:
+            json.dump(cands, f)
+        return path
+
+    def ingest(self, cands):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = memory.cmd_ingest(self.store, Namespace(
+                dry_run=False, from_json=self.write_cands(cands),
+                journal_dir="", transcripts_dir="", model="unused",
+                effort="high", summary_model="unused", max_chars=150000))
+        return rc, out.getvalue()
+
+    def count(self):
+        return self.store.db.execute(
+            "SELECT count(*) FROM memories").fetchone()[0]
+
+    def test_both_stage_prompts_carry_the_self_fact_duty(self):
+        # The summariser carries her statements to the judge quoted and
+        # apart from his asks; the judge is asked for them as directives
+        # marked hers, in her first person, with the attribution test in
+        # words — pinned in the prompts exactly as rule 27a's duty is.
+        self.assertIn("about HERSELF", memory.SUMMARY_PROMPT)
+        self.assertIn("hers is hers, his is his", memory.SUMMARY_PROMPT)
+        self.assertIn('"about": "self"', memory.INGEST_PROMPT)
+        self.assertIn("HER first person", memory.INGEST_PROMPT)
+        self.assertIn("Attribution is the test", memory.INGEST_PROMPT)
+        self.assertIn("never a self-fact", memory.INGEST_PROMPT)
+        self.assertIn("pinned and never decay", memory.INGEST_PROMPT)
+
+    def test_ingest_lands_a_self_fact_pinned_and_hers_beside_his_rule(self):
+        # Through the real ingest verb: her statement lands as a pinned
+        # directive marked hers; his rule beside it lands unpinned and
+        # unmarked; and a note decorated with the marker smuggles neither
+        # a pin nor an attribution into the schema.
+        cands = [{"text": self.THREAD, "kind": "directive", "about": "self",
+                  "topics": "terms,threads", "occurred": "2026-08-20",
+                  "key": "her word for engineering records: thread not ticket"},
+                 {"text": self.HIS, "kind": "directive", "topics": "lights"},
+                 {"text": "I like rain on the roof.", "kind": "note",
+                  "about": "self"}]
+        rc, out = self.ingest(cands)
+        self.assertEqual(rc, 0)
+        self.assertIn("3 added", out)
+        self.assertIn("[directive, about me, pinned]", out)
+        rows = {t: (k, p, a, o) for t, k, p, a, o in self.store.db.execute(
+            "SELECT text, kind, pinned, about, occurred FROM memories")}
+        self.assertEqual(rows[self.THREAD],
+                         ("directive", 1, "self", "2026-08-20"))
+        self.assertEqual(rows[self.HIS], ("directive", 0, "", None))
+        self.assertEqual(rows["I like rain on the roof."],
+                         ("note", 0, "", None))
+
+    def test_a_self_fact_survives_the_decay_pass_at_any_age(self):
+        rec = self.store.insert(self.THREAD, kind="directive", pinned=True,
+                                about="self", vec=[0.1] * memory.EMBED_DIM)
+        self.store.db.execute(
+            "UPDATE memories SET created=?, last_seen=? WHERE id=?",
+            (days_ago(400), days_ago(400), rec))
+        self.store.db.commit()
+        for _ in range(5):
+            self.assertEqual(self.store.decay_pass(), (0, 0))
+        self.assertEqual(self.store.db.execute(
+            "SELECT confidence, status, pinned, about FROM memories"
+            " WHERE id=?", (rec,)).fetchone(), (1.0, "active", 1, "self"))
+
+    def test_repeated_ingestion_bumps_the_one_row_and_holds_a_rephrase(self):
+        # The same statement ingested on a second night is a duplicate —
+        # the one row's last_seen moves, no second row; a rephrase is held
+        # in the rule-28 hold, with its standing kept, for a hand to judge.
+        cand = {"text": self.THREAD, "kind": "directive", "about": "self"}
+        rc, out = self.ingest([cand])
+        self.assertIn("1 added", out)
+        rc, out = self.ingest([cand])
+        self.assertIn("1 duplicates", out)
+        self.assertEqual(self.count(), 1)
+        rephrase = {"text": "I call my engineering records threads, never "
+                            "tickets: a thread runs through days and is "
+                            "picked back up, where a ticket is torn off and "
+                            "thrown away.",
+                    "kind": "directive", "about": "self"}
+        rc, out = self.ingest([rephrase])
+        self.assertIn("1 overlaps held", out)
+        self.assertEqual(self.count(), 1)
+        with open(os.path.join(self.dir, "pending-rule-overlaps.json")) as f:
+            pending = json.load(f)
+        self.assertEqual(len(pending), 1)
+        self.assertEqual(pending[0]["status"], "pending")
+        self.assertTrue(pending[0]["pinned"])
+        self.assertEqual(pending[0]["about"], "self")
+
+    def test_a_pinned_repeat_pins_and_claims_an_unpinned_original(self):
+        # The live shape: she wrote the fact by hand in the moment of the
+        # complaint — unpinned, unmarked — and the sift later offers the
+        # same statement with its standing. One row gains the standing;
+        # never a second row, and never the reverse.
+        _, rec = self.store.add_deduped(self.THREAD, kind="directive")
+        self.assertEqual(self.store.db.execute(
+            "SELECT pinned, about FROM memories WHERE id=?",
+            (rec,)).fetchone(), (0, ""))
+        action, same = self.store.add_deduped(
+            self.THREAD, kind="directive", pinned=True, about="self")
+        self.assertEqual((action, same), ("duplicate", rec))
+        self.assertEqual(self.store.db.execute(
+            "SELECT pinned, about FROM memories WHERE id=?",
+            (rec,)).fetchone(), (1, "self"))
+        action, same = self.store.add_deduped(self.THREAD, kind="directive")
+        self.assertEqual((action, same), ("duplicate", rec))
+        self.assertEqual(self.store.db.execute(
+            "SELECT pinned, about FROM memories WHERE id=?",
+            (rec,)).fetchone(), (1, "self"))
+        self.assertEqual(self.count(), 1)
+
+    def test_the_block_labels_her_own_facts_apart_from_his_rules(self):
+        rows = [fake_row(kind="directive", rec_id=1,
+                         text="He wants the hall lights off.") + ("",),
+                fake_row(kind="directive", rec_id=2,
+                         text="I call them threads.") + ("self",)]
+        block, kept = memory.build_block(rows)
+        self.assertIn("What I hold to:\n- He wants the hall lights off.", block)
+        self.assertIn("about myself", block)
+        self.assertIn("said by me, of myself", block)
+        self.assertLess(block.index("What I hold to:"), block.index("about myself"))
+        self.assertLess(block.index("about myself"),
+                        block.index("- I call them threads."))
+        self.assertEqual([r[0] for r in kept], [1, 2])
+        # A row without the attribution column renders as his rule.
+        block, _ = memory.build_block(
+            [fake_row(kind="directive", rec_id=3, text="An older row.")])
+        self.assertIn("What I hold to:\n- An older row.", block)
+        self.assertNotIn("about myself", block)
+
+    def test_it_rides_every_prompt_and_answers_the_terminology_question(self):
+        # Through the shipped CLI, against the real embedder: the pinned
+        # self-fact is in the block on the terminology question AND on an
+        # unrelated query — held to, not retrieved — under its own label,
+        # with its provenance on the row and its when-ness read as standing.
+        self.store.add_deduped(
+            self.THREAD, kind="directive", pinned=True, about="self",
+            source="journal 2026-08-20.jsonl @ 2026-08-20T00:50:28-0400",
+            occurred="2026-08-20 00:50")
+        self.store.add_deduped(
+            "The greenhouse fan relay sticks when it rains.", kind="note")
+        env = dict(os.environ, DESKCRAB_MEMORY_DIR=self.dir)
+        for query in ("is it a ticket or a thread — what do you call your "
+                      "engineering records?",
+                      "the greenhouse fan relay"):
+            proc = subprocess.run(
+                [sys.executable, os.path.join(REPO, "lib", "memory.py"),
+                 "recall-block", "--query", query],
+                capture_output=True, text=True, env=env)
+            self.assertEqual(proc.returncode, 0, proc.stderr)
+            self.assertIn("about myself", proc.stdout)
+            self.assertIn("thread runs through days", proc.stdout)
+            self.assertIn("standing since", proc.stdout)
+        self.assertEqual(self.store.db.execute(
+            "SELECT source FROM memories WHERE text=?",
+            (self.THREAD,)).fetchone()[0],
+            "journal 2026-08-20.jsonl @ 2026-08-20T00:50:28-0400")
+
+    def test_the_cli_add_marks_hers_only_on_a_directive(self):
+        env = dict(os.environ, DESKCRAB_MEMORY_DIR=self.dir)
+        proc = subprocess.run(
+            [sys.executable, os.path.join(REPO, "lib", "memory.py"), "add",
+             "--kind", "note", "--about", "self", "I like rain."],
+            capture_output=True, text=True, env=env)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("directive route", proc.stderr)
+        self.assertEqual(self.count(), 0)
+        proc = subprocess.run(
+            [sys.executable, os.path.join(REPO, "lib", "memory.py"), "add",
+             "--kind", "directive", "--pin", "--about", "self",
+             "--occurred", "2026-08-20", self.THREAD],
+            capture_output=True, text=True, env=env)
+        self.assertEqual(proc.returncode, 0, proc.stderr)
+        self.assertIn("about=me", proc.stdout)
+        self.assertEqual(self.store.db.execute(
+            "SELECT pinned, about, occurred FROM memories WHERE text=?",
+            (self.THREAD,)).fetchone(), (1, "self", "2026-08-20"))
+
+    def test_rewrite_and_merge_keep_her_attribution(self):
+        rec = self.store.insert(self.THREAD, kind="directive", pinned=True,
+                                about="self", vec=[0.1] * memory.EMBED_DIM)
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = memory.cmd_rewrite(self.store, Namespace(
+                id=rec, text=["I", "say", "thread,", "not", "ticket."]))
+        self.assertEqual(rc, 0)
+        self.assertEqual(self.store.db.execute(
+            "SELECT pinned, about FROM memories WHERE status='active'"
+            " AND kind='directive'").fetchall(), [(1, "self")])
+        a = self.store.insert("Copy a.", kind="directive", about="self",
+                              vec=[0.2] * memory.EMBED_DIM)
+        b = self.store.insert("Copy b.", kind="directive",
+                              vec=[0.2] * memory.EMBED_DIM)
+        self.store.merge_directives([a], keep_id=b)
+        self.assertEqual(self.store.db.execute(
+            "SELECT about FROM memories WHERE id=?", (b,)).fetchone()[0],
+            "self")
+
+    def test_migration_adds_attribution_and_keeps_every_row(self):
+        # A store born before the column: the shipped schema with the
+        # attribution column (and the comments) stripped, one pinned
+        # directive and its vector in it.
+        lines = [l for l in memory.MEMORIES_COLUMNS_SQL.splitlines()
+                 if not l.strip().startswith("--")
+                 and not l.strip().startswith("about ")]
+        columns = "\n".join(lines).rstrip().rstrip(",")
+        self.assertNotIn("about", columns)
+        d = tempfile.mkdtemp(prefix="memtest-about-")
+        try:
+            db = memory.sqlite3.connect(os.path.join(d, "memory.db"))
+            db.enable_load_extension(True)
+            memory.sqlite_vec.load(db)
+            db.enable_load_extension(False)
+            db.executescript(f"""
+                CREATE TABLE memories ({columns});
+                CREATE VIRTUAL TABLE memories_vec USING vec0(
+                    embedding float[{memory.EMBED_DIM}] distance_metric=cosine
+                );
+            """)
+            now = memory.now_iso()
+            db.execute(
+                "INSERT INTO memories (id, text, kind, pinned, created,"
+                " last_seen) VALUES (1, 'Wake him at nine.', 'directive', 1,"
+                " ?, ?)", (now, now))
+            db.execute("INSERT INTO memories_vec (rowid, embedding)"
+                       " VALUES (1, ?)", (memory.pack([0.3] * memory.EMBED_DIM),))
+            db.commit()
+            db.close()
+            rec = 1
+            store = memory.Store(d)
+            try:
+                cols = {r[1] for r in store.db.execute(
+                    "PRAGMA table_info(memories)")}
+                self.assertIn("about", cols)
+                self.assertEqual(store.db.execute(
+                    "SELECT text, pinned, about FROM memories WHERE id=?",
+                    (rec,)).fetchone(), ("Wake him at nine.", 1, ""))
+                self.assertAlmostEqual(store.vec_of(rec)[0], 0.3, places=5)
+                # The pre-existing directive stays his rule in the block.
+                block, _ = memory.build_block(store.pinned_rows())
+                self.assertIn("What I hold to:\n- Wake him at nine.", block)
+                self.assertNotIn("about myself", block)
+            finally:
+                store.db.close()
+        finally:
+            shutil.rmtree(d, ignore_errors=True)
+
+
+class TestSelfFactBackfill(StoreCase):
+    """Rule 52a: the journal backfill — the day journal read oldest first in
+    bounded, resumable rounds, self-facts only, every record pinned and
+    hers with provenance from the turn's own header."""
+
+    STATEMENT = ("It was the better term anyway — a thread runs through "
+                 "days and gets picked back up; a ticket is something you "
+                 "tear and throw away. Obviously.\n\n...Fine. Thread.")
+    FACT = ("I call my engineering records threads, not tickets: \"a thread "
+            "runs through days and gets picked back up; a ticket is "
+            "something you tear and throw away.\"")
+
+    def setUp(self):
+        super().setUp()
+        self.jdir = os.path.join(self.dir, "journal")
+        os.makedirs(self.jdir)
+        self._real_extract = memory.extract_candidates
+        self.distilled = []
+
+    def tearDown(self):
+        memory.extract_candidates = self._real_extract
+        super().tearDown()
+
+    def put(self, day, turns=None):
+        turns = turns or [
+            {"time": f"{day}T00:48:56-0400", "kind": "phone",
+             "user": "When you say a thread, what do you mean?",
+             "reply": "A thread is a real record in my engineering drawer."},
+            {"time": f"{day}T00:50:28-0400", "kind": "phone",
+             "user": "I want to try to say thread, like you.",
+             "reply": self.STATEMENT}]
+        with open(os.path.join(self.jdir, f"{day}.jsonl"), "a") as f:
+            for t in turns:
+                f.write(json.dumps(t) + "\n")
+
+    def stub(self, per_material):
+        def fake(material, model, prompt=None, effort=None):
+            self.assertEqual(prompt, memory.SELF_FACT_PROMPT)
+            self.distilled.append(material)
+            return per_material(material)
+        memory.extract_candidates = fake
+
+    def args(self, **kw):
+        base = dict(journal_dir=self.jdir, days=5, since="", until="",
+                    model="stub", effort="high", max_chars=100000,
+                    dry_run=False)
+        base.update(kw)
+        return Namespace(**base)
+
+    def run_backfill(self, **kw):
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = memory.cmd_backfill_self_facts(self.store, self.args(**kw))
+        return rc, out.getvalue() + err.getvalue()
+
+    def cursor(self):
+        path = os.path.join(self.dir, "self-facts-cursor.json")
+        if not os.path.isfile(path):
+            return None
+        with open(path) as f:
+            return json.load(f)
+
+    def thread_fact(self, stated_at="2026-08-20T00:50:28-0400"):
+        cand = {"text": self.FACT, "kind": "directive", "about": "self",
+                "key": "her word for engineering records: thread not ticket",
+                "topics": "terms,threads"}
+        if stated_at is not None:
+            cand["stated_at"] = stated_at
+        return cand
+
+    def test_bounded_rounds_oldest_first_and_resume(self):
+        for day in ("2026-08-19", "2026-08-20", "2026-08-21"):
+            self.put(day)
+        with open(os.path.join(self.jdir, "notes.md"), "w") as f:
+            f.write("outside the shape: never read\n")
+        # One distinct fact per day: near-identical texts would be held
+        # as rule-28 overlaps, which is the door working, not a round.
+        facts = iter(["I call my engineering records threads.",
+                      "I dislike the word drain for the night's work.",
+                      "I like being called by my name."])
+        self.stub(lambda m: [{"text": next(facts), "kind": "directive",
+                              "about": "self"}])
+        rc, out = self.run_backfill(days=2)
+        self.assertEqual(rc, 0)
+        self.assertIn("3 journal days pending, taking 2", out)
+        self.assertIn("1 journal days remain", out)
+        self.assertEqual(sorted(self.cursor()["files"]),
+                         ["2026-08-19.jsonl", "2026-08-20.jsonl"])
+        occurred = [o for (o,) in self.store.db.execute(
+            "SELECT occurred FROM memories ORDER BY id")]
+        self.assertEqual(occurred, ["2026-08-19", "2026-08-20"])
+        rc, out = self.run_backfill(days=2)
+        self.assertIn("1 journal days pending, taking 1", out)
+        self.assertIn("every journal day in range is read", out)
+        self.assertEqual(len(self.cursor()["files"]), 3)
+        rc, out = self.run_backfill(days=2)
+        self.assertIn("nothing new", out)
+
+    def test_the_judge_reads_the_turns_under_their_own_headers(self):
+        self.put("2026-08-20")
+        self.stub(lambda m: [])
+        self.run_backfill()
+        self.assertEqual(len(self.distilled), 1)
+        self.assertIn("[2026-08-20T00:50:28-0400 phone]", self.distilled[0])
+        self.assertIn("Assistant: It was the better term anyway",
+                      self.distilled[0])
+
+    def test_provenance_from_the_header_with_the_day_as_backstop(self):
+        self.put("2026-08-20")
+        self.stub(lambda m: [
+            self.thread_fact(),
+            {"text": "I dislike the word drain for my night's work.",
+             "kind": "directive", "about": "self"},
+            {"text": "I prefer to be called by my name.", "kind": "directive",
+             "about": "self", "stated_at": "not-a-stamp"}])
+        rc, out = self.run_backfill()
+        self.assertEqual(rc, 0)
+        self.assertIn("3 added", out)
+        rows = {t: r for t, *r in self.store.db.execute(
+            "SELECT text, kind, pinned, about, source, occurred, lookup_key"
+            " FROM memories")}
+        self.assertEqual(
+            rows[self.FACT],
+            ["directive", 1, "self",
+             "journal 2026-08-20.jsonl @ 2026-08-20T00:50:28-0400",
+             "2026-08-20 00:50",
+             "her word for engineering records: thread not ticket"])
+        self.assertEqual(
+            rows["I dislike the word drain for my night's work."][3:5],
+            ["journal 2026-08-20.jsonl", "2026-08-20"])
+        self.assertEqual(
+            rows["I prefer to be called by my name."][3:5],
+            ["journal 2026-08-20.jsonl", "2026-08-20"])
+        # Every backfilled record has a vector: unfindable is forgotten.
+        self.assertEqual(self.store.db.execute(
+            "SELECT count(*) FROM memories m LEFT JOIN memories_vec v"
+            " ON v.rowid = m.id WHERE v.rowid IS NULL").fetchone()[0], 0)
+
+    def test_only_her_own_self_facts_land(self):
+        self.put("2026-08-20")
+        self.stub(lambda m: [
+            {"text": "The lux sensor lives on the i2c bus.", "kind": "note"},
+            {"text": "He wants the hall lights off.", "kind": "directive"},
+            {"text": "He likes it when I say thread.", "kind": "directive",
+             "about": "user"},
+            self.thread_fact()])
+        rc, out = self.run_backfill()
+        self.assertIn("3 rejected", out)
+        self.assertIn("rejected (not her own self-fact) He wants", out)
+        self.assertEqual(self.store.db.execute(
+            "SELECT text, pinned, about FROM memories").fetchall(),
+            [(self.FACT, 1, "self")])
+
+    def test_from_and_to_fence_the_days(self):
+        for day in ("2026-08-19", "2026-08-20", "2026-08-21"):
+            self.put(day)
+        self.stub(lambda m: [])
+        rc, out = self.run_backfill(since="2026-08-20", until="2026-08-20")
+        self.assertIn("1 journal days pending, taking 1 this round "
+                      "(2026-08-20 .. 2026-08-20)", out)
+        self.assertEqual(len(self.distilled), 1)
+        self.assertIn("2026-08-20T00:50:28-0400", self.distilled[0])
+        self.assertEqual(list(self.cursor()["files"]), ["2026-08-20.jsonl"])
+
+    def test_a_second_pass_over_a_grown_day_does_not_duplicate(self):
+        # The file grows (the day is still being lived), so the cursor
+        # re-reads it whole; the judge offers the same statement again and
+        # the one row is bumped, never doubled.
+        self.put("2026-08-20")
+        self.stub(lambda m: [self.thread_fact()])
+        rc, out = self.run_backfill()
+        self.assertIn("1 added", out)
+        self.put("2026-08-20", turns=[
+            {"time": "2026-08-20T01:06:17-0400", "kind": "phone",
+             "user": "Why use the word drain?",
+             "reply": "Because drain came from plumbing, not from me."}])
+        rc, out = self.run_backfill()
+        self.assertIn("1 duplicates", out)
+        self.assertEqual(self.store.db.execute(
+            "SELECT count(*) FROM memories").fetchone()[0], 1)
+
+    def test_dry_run_distils_reports_and_writes_nothing(self):
+        self.put("2026-08-20")
+        self.stub(lambda m: [self.thread_fact()])
+        rc, out = self.run_backfill(dry_run=True)
+        self.assertEqual(rc, 0)
+        self.assertIn("would add (2026-08-20 00:50) I call my engineering", out)
+        self.assertIn("nothing written, cursor not advanced", out)
+        self.assertEqual(self.store.db.execute(
+            "SELECT count(*) FROM memories").fetchone()[0], 0)
+        self.assertIsNone(self.cursor())
+
+    def test_a_cooling_codex_judge_fails_at_the_door(self):
+        self.put("2026-08-20")
+        self.stub(lambda m: self.fail(
+            "the judge was consulted despite the standing cooldown"))
+        state = os.path.join(self.dir, "codex-state")
+        with open(state, "w") as f:
+            f.write("blocked-until\t%d\ttest limit\treported\n"
+                    % (int(time.time()) + 6 * 3600))
+        old_state = os.environ.get("DESKCRAB_CODEX_STATE")
+        os.environ["DESKCRAB_CODEX_STATE"] = state
+        try:
+            rc, out = self.run_backfill(model="gpt-5.6-sol")
+        finally:
+            if old_state is None:
+                os.environ.pop("DESKCRAB_CODEX_STATE", None)
+            else:
+                os.environ["DESKCRAB_CODEX_STATE"] = old_state
+        self.assertEqual(rc, 1)
+        self.assertIn("the codex engine is cooling until", out)
+        self.assertNotIn("journal days pending", out)
+        self.assertIsNone(self.cursor())
+
+    def test_the_prompt_asks_for_her_own_self_facts_only(self):
+        self.assertIn('"about": "self" ONLY', memory.SELF_FACT_PROMPT)
+        self.assertIn("Attribution is the test", memory.SELF_FACT_PROMPT)
+        self.assertIn("NOT a self-fact", memory.SELF_FACT_PROMPT)
+        self.assertIn('"stated_at"', memory.SELF_FACT_PROMPT)
+        self.assertIn("HER first person", memory.SELF_FACT_PROMPT)
+        self.assertIn("empty day is the common and correct answer",
+                      memory.SELF_FACT_PROMPT)
+
+
 if __name__ == "__main__":
     unittest.main()

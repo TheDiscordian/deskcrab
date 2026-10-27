@@ -2,8 +2,8 @@
 
 ## PURPOSE
 
-The long-term store holds five kinds of record: directives, which are the user's standing rules;
-notes, which are her own soft memory; episodic records, each one moment of her own life kept for
+The long-term store holds five kinds of record: directives, which are the user's standing rules —
+and, marked as hers, the facts she has stated about herself (rule 27b); notes, which are her own soft memory; episodic records, each one moment of her own life kept for
 itself — what happened, when, who was there, and what she made of it; observations, each the shape
 of one night — gaps, texture, recurrence, unfinished threads; and misses, each a question about the
 user that a record could have answered and none did. This spec owns what the store is asked, what
@@ -212,6 +212,33 @@ life, and she re-reads that store every single turn.
     records: the directive holds his rule, the note holds that SHE owed the work and the day
     closed without it. A fulfilled or lapsed commitment note then fades on rule 26's own clock —
     nothing keeps it alive but the judge crediting it.)
+27b. **A fact she states about HERSELF MUST survive the night as a pinned directive, attributed to
+    her.** When the day's material shows the assistant explicitly stating a preference of her own
+    — the term she uses for her own things, how she likes to be addressed or spoken to, a like or
+    dislike she declares as hers — the summariser MUST carry the statement to the judge quoted and
+    marked as hers, and the judge MUST be asked for it as a `directive` carrying `about: self`,
+    written in her first person and quoting her own words. The ingest lands such a candidate
+    PINNED: a self-fact is held to, not retrieved — it must be in hand on every turn, because the
+    turn it is needed on is exactly the one whose words do not resemble it (a terminology slip is
+    corrected in the words of the slip, never the words of the preference). Pinned directives never
+    decay (rule 26) and ride every prompt regardless of score (rule 13); the block renders them
+    under their own label, apart from the user's rules, so the attribution is visible where she
+    reads it. Attribution is the discrimination test, put to the judge in words: a self-fact is
+    one SHE stated of herself; the user wishing something of her is HIS directive and never a
+    self-fact, and a self-fact is never rewritten as his preference. The marker rides only on
+    directives — a note decorated with `about: self` becomes neither pinned nor hers — and only
+    through rule 28's door: an exact repeat bumps the existing row (and pins it, and marks it hers,
+    where the earlier write had neither — new standing for an old record, never a second record,
+    as rule 39 fills an unknown date), a rephrase is held for a hand's judgement with its pin and
+    attribution kept in the hold, and no parallel path writes a self-fact around the preflight.
+    The dated miss: on 2026-08-20 at 00:50, when the user offered to say "thread" because it was
+    her word, she answered "It was the better term anyway — a thread runs through days and gets
+    picked back up; a ticket is something you tear and throw away. … Fine. Thread." The night
+    stored his dislike of "drain" beside her threads metaphor as HIS directive and nothing of
+    hers; on 2026-08-21 at 18:29 he said "thread", in her own word, and she corrected him toward
+    "record" — and searching afterwards found no record: not a ranking failure, an absence. The
+    sift wrote what he asked for and what she broke and nothing about her, which are precisely the
+    records whose absence makes her contradict her own character with confidence.
 28. Durable-rule deduplication is a three-way judgement, fed by measured thresholds. An exact
     normalised same-kind match bumps last-seen. Every clause of a proposed `directive` is embedded
     separately and compared at `0.86` against every clause of every active directive **and every
@@ -481,6 +508,20 @@ life, and she re-reads that store every single turn.
     moments ONLY — a months-old transcript's directives and notes are stale by construction and
     MUST NOT be resurrected by this path. `--dry-run` obeys rule 41's discipline: distil, report,
     write nothing, advance nothing.
+52a. The self-fact backfill. `crab memory backfill-self-facts` reads the day journal — the durable
+    per-day record of every finished turn, where the 2026-08-20 statement of rule 27b actually
+    lives (the voice archive of rule 52 holds no copy of that exchange) — OLDEST FIRST in bounded
+    rounds, at most `--days` journal days per invocation, optionally fenced by `--from` and `--to`,
+    under rule 52's cursor discipline: a durable `self-facts-cursor.json` (name and size per journal
+    file) advances after each finished day, and a file already ingested at its recorded size is
+    never re-read. The judge reads each day's raw turns itself, windowed under rule 29, against a
+    prompt that asks for self-facts ONLY: a candidate that is not a `directive` with `about: self`
+    is rejected at the door, counted and named — a months-old note or a user's rule is not
+    resurrected by this path, exactly as rule 52 refuses lessons. Every record lands through rule
+    28's door, pinned and hers, carrying provenance: `source` names the journal file and the turn
+    header stamp at which she said it, `occurred` is that stamp — falling back to the file's own
+    day, which is knowledge, not a guess — and the text quotes her words. `--dry-run` obeys rule
+    41, and rule 30a's cooldown gate stands at this door too.
 
 ### Isolation
 
@@ -501,6 +542,7 @@ life, and she re-reads that store every single turn.
 | `~/.local/share/deskcrab/memory/pending-rule-overlaps.json` | directive or conduct candidates held by rule 28 until an explicit distinct/supersede judgement resolves them |
 | `~/.local/share/deskcrab/memory/ingest-cursor.json` | byte offsets and sizes per ingested source |
 | `~/.local/share/deskcrab/memory/archive-cursor.json` | the episodic backfill's durable cursor: name and size per archive file already ingested (rule 52) |
+| `~/.local/share/deskcrab/memory/self-facts-cursor.json` | the self-fact backfill's durable cursor: name and size per journal file already read (rule 52a) |
 | `~/.local/share/deskcrab/venv` | the interpreter with the vector extension |
 | `${STATE_PREFIX}-memory-recall.log` | one line per clip; the degradation channel |
 | `${STATE_PREFIX}-memory-injected-<pid>.json` | which records reached this prompt |
@@ -512,7 +554,10 @@ when, who was there, her own opinion of it; never decayed, retrieved by similari
 rules 46 to 52), `observation` (one night's shape — never decayed, never deduplicated, never
 retrieved by similarity into a prompt; rules 42 to 45) and `miss` (one asking she had nothing for —
 same lifecycle and same exclusion, harder edge). Episodic rows carry two fields of their own,
-`participants` and `opinion`, both rendered by the block and both part of what is embedded.
+`participants` and `opinion`, both rendered by the block and both part of what is embedded. Every
+row carries `about`: empty for the ordinary case, `self` on a directive that is a fact the
+assistant stated about herself (rule 27b) — pinned, rendered under its own label, never read as
+the user's rule.
 
 Temporal fields, distinct on purpose: `created` (when the record was written), `last_seen` (when
 retrieval last surfaced it), `last_used_at` (when the judge last credited it), and `occurred` (when
@@ -628,6 +673,18 @@ embedded, retrievable, and ranked first in the note pool when its subject return
 use or point of confidence from being returned until the judge credits it; and rule 29's
 transcript half — a transcription file past the cap arriving as successive labelled parts with
 every byte present, never head-trimmed),
+and, since 2026-10-27, the self-fact contract of rules 27b and 52a (`TestSelfFacts`,
+`TestSelfFactBackfill`): both stage prompts carrying the duty and the attribution test in their
+own words; a self-fact offered through the real ingest verb landing as a pinned directive marked
+hers while the user's rule beside it lands unpinned and unmarked and a note decorated with the
+marker smuggles neither; the record untouched by the decay pass at any age; the same statement
+ingested again bumping the one row rather than writing a second, a rephrase held in the rule-28
+hold with its pin and attribution, and a pinned repeat pinning an unpinned original; the record
+riding the recall block on an unrelated query under its own label and answering the terminology
+question through the shipped CLI; the `about` migration carrying a populated store whole; and the
+journal backfill — bounded rounds oldest first, the per-day cursor resuming, `--from`/`--to`
+fences, provenance from the turn header with the file's day as the backstop, anything that is not
+her own self-fact rejected at the door, the dry run writing nothing),
 `tests/test_recall_composition.sh` (the composed query proven through prompt assembly with the real
 module), `tests/test_recall_query_composition.sh` (since 2026-08-15, the same query proven with
 NOTHING replaced: `crab remote` and `crab wake` — the entry points the live turn and the live wake

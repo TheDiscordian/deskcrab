@@ -337,7 +337,15 @@ MEMORIES_COLUMNS_SQL = """
     -- blurs toward the corpus mean and the floors stop selecting. Empty
     -- means the record's text is what its embedding holds; the nightly
     -- backfill-keys pass closes that gap.
-    lookup_key TEXT NOT NULL DEFAULT ''
+    lookup_key TEXT NOT NULL DEFAULT '',
+    -- Attribution (memory-recall.md rule 27b): 'self' marks a directive as
+    -- a fact the assistant stated about HERSELF — the term she uses for her
+    -- own things, how she likes to be spoken to, a like or dislike she
+    -- declared as hers. Empty is the ordinary case: an unmarked directive
+    -- is the user's rule. The marker rides only on directives, which land
+    -- pinned, so a self-fact is in hand every turn and never decays; the
+    -- block renders them under their own label, apart from his rules.
+    about      TEXT NOT NULL DEFAULT ''
 """
 
 WATCH_KINDS = ("file", "tree", "eng", "probe")
@@ -968,6 +976,13 @@ class Store:
             self.db.execute("ALTER TABLE memories ADD COLUMN lookup_key"
                             " TEXT NOT NULL DEFAULT ''")
             self.db.commit()
+        # Stores born before self-facts (rule 27b): the attribution column
+        # arrives empty — every existing directive stays the user's rule
+        # until a write marks it hers.
+        if "about" not in cols:
+            self.db.execute("ALTER TABLE memories ADD COLUMN about"
+                            " TEXT NOT NULL DEFAULT ''")
+            self.db.commit()
         self._widen_kind_check()
 
     def pending_watch_notes(self):
@@ -1076,7 +1091,8 @@ class Store:
             return
         cols = ("id, text, kind, pinned, source, topics, confidence, status,"
                 " supersedes, superseded_by, created, last_seen, last_used_at,"
-                " use_count, occurred, participants, opinion, lookup_key")
+                " use_count, occurred, participants, opinion, lookup_key,"
+                " about")
         self.db.executescript(f"""
             BEGIN;
             CREATE TABLE memories_migrate ({MEMORIES_COLUMNS_SQL});
@@ -1101,7 +1117,7 @@ class Store:
 
     def insert(self, text, kind="note", pinned=False, source="self",
                topics="", vec=None, occurred=None, participants="",
-               opinion="", lookup_key=""):
+               opinion="", lookup_key="", about=""):
         # The key is what retrieval matches on when one exists (rule 13b);
         # the record text is what a hit delivers, whole, either way.
         if vec is None:
@@ -1110,11 +1126,11 @@ class Store:
         now = now_iso()
         cur = self.db.execute(
             "INSERT INTO memories (text, kind, pinned, source, topics, created,"
-            " last_seen, occurred, participants, opinion, lookup_key)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            " last_seen, occurred, participants, opinion, lookup_key, about)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
             (text, kind, 1 if pinned else 0, source, topics, now, now,
              occurred or None, participants or "", opinion or "",
-             lookup_key or ""))
+             lookup_key or "", about or ""))
         self.db.execute("INSERT INTO memories_vec (rowid, embedding) VALUES (?,?)",
                         (cur.lastrowid, pack(vec)))
         self.db.commit()
@@ -1171,7 +1187,7 @@ class Store:
                 "SELECT m.id, m.text, m.kind, m.pinned, m.source, m.topics,"
                 "       m.confidence, m.created, m.last_seen,"
                 "       1.0 - v.distance AS sim, m.last_used_at, m.use_count,"
-                "       m.occurred, m.participants, m.opinion"
+                "       m.occurred, m.participants, m.opinion, m.about"
                 " FROM memories_vec v JOIN memories m ON m.id = v.rowid"
                 f" WHERE {where} ORDER BY v.distance", params).fetchall())
         rows.sort(key=lambda row: row[9], reverse=True)
@@ -1187,7 +1203,7 @@ class Store:
             return []
         q = ("SELECT id, text, kind, pinned, source, topics, confidence,"
              "       created, last_seen, 1.0, last_used_at, use_count,"
-             "       occurred, participants, opinion"
+             "       occurred, participants, opinion, about"
              " FROM memories WHERE status='active' AND kind='episodic'"
              "   AND occurred IS NOT NULL AND date(occurred) IN (%s)"
              " ORDER BY occurred" % ",".join("?" * len(dates)))
@@ -1387,7 +1403,7 @@ class Store:
 
     def add_deduped(self, text, kind="note", pinned=False, source="self",
                     topics="", occurred=None, participants="", opinion="",
-                    lookup_key=""):
+                    lookup_key="", about=""):
         """Insert with the ingest rules: same-kind exact text -> skip and bump
         last_seen; same-kind similar-but-different -> the new record
         supersedes the old. Returns (action, id). A duplicate that arrives
@@ -1421,12 +1437,23 @@ class Store:
             if occurred and not best[12]:
                 self.db.execute("UPDATE memories SET occurred=? WHERE id=?",
                                 (occurred, best[0]))
+            # Rule 27b: a repeat arriving with standing the earlier write
+            # lacked — a pin, her own attribution — gives it to the ONE row,
+            # exactly as a date fills an unknown `occurred`: new standing
+            # for an old record, never a second record, never the reverse.
+            if pinned and not best[3]:
+                self.db.execute("UPDATE memories SET pinned=1 WHERE id=?",
+                                (best[0],))
+            if about and not best[15]:
+                self.db.execute("UPDATE memories SET about=? WHERE id=?",
+                                (about, best[0]))
             self.db.commit()
             return "duplicate", best[0]
         if kind == "directive":
             overlaps = self.rule_overlaps(text)
             if overlaps:
-                self.queue_rule_overlap(text, source, topics, occurred, overlaps)
+                self.queue_rule_overlap(text, source, topics, occurred, overlaps,
+                                        pinned=pinned, about=about)
                 # An overlap is neither a duplicate nor a supersession until
                 # somebody judges it.  Returning the nominated memory id (or
                 # zero for conduct) gives CLI callers a useful reference
@@ -1438,7 +1465,8 @@ class Store:
                 kind != "episodic" or _same_day(occurred, best[12])):
             new_id = self.insert(text, kind, pinned, source, topics, vec=vec,
                                  occurred=occurred, participants=participants,
-                                 opinion=opinion, lookup_key=lookup_key)
+                                 opinion=opinion, lookup_key=lookup_key,
+                                 about=about)
             self.db.execute(
                 "UPDATE memories SET status='superseded', superseded_by=?"
                 " WHERE id=?", (new_id, best[0]))
@@ -1449,24 +1477,25 @@ class Store:
             return "superseded", new_id
         return "added", self.insert(text, kind, pinned, source, topics, vec=vec,
                                     occurred=occurred, participants=participants,
-                                    opinion=opinion, lookup_key=lookup_key)
+                                    opinion=opinion, lookup_key=lookup_key,
+                                    about=about)
 
     def add_distinct_directive(self, text, pinned=False, source="self",
-                               topics="", occurred=None):
+                               topics="", occurred=None, about=""):
         """Admit a preflight-nominated rule after an explicit judgement."""
         rec_id = self.insert(text, "directive", pinned, source, topics,
-                             occurred=occurred)
+                             occurred=occurred, about=about)
         self.resolve_rule_overlap(text, "distinct", rec_id)
         return rec_id
 
     def supersede_directive(self, old_id, text, pinned=False, source="self",
-                            topics="", occurred=None):
+                            topics="", occurred=None, about=""):
         old = self.db.execute(
             "SELECT kind, status FROM memories WHERE id=?", (old_id,)).fetchone()
         if old != ("directive", "active"):
             raise ValueError(f"#{old_id} is not an active directive")
         new_id = self.insert(text, "directive", pinned, source, topics,
-                             occurred=occurred)
+                             occurred=occurred, about=about)
         self.db.execute("UPDATE memories SET status='superseded',"
                         " superseded_by=? WHERE id=?", (new_id, old_id))
         self.close_watches(old_id)
@@ -1531,23 +1560,27 @@ class Store:
         if keep_id is None:
             keep_id = self.insert(text, "directive", pinned, source, topics)
         marks = ",".join("?" * len(dup_ids))
-        absorbed_use, absorbed_last, absorbed_pin = self.db.execute(
-            f"SELECT coalesce(sum(use_count),0), max(last_used_at),"
-            f" max(pinned) FROM memories WHERE id IN ({marks})",
-            dup_ids).fetchone()
+        absorbed_use, absorbed_last, absorbed_pin, absorbed_about = \
+            self.db.execute(
+                f"SELECT coalesce(sum(use_count),0), max(last_used_at),"
+                f" max(pinned), max(about) FROM memories WHERE id IN ({marks})",
+                dup_ids).fetchone()
         for rec_id in dup_ids:
             self.db.execute(
                 "UPDATE memories SET status='superseded', superseded_by=?"
                 " WHERE id=?", (keep_id, rec_id))
-        keep_use, keep_last, keep_pin = self.db.execute(
-            "SELECT use_count, last_used_at, pinned FROM memories WHERE id=?",
-            (keep_id,)).fetchone()
+        keep_use, keep_last, keep_pin, keep_about = self.db.execute(
+            "SELECT use_count, last_used_at, pinned, about FROM memories"
+            " WHERE id=?", (keep_id,)).fetchone()
+        # A pin travels to the survivor, and so does her attribution (rule
+        # 27b): a family that was hers stays hers.
         self.db.execute(
             "UPDATE memories SET use_count=?, last_used_at=?, pinned=?,"
-            " last_seen=? WHERE id=?",
+            " about=?, last_seen=? WHERE id=?",
             (keep_use + (absorbed_use or 0),
              max(filter(None, [keep_last, absorbed_last]), default=None),
-             1 if (keep_pin or absorbed_pin) else 0, now_iso(), keep_id))
+             1 if (keep_pin or absorbed_pin) else 0,
+             keep_about or absorbed_about or "", now_iso(), keep_id))
         self.db.commit()
         return keep_id
 
@@ -1680,8 +1713,11 @@ class Store:
         hits.sort(key=lambda h: h["similarity"], reverse=True)
         return hits
 
-    def queue_rule_overlap(self, text, source, topics, occurred, hits):
-        """Keep a rejected candidate durable so preflight cannot lose it."""
+    def queue_rule_overlap(self, text, source, topics, occurred, hits,
+                           pinned=False, about=""):
+        """Keep a rejected candidate durable so preflight cannot lose it —
+        with its standing: a held self-fact (rule 27b) is still pinned and
+        still hers when a hand admits it."""
         path = os.path.join(self.dir, "pending-rule-overlaps.json")
         try:
             with open(path) as f:
@@ -1698,7 +1734,8 @@ class Store:
         else:
             rows.append({"id": key, "status": "pending", "created": now,
                          "last_seen": now, "text": text, "source": source,
-                         "topics": topics, "occurred": occurred, "hits": hits})
+                         "topics": topics, "occurred": occurred, "hits": hits,
+                         "pinned": bool(pinned), "about": about or ""})
         tmp = path + f".tmp.{os.getpid()}"
         with open(tmp, "w") as f:
             json.dump(rows, f, indent=2)
@@ -1732,7 +1769,7 @@ class Store:
         return self.db.execute(
             "SELECT id, text, kind, pinned, source, topics, confidence,"
             "       created, last_seen, 1.0, last_used_at, use_count, occurred,"
-            "       participants, opinion"
+            "       participants, opinion, about"
             " FROM memories WHERE status='active' AND pinned=1"
             "   AND kind NOT IN ('observation','miss')"
             " ORDER BY kind DESC, id").fetchall()
@@ -2122,7 +2159,13 @@ def build_block(rows, warning="", pending_note_ids=()):
             rendered += " — SOURCE CHANGED; VERIFY BEFORE USE"
         return rendered
 
-    directives = [r for r in rows if r[2] == "directive"]
+    def hers(r):
+        return len(r) > 15 and r[15] == "self"
+
+    directives = [r for r in rows if r[2] == "directive" and not hers(r)]
+    # Rule 27b: the facts she stated about herself, apart from his rules
+    # and labelled as hers — the label IS the attribution, where she reads.
+    self_facts = [r for r in rows if r[2] == "directive" and hers(r)]
     notes = [r for r in rows if r[2] == "note"]
     episodic = [r for r in rows if r[2] == "episodic"]
     # Retrieval never hands the hidden kinds in (rule 43); these sections
@@ -2139,6 +2182,10 @@ def build_block(rows, warning="", pending_note_ids=()):
     if directives:
         out.append("\nWhat I hold to:")
         out.extend(line(r, directive=True) for r in directives)
+    if self_facts:
+        out.append("\nWhat I hold to about myself (said by me, of myself — "
+                   "my own words, not his asks):")
+        out.extend(line(r, directive=True) for r in self_facts)
     if notes:
         out.append("\nWhat I know from my own time:")
         out.extend(line(r) for r in notes)
@@ -2165,7 +2212,8 @@ def build_block(rows, warning="", pending_note_ids=()):
         out.append("\nWhat I was asked and had nothing for (one asking each "
                    "— never to be spoken as a pattern):")
         out.extend(line(r) for r in misses)
-    return "\n".join(out), directives + notes + episodic + observations + misses
+    return "\n".join(out), (directives + self_facts + notes + episodic
+                            + observations + misses)
 
 
 def format_block(rows, warning=""):
@@ -2254,6 +2302,10 @@ stated, QUOTED in his own words;
 - every commitment or assurance the ASSISTANT gave — work promised, plans \
 agreed, anything she said would be done or handled — QUOTED, and whether \
 the day's own record shows it done;
+- every explicit statement the ASSISTANT made about HERSELF — a term she \
+prefers for her own things, how she likes to be addressed or spoken to, a \
+like or dislike she declared as her own — QUOTED in her words with the time, \
+and kept apart from what the user asked of her: hers is hers, his is his;
 - what the assistant finished, discovered, or was proven wrong about;
 - stable facts about the machine, people, or projects;
 - the moments of her own life — conversations enjoyed, people met or spoken \
@@ -2290,6 +2342,16 @@ earns: the directive holds his rule, this note holds that she owed the \
 work and the day closed without it. Never fold it into an observation's \
 unfinished-threads line — observations are invisible to recall, and a \
 commitment kept only there is forgotten exactly when its subject returns.
+- the ASSISTANT explicitly stated a fact about HERSELF — the term she uses \
+for her own things ("I say thread, not ticket"), how she likes to be \
+addressed or spoken to, a like or dislike she declared as hers -> kind \
+"directive" with "about": "self", written in HER first person and quoting \
+her own words. Attribution is the test: it is a self-fact only if SHE \
+stated it of herself. The user wishing something of her is HIS directive \
+("He wants...") and never a self-fact, and a self-fact is never rewritten \
+as his preference. Self-facts are pinned and never decay, so take only what \
+she stated explicitly and as standing — not a passing mood, not a joke, not \
+an opinion about something other than herself.
 - a stable fact about the machine, a person, or a project -> kind "note"
 - a MOMENT of the assistant's own life -> kind "episodic": a conversation \
 she enjoyed, a person met or spoken of, a plan made, a joke that landed, an \
@@ -2339,11 +2401,32 @@ against, so write it as the search phrase that should find this record.
 Reply with ONLY a JSON array (no prose, no code fence):
 [{"text": "...", "kind": "directive"|"note"|"episodic"|"observation"|"miss", \
 "key": "what this is about", "topics": "comma,separated", \
-"occurred": "YYYY-MM-DD", "participants": "...", "opinion": "..."}]
-("participants" and "opinion" belong to "episodic" records only.)
+"occurred": "YYYY-MM-DD", "about": "self", "participants": "...", \
+"opinion": "..."}]
+("about": "self" belongs to self-fact directives only; "participants" and \
+"opinion" belong to "episodic" records only.)
 
 MATERIAL:
 """
+
+
+def journal_turn_chunks(path, start=0):
+    """Every turn of one day-journal file from byte `start`, each as one
+    labelled chunk. The header carries the turn's own stamp and channel, so
+    a judge reading the day can cite WHERE a thing was said (rule 52a)."""
+    chunks = []
+    with open(path, errors="replace") as f:
+        f.seek(start)
+        for line in f:
+            try:
+                turn = json.loads(line)
+            except ValueError:
+                continue
+            user = turn.get("user", "")
+            reply = turn.get("reply", "") or turn.get("outcome", "")
+            chunks.append(f"[{turn.get('time', '')} {turn.get('kind', '')}]\n"
+                          f"User: {user}\nAssistant: {reply}")
+    return chunks
 
 
 def journal_delta(journal_dir, cursor):
@@ -2358,17 +2441,7 @@ def journal_delta(journal_dir, cursor):
         size = os.path.getsize(path)
         if size <= start:
             continue
-        with open(path, errors="replace") as f:
-            f.seek(start)
-            for line in f:
-                try:
-                    turn = json.loads(line)
-                except ValueError:
-                    continue
-                user = turn.get("user", "")
-                reply = turn.get("reply", "") or turn.get("outcome", "")
-                chunks.append(f"[{turn.get('time', '')} {turn.get('kind', '')}]\n"
-                              f"User: {user}\nAssistant: {reply}")
+        chunks += journal_turn_chunks(path, start)
         offsets[name] = size
     return chunks
 
@@ -3104,25 +3177,33 @@ def cmd_ingest(store, args):
             if kind == "episodic" else ""
         opinion = (cand.get("opinion") or "").strip() \
             if kind == "episodic" else ""
+        # Rule 27b: a fact she stated about herself rides only on a
+        # directive, and lands PINNED — held to, not retrieved. The marker
+        # on any other kind is dropped exactly as an opinion on a note is.
+        about = "self" if kind == "directive" and \
+            (cand.get("about") or "").strip().lower() == "self" else ""
+        pinned = about == "self"
+        label = f"[{kind}{', about me, pinned' if about else ''}]"
         if args.dry_run:
             # Rule 41 (MAJ-33): a dry run mutates nothing. The dedup verdict
             # only exists on the far side of add_deduped's writes, so the
             # rehearsal names the surviving candidate and withholds the store.
             would += 1
             overlaps = store.rule_overlaps(text) if kind == "directive" else []
-            print(f"  would {'hold overlap' if overlaps else 'add'} [{kind}]"
+            print(f"  would {'hold overlap' if overlaps else 'add'} {label}"
                   + (f" ({occurred})" if occurred else "") + f" {text[:80]}")
             continue
         # The lookup key (rule 13b): one line collapsed flat. A distiller
         # that omits it leaves the record keyless for the nightly backfill.
         lookup_key = " ".join((cand.get("key") or "").split())
         action, rec_id = store.add_deduped(
-            text, kind=kind, source=cand.get("source", "conversation"),
+            text, kind=kind, pinned=pinned,
+            source=cand.get("source", "conversation"),
             topics=cand.get("topics", ""), occurred=occurred,
             participants=participants, opinion=opinion,
-            lookup_key=lookup_key)
+            lookup_key=lookup_key, about=about)
         counts[action] += 1
-        print(f"  {action} #{rec_id} [{kind}]"
+        print(f"  {action} #{rec_id} {label}"
               + (f" ({occurred})" if occurred else "") + f" {text[:80]}")
 
     if args.dry_run:
@@ -3302,6 +3383,176 @@ def cmd_backfill_episodic(store, args):
     return 0
 
 
+# --- backfill-self-facts: what she said of herself, recovered --------------
+# specs/memory-recall.md rule 52a. The nightly sift kept what the user asked
+# for and what she broke, and nothing about HER — so the word she chose for
+# her own things on 2026-08-20 was nowhere in her memory on 2026-08-21, and
+# she corrected the user for using it. This pass reads the day journal — the
+# archive that statement actually lives in — OLDEST FIRST, one journal day
+# per judge batch, harvesting SELF-FACTS ONLY, and lands each through the
+# same rule-28 door the night uses: pinned, marked hers, provenance on the
+# row. A durable cursor advances per finished day so a bounded round
+# (--days, --from, --to) resumes where the last stopped.
+
+SELF_FACT_PROMPT = """You are reading one day of a desktop assistant's own \
+journal — every finished turn, each under a header stating when it happened \
+and on which channel — to recover the facts she has stated about HERSELF \
+and never kept. Extract kind "directive" records with "about": "self" ONLY: \
+an explicit statement by the ASSISTANT of a preference of her own — the term \
+she uses for her own things ("I say thread, not ticket"), how she likes to be \
+addressed or spoken to, a like or dislike she declares as hers. Written in \
+HER first person, quoting her own words from the material.
+Attribution is the test: a self-fact is one SHE stated of herself. The user \
+wishing something of her, asking her to speak a certain way, or describing \
+her is HIS preference and is NOT a self-fact — leave it out entirely; it was \
+his directive the night it happened. A passing mood, a joke, an in-character \
+flourish, or an opinion about something other than herself is not a \
+standing self-fact either. These records are pinned and never decay, so \
+take only what she stated explicitly and as standing: few good records beat \
+many weak ones, and an empty day is the common and correct answer.
+Each record carries: "text" (the fact, in her first person, her words \
+quoted), "kind": "directive", "about": "self", "key" (ONE line, a dozen \
+words at most, naming what it is about in the plain words a later question \
+would use — never a restatement, never dates or ids), "topics" \
+(comma,separated), and "stated_at": the header timestamp of the turn in \
+which she said it, copied verbatim.
+
+Reply with ONLY a JSON array (no prose, no code fence):
+[{"text": "...", "kind": "directive", "about": "self", "key": "...", \
+"topics": "comma,separated", "stated_at": "YYYY-MM-DDTHH:MM:SS-0400"}]
+
+MATERIAL:
+"""
+
+JOURNAL_FILE_RE = re.compile(r"^(20\d\d-\d\d-\d\d)\.jsonl$")
+
+
+def cmd_backfill_self_facts(store, args):
+    # Rule 30a stands at this door too: a cooling codex judge fails here,
+    # before any spend, with the standing line.
+    if model_backend(args.model) == "codex":
+        until = codex_cooling_until(args.model)
+        if until is not None:
+            print(codex_cooling_line(until), file=sys.stderr)
+            return 1
+    cursor_path = os.path.join(store.dir, "self-facts-cursor.json")
+    cursor = {}
+    if os.path.isfile(cursor_path):
+        with open(cursor_path) as f:
+            cursor = json.load(f)
+    done = cursor.setdefault("files", {})
+
+    if not os.path.isdir(args.journal_dir):
+        print(f"backfill-self-facts: no journal at {args.journal_dir}")
+        return 1
+    # Oldest first, as rule 52's backfill: a later statement supersedes an
+    # earlier one, never the reverse. The filename IS the day.
+    todo = []
+    for name in sorted(os.listdir(args.journal_dir)):
+        m = JOURNAL_FILE_RE.match(name)
+        if not m:
+            continue
+        day = m.group(1)
+        if (args.since and day < args.since) or (args.until and day > args.until):
+            continue
+        path = os.path.join(args.journal_dir, name)
+        if not os.path.isfile(path):
+            continue
+        if done.get(name) == os.path.getsize(path):
+            continue
+        todo.append((day, name))
+    if not todo:
+        print("backfill-self-facts: nothing new — the cursor covers every "
+              "journal day in range")
+        return 0
+
+    this_round = todo[:args.days] if args.days > 0 else todo
+    print(f"backfill-self-facts: {len(todo)} journal days pending, taking "
+          f"{len(this_round)} this round ({this_round[0][0]} .. "
+          f"{this_round[-1][0]})" + (" [dry run]" if args.dry_run else ""))
+
+    counts = {"added": 0, "duplicate": 0, "superseded": 0, "overlap": 0,
+              "rejected": 0}
+    would = 0
+    for day, name in this_round:
+        path = os.path.join(args.journal_dir, name)
+        size = os.path.getsize(path)
+        chunks = journal_turn_chunks(path)
+        # Rule 29: a long day is windowed on whole-turn boundaries, every
+        # pass reported, never trimmed.
+        windows = window_chunks(chunks, args.max_chars)
+        candidates = []
+        for i, w in enumerate(windows, 1):
+            material = "\n\n".join(w)
+            if len(windows) > 1:
+                print(f"  {day} pass {i}/{len(windows)}: {len(material)} chars")
+            candidates += extract_candidates(material, args.model,
+                                             prompt=SELF_FACT_PROMPT,
+                                             effort=args.effort)
+        day_counts = dict.fromkeys(counts, 0)
+        for cand in candidates:
+            text = (cand.get("text") or "").strip()
+            about = (cand.get("about") or "").strip().lower()
+            if not text or cand.get("kind", "directive") != "directive" \
+                    or about != "self":
+                # Rule 52a: self-facts only. A note, a user's rule, or an
+                # unmarked directive offered from old material is not
+                # resurrected by this path — dropped, counted, named.
+                counts["rejected"] += 1
+                day_counts["rejected"] += 1
+                print(f"  rejected (not her own self-fact) {text[:80]}")
+                continue
+            # Provenance: the turn's own header stamp names where she said
+            # it; the file's day is the backstop — knowledge, not a guess.
+            stated = (cand.get("stated_at") or "").strip()
+            when = parse_iso(stated) if stated else None
+            occurred = when.strftime("%Y-%m-%d %H:%M") if when else day
+            source = f"journal {name} @ {stated}" if when else f"journal {name}"
+            lookup_key = " ".join((cand.get("key") or "").split())
+            if args.dry_run:
+                would += 1
+                overlaps = store.rule_overlaps(text)
+                print(f"  would {'hold overlap' if overlaps else 'add'} "
+                      f"({occurred}) {text[:80]}")
+                continue
+            action, rec_id = store.add_deduped(
+                text, kind="directive", pinned=True, source=source,
+                topics=cand.get("topics", ""), occurred=occurred,
+                lookup_key=lookup_key, about="self")
+            counts[action] += 1
+            day_counts[action] += 1
+            print(f"  {action} #{rec_id} ({occurred}) {text[:80]}")
+        if args.dry_run:
+            continue
+        # The cursor advances per DAY, the moment the day's records are in
+        # (rule 52a): a round that dies mid-way resumes at that day, and a
+        # finished day is never re-read.
+        done[name] = size
+        tmp = cursor_path + ".tmp"
+        with open(tmp, "w") as f:
+            json.dump(cursor, f, indent=1)
+        os.replace(tmp, cursor_path)
+        print(f"  {day}: {day_counts['added']} added, "
+              f"{day_counts['duplicate']} duplicates, "
+              f"{day_counts['overlap']} overlaps held, "
+              f"{day_counts['rejected']} rejected — cursor advanced")
+
+    remaining = len(todo) - len(this_round)
+    if args.dry_run:
+        print(f"backfill-self-facts: dry run — {would} would be offered, "
+              f"{counts['rejected']} rejected; nothing written, cursor "
+              "not advanced")
+    else:
+        print(f"backfill-self-facts: {counts['added']} added, "
+              f"{counts['duplicate']} duplicates, "
+              f"{counts['superseded']} superseded, "
+              f"{counts['overlap']} overlaps held, "
+              f"{counts['rejected']} rejected"
+              + (f"; {remaining} journal days remain — run again to continue"
+                 if remaining else "; every journal day in range is read"))
+    return 0
+
+
 # --- judge-turn: the turn-end genuinely-used judge --------------------------
 # The write path for reinforcement (13:15 design revision). Fired DETACHED by
 # every turn path after the reply is delivered (fire_memory_judge in
@@ -3462,6 +3713,9 @@ def cmd_add(store, args):
         sys.exit("memory add: choose --distinct or --supersedes, not both")
     if args.kind != "directive" and (args.distinct or args.supersedes):
         sys.exit("memory add: --distinct and --supersedes are directive routes")
+    if args.about and args.kind != "directive":
+        sys.exit("memory add: --about self is a directive route — a fact she "
+                 "states about herself is held to and never decays (rule 27b)")
     if args.kind == "directive" and args.no_dedup:
         sys.exit("memory add: directives cannot bypass durable-rule preflight; "
                  "use --distinct after judging the overlap")
@@ -3486,13 +3740,14 @@ def cmd_add(store, args):
         try:
             rec_id = store.supersede_directive(
                 args.supersedes, text, args.pin, args.source, args.topics,
-                occurred)
+                occurred, about=args.about)
         except ValueError as exc:
             sys.exit(f"memory add: {exc}")
         action = "superseded"
     elif args.distinct:
         rec_id = store.add_distinct_directive(
-            text, args.pin, args.source, args.topics, occurred)
+            text, args.pin, args.source, args.topics, occurred,
+            about=args.about)
         action = "added-distinct"
     elif args.no_dedup:
         rec_id = store.insert(text, args.kind, args.pin, args.source,
@@ -3504,7 +3759,7 @@ def cmd_add(store, args):
                                            args.source, args.topics,
                                            occurred=occurred,
                                            participants=participants,
-                                           opinion=opinion)
+                                           opinion=opinion, about=args.about)
     if captured_watch:
         if action not in ("added", "added-distinct", "superseded"):
             sys.exit("memory add: watched notes must be a new record; the note "
@@ -3517,6 +3772,7 @@ def cmd_add(store, args):
              _stable_json(baseline), now_iso()))
         store.db.commit()
     print(f"{action} #{rec_id} [{args.kind}]"
+          + (" about=me" if args.about else "")
           + (f" occurred={occurred}" if occurred else ""))
     if action == "overlap":
         print("held in pending-rule-overlaps.json; judge it, then rerun with "
@@ -3559,6 +3815,7 @@ def cmd_search(store, args):
                                                      deliberate=True)
     for r in rows:
         flags = ("" if not r[3] else " pinned") + \
+                ("" if len(r) <= 15 or r[15] != "self" else " about-me") + \
                 ("" if not r[11] else f" used×{r[11]}")
         print(f"{r[9]:.3f}  #{r[0]:<4} {r[2]:<9}{flags} {r[1]}  ({r[7][:10]})")
     if abstained:
@@ -3639,16 +3896,16 @@ def cmd_rewrite(store, args):
     if not text:
         sys.exit("memory rewrite: empty text")
     row = store.db.execute(
-        "SELECT kind, status, pinned, source, topics, occurred, lookup_key"
-        " FROM memories WHERE id=?", (args.id,)).fetchone()
+        "SELECT kind, status, pinned, source, topics, occurred, lookup_key,"
+        " about FROM memories WHERE id=?", (args.id,)).fetchone()
     if not row:
         sys.exit(f"memory rewrite: no record #{args.id}")
-    kind, status, pinned, source, topics, occurred, lookup_key = row
+    kind, status, pinned, source, topics, occurred, lookup_key, about = row
     if status != "active" or kind not in ("directive", "note"):
         sys.exit(f"memory rewrite: #{args.id} is not an active directive or note")
     new_id = store.insert(text, kind, bool(pinned), source or "self",
                           topics or "", occurred=occurred,
-                          lookup_key=lookup_key or "")
+                          lookup_key=lookup_key or "", about=about or "")
     try:
         store.link_supersede(new_id, args.id)
     except ValueError as exc:
@@ -3702,10 +3959,11 @@ def cmd_dump(store, args):
     rows = store.db.execute(
         "SELECT id, text, kind, pinned, source, topics, confidence, status,"
         "       supersedes, created, last_seen, occurred, participants,"
-        "       opinion, superseded_by"
+        "       opinion, superseded_by, about"
         " FROM memories ORDER BY id").fetchall()
     for r in rows:
-        print(f"#{r[0]} [{r[2]}]{' PINNED' if r[3] else ''} "
+        print(f"#{r[0]} [{r[2]}]{' PINNED' if r[3] else ''}"
+              f"{' ABOUT ME' if r[15] == 'self' else ''} "
               f"status={r[7]} confidence={r[6]:g} source={r[4]}")
         if r[5]:
             print(f"  topics: {r[5]}")
@@ -3953,6 +4211,12 @@ def main():
     p = sub.add_parser("add", help="add a record")
     p.add_argument("--kind", choices=RECORD_KINDS, default="note")
     p.add_argument("--pin", action="store_true")
+    p.add_argument("--about", choices=["self"], default="",
+                   help="directive only: a fact SHE stated about herself — "
+                        "her own term, form of address, like or dislike — "
+                        "rendered as hers, never as the user's rule "
+                        "(rule 27b); pair with --pin so it is in hand every "
+                        "turn")
     p.add_argument("--source", default="conversation")
     p.add_argument("--topics", default="")
     p.add_argument("--occurred", default="",
@@ -4143,6 +4407,35 @@ def main():
     p.add_argument("--max-chars", type=int, default=100000)
     p.add_argument("--dry-run", action="store_true")
     p.set_defaults(fn=cmd_backfill_episodic)
+
+    p = sub.add_parser("backfill-self-facts",
+                       help="recover the facts she has stated about herself "
+                            "from the day journal: pinned directives marked "
+                            "hers, oldest first, in bounded resumable rounds "
+                            "(rule 52a)")
+    p.add_argument("--journal-dir",
+                   default=os.environ.get("DAY_JOURNAL_DIR")
+                   or os.path.expanduser("~/.local/share/deskcrab/journal"))
+    p.add_argument("--days", type=int, default=5,
+                   help="journal days to take this round (0 = all); the "
+                        "cursor advances per finished day, so a long run "
+                        "resumes instead of running away")
+    p.add_argument("--from", dest="since", default="",
+                   help="first journal day to read (YYYY-MM-DD)")
+    p.add_argument("--to", dest="until", default="",
+                   help="last journal day to read (YYYY-MM-DD)")
+    # The judge reads the raw day itself (nightly.md rule 14c): a judge's
+    # job on the judge's knobs, as backfill-episodic rides them.
+    p.add_argument("--model",
+                   default=os.environ.get("MEMORY_INGEST_MODEL")
+                   or os.environ.get("NIGHT_JUDGE_MODEL")
+                   or "gpt-5.6-sol")
+    p.add_argument("--effort",
+                   default=os.environ.get("MEMORY_INGEST_EFFORT")
+                   or os.environ.get("NIGHT_JUDGE_EFFORT") or "high")
+    p.add_argument("--max-chars", type=int, default=100000)
+    p.add_argument("--dry-run", action="store_true")
+    p.set_defaults(fn=cmd_backfill_self_facts)
 
     p = sub.add_parser("recall-block", help="prompt block for a wake (fail-safe)")
     p.add_argument("--query", default="")
