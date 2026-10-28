@@ -972,10 +972,20 @@ that was asked for, and promised work must stop waiting for a live turn to perso
     drawer `crab eng` keeps (`~/.local/share/deskcrab/engineering/records/`, override
     `NIGHT_WORK_RECORDS_DIR`, default `$NIGHT_WORK_THREADS_DIR/records`), filtered to
     `state: open` and ordered newest-touched first — the order `crab eng list --state open`
-    already produces. Each open record rides whole — front matter and body, so the selector
-    reads the state field with its own eyes — under a per-record budget and a batch total
+    already produces. Each open record rides as it CURRENTLY instructs — `lib/eng current`
+    ([engineering-records.md](engineering-records.md) rule 9a): front matter and body whole,
+    so the selector reads the state field with its own eyes, every entry newest first, and a
+    one-line stub standing wherever an amendment retired a paragraph (rule 7a there), so the
+    retired words never enter the prompt at all; a record with nothing superseded rides byte
+    for byte as its file — under a per-record budget and a batch total
     (rule 58a applies to both, cuts announced); a record that no longer fits what is left of a
     batch waits whole for the next batch, so only a batch's first record is ever cut to fit.
+    The selector is told, in so many words, to compose each brief from the record's current
+    instructions as a whole: the opening entry is the original ask, never by itself the plan;
+    a later entry amends an earlier one only where the record marks the amendment; and
+    nothing an amendment retired may be asked of the builder. The view the selector was
+    handed is kept, per record, for rule 60b's check at the door. A record the tool cannot
+    render (not a record at all) rides as its raw file, exactly as before.
     A record outside the current batch is never
     silently dropped: it rides its `eng list` one-liner in a labelled section that names it as
     waiting for a later batch tonight, and its body is judged in that batch (rule 58). A record
@@ -1039,10 +1049,34 @@ that was asked for, and promised work must stop waiting for a live turn to perso
     handed to `-C` is the single source of truth: it is the value the job's sidecar records,
     so `job-collect` and the self-change watcher's workdir claim both judge the tree the
     builder actually works in, and no second value is fabricated anywhere on the path.
+60b. A brief that cites a record is held against the record's NEWEST state at the moment of
+    dispatch, never dispatched on the state it was composed from. Immediately before the door
+    is opened for a pick naming a record — after [jobs.md](jobs.md) rule 27a's state re-read,
+    before the dry run's would-dispatch line and before the live call alike — the night renders
+    the record again (`lib/eng current`) and compares it, byte for byte, with the view the
+    selector was handed when the brief was composed (rule 58c). A record that moved — an
+    amendment, a touch, a hand's correction, anything — makes the brief STALE: it is not
+    dispatched, not silently and not ever; the night log names the record, the staleness and
+    when the record was last touched; and the record returns to the unjudged set, so the next
+    round's batch — at once, when nothing was dispatched this round — REGENERATES the brief
+    from the record as it now stands, and that regenerated brief faces both of this rule's
+    checks again. Then, moved or not, the brief is held against the record's superseded
+    paragraphs: `lib/eng quotes-superseded <id>` finding a sentence of a retired instruction in
+    the brief REFUSES the dispatch — skipped, never dispatched, with a loud line on the night
+    log AND on stderr naming the record, the quoted sentence and the title — and the round
+    moves on to the next pick; the record stays judged for this pass, as any refused pick
+    does. Together the two checks are the guarantee the origin asks for: a retired instruction
+    is absent from the view the brief is composed from (rule 58c), a brief composed before the
+    retirement is thrown away and composed again, and a brief that quotes the retired words
+    anyway cannot reach the door. The origin (2026-08-21 18:22, record
+    `i-amend-a-record-and-then-act-from-the-version-b`): the store brief was rewritten to drop
+    the exact block from the move prompt, and the builder dispatched thirty seconds later still
+    carried the old plan.
 61. `DESKCRAB_NO_DISPATCH` MUST dry-run the whole phase — real material, real selection,
     would-dispatch lines, nothing started and no ledger written — so the selection can be watched
     in daylight without spending a builder. The dry run resolves and verifies the workdir
-    exactly as a real round does (rule 60a), and its would-dispatch line names the resolved
+    exactly as a real round does (rule 60a), holds each record pick to rule 60b's two checks
+    exactly as a real round does, and its would-dispatch line names the resolved
     workdir, so what is watched in daylight is what the night would actually do.
 
 ## DATA
@@ -1226,6 +1260,18 @@ hold; each outgrown section is named on the night log with its true size and its
 total record budget clips oldest-touched first, announced, with the clipped record riding the
 overflow list rather than vanishing; and a night whose material fits its budgets announces
 nothing.
+`tests/test_night_work_amend.sh` — rules 58c and 60b over
+[engineering-records.md](engineering-records.md) rules 7a and 9a: an explicit removal — the
+retired paragraph is absent from the selector's prompt while its stub, its live neighbour and
+the amendment ride, a brief quoting the retired sentence is REFUSED with no door call and a loud
+line on the night log and stderr, and a brief composed without it dispatches; one requirement
+amended while two remain active, the two riding and dispatching while the retired one is
+refused; an unchanged record riding byte-identical to its file and dispatching with neither
+check speaking; an amendment landing between composition and dispatch — the stale brief, which
+quotes the dropped sentence, never reaches the door, the record is judged again at once from its
+current view, the regenerated brief dispatches without the sentence, exactly one builder and one
+ledger line result — and a plain touch in the same window judged stale the same way; and the
+dry run holding both checks before its would-dispatch line, writing no ledger.
 `tests/test_night_work_workdir.sh` — rule 60a: an empty workdir field and the literal `-` both
 dispatch with an explicit `-C` naming the deployed symlink's parent, and the sidecar records
 that same path; with no deployed symlink — and with a symlink whose parent holds no `.git` —

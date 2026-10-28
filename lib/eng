@@ -12,6 +12,14 @@ last_touched in the same motion — that pairing is what the job hook trusts.
     eng list [--state open|review|settled|dead|all]
     eng show <id>
     eng touch <id> <note...>
+    eng amend <id> --supersedes <text>... <note...>
+                                        a touch that RETIRES the named
+                                        paragraph(s): marked superseded in
+                                        place, words kept (rule 7a)
+    eng current <id>                    the record as it currently instructs:
+                                        a superseded paragraph is its stub
+    eng quotes-superseded <id> [<file>] exit 0 iff the text quotes a sentence
+                                        of a superseded paragraph
     eng review <id> <claim...>          submit completed work: open -> review;
                                         the record is NOT settled by this
     eng accept <id> <verified...>       the review's yes: review -> settled
@@ -249,6 +257,213 @@ def add_entry(body, note, stamp=None):
     if KIND == "want":
         return (body.rstrip("\n") + "\n\n" + entry) if body.strip() else entry
     return entry + ("\n" + body if body.strip() else "")
+
+
+# --- supersession (specs/engineering-records.md rules 7a and 9a) -------------
+# An amendment that retires an earlier instruction marks the paragraph where
+# it stands: the words stay, under a dated marker, as a blockquote. Nothing is
+# inferred from position — a newer entry never supersedes an older one on its
+# own; only `amend`, naming the paragraph, retires anything. The origin
+# (2026-08-21 18:22): the store brief was rewritten to drop the exact block
+# from the move prompt, and the builder dispatched thirty seconds later still
+# carried the old plan, composed from the record's first entry with nothing on
+# the record marking the dropped paragraph as dead.
+
+SUPERSEDED_HEAD = "> SUPERSEDED %s (history, not an instruction):"
+SUPERSEDED_RE = re.compile(
+    r"^> SUPERSEDED (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) "
+    r"\(history, not an instruction\):$")
+# Blocks are blank-line separated; the separators are kept so a body with
+# nothing superseded reassembles byte for byte.
+BLOCK_SEP_RE = re.compile(r"(\n[ \t]*\n+)")
+
+
+def split_blocks(body):
+    """-> list alternating [block, sep, block, sep, ..., block]."""
+    return BLOCK_SEP_RE.split(body)
+
+
+def block_kind(block):
+    """'heading' for an entry heading, 'superseded' for a retired paragraph
+    (with its stamp and text), 'para' for a live paragraph, 'blank' for
+    whitespace."""
+    if not block.strip():
+        return "blank", None
+    lines = block.split("\n")
+    if lines[0].startswith("## "):
+        return "heading", None
+    m = SUPERSEDED_RE.match(lines[0])
+    if m:
+        text = "\n".join(l[2:] if l.startswith("> ") else l.lstrip(">")
+                         for l in lines[1:])
+        return "superseded", (m.group(1), text)
+    return "para", None
+
+
+def norm_text(s):
+    """Case-folded, every run of punctuation or whitespace one space: the
+    comparison that finds a retired clause through a paraphraser's
+    typography — emphasis, quotes, a dropped final period, a re-wrapped
+    line. Word characters alone carry identity."""
+    return " ".join(re.sub(r"[^\w\s]+", " ", s.lower()).split())
+
+
+def mark_superseded(block, stamp):
+    return "\n".join([SUPERSEDED_HEAD % stamp]
+                     + ["> " + l for l in block.split("\n")])
+
+
+def superseded_stub(stamp, rid):
+    return ("(a paragraph here was superseded by the amendment of %s "
+            "\u2014 history, not an instruction; crab eng show %s keeps it)"
+            % (stamp, rid))
+
+
+def superseded_sentences(body, min_words=5):
+    """Every clause of every superseded paragraph long enough to be a
+    quotation rather than a coincidence: split at sentence and clause
+    punctuation and at line ends, five words the floor."""
+    out = []
+    for block in split_blocks(body):
+        kind, info = block_kind(block)
+        if kind != "superseded":
+            continue
+        pieces = [" ".join(info[1].split())]
+        pieces += re.split(r"(?<=[.!?;:])\s+|\n", info[1])
+        pieces += re.split(r"(?<=[.!?;:,])\s+|\n", info[1])
+        for piece in pieces:
+            piece = piece.strip()
+            if len(piece.split()) >= min_words and piece not in out:
+                out.append(piece)
+    # Longest first: the night log names the biggest chunk the brief quoted.
+    return sorted(out, key=len, reverse=True)
+
+
+def current_text(rid):
+    """The record as it currently instructs (rule 9a): the file byte for
+    byte, each superseded paragraph standing as its stub."""
+    path = rec_path(rid)
+    if parse(path) is None:
+        die("no record '%s' in %s (ids: crab eng list)" % (rid, eng_dir()))
+    with open(path, encoding="utf-8", errors="replace") as f:
+        text = f.read()
+    end = text.find("\n---\n", 4)
+    head, body = text[:end + 5], text[end + 5:]
+    parts = split_blocks(body)
+    changed = False
+    for i, block in enumerate(parts):
+        kind, info = block_kind(block)
+        if kind == "superseded":
+            parts[i] = superseded_stub(info[0], rid)
+            changed = True
+    return head + "".join(parts) if changed else text
+
+
+def cmd_amend(argv):
+    if KIND != "eng":
+        die("amend is the engineering drawer's door; a want is a journal "
+            "(crab want touch)")
+    args, needles, rest = list(argv), [], []
+    rid = args.pop(0) if args else None
+    while args:
+        a = args.pop(0)
+        if a == "--supersedes" and args:
+            needles.append(args.pop(0))
+        else:
+            rest.append(a)
+    note = " ".join(rest).strip()
+    if not rid or not note:
+        die("usage: eng amend <id> --supersedes <text>... <note>")
+    if not [n for n in needles if n.strip()]:
+        die("amend retires a paragraph and must name it: --supersedes "
+            "<text>; a note that retires nothing is `eng touch`")
+    meta, body = load(rid)
+    parts = split_blocks(body)
+    # Every candidate, with the entry it sits in and its place there, so the
+    # note can name what it retired without quoting the retired words.
+    heading, ordinal, places = "(undated)", 0, {}
+    for i, block in enumerate(parts):
+        kind, info = block_kind(block)
+        if kind == "heading":
+            heading, ordinal = block.split("\n")[0][3:].strip(), 0
+        elif kind in ("para", "superseded"):
+            ordinal += 1
+            places[i] = (kind, heading, ordinal, info)
+    chosen = {}
+    for needle in needles:
+        want = norm_text(needle)
+        if not want:
+            die("--supersedes needs text to match")
+        live = [i for i, (k, _, _, _) in places.items()
+                if k == "para" and want in norm_text(parts[i])]
+        gone = [i for i, (k, _, _, _) in places.items()
+                if k == "superseded" and want in norm_text(places[i][3][1])]
+        if len(live) > 1:
+            die("ambiguous: %d live paragraphs of '%s' read \"%s\" — quote "
+                "more of the one you mean; nothing written"
+                % (len(live), rid, needle))
+        if not live:
+            if gone:
+                die("that paragraph of '%s' is already superseded (by the "
+                    "amendment of %s); nothing written"
+                    % (rid, places[gone[0]][3][0]))
+            die("no live paragraph of '%s' reads \"%s\"; nothing written"
+                % (rid, needle))
+        if live[0] in chosen:
+            die("two --supersedes texts name the same paragraph of '%s'; "
+                "nothing written" % rid)
+        chosen[live[0]] = needle
+    stamp = now()
+    named = []
+    for i in sorted(chosen):
+        _, entry, nth, _ = places[i]
+        parts[i] = mark_superseded(parts[i], stamp)
+        named.append("paragraph %d of the %s entry" % (nth, entry))
+    note += ("\n\nSupersedes %s — marked where %s stand%s, words kept."
+             % (", ".join(named), "it" if len(named) == 1 else "they",
+                "s" if len(named) == 1 else ""))
+    # The ending gate (rule 15) holds here exactly as it does on touch.
+    gate_line, gate_job = ending_gate(rid, note)
+    note += gate_line
+    meta["last_touched"] = stamp
+    write(rec_path(rid), meta, add_entry("".join(parts), note, stamp))
+    print("%s amended %s: %d paragraph%s superseded" % (
+        rid, stamp, len(named), "" if len(named) == 1 else "s"))
+    if gate_line:
+        print(gate_line.strip())
+    if gate_job:
+        try:
+            epoch = int(time.mktime(time.strptime(stamp, TIMEFMT)))
+        except (ValueError, OverflowError):
+            epoch = int(time.time())
+        _stamp_attach_epoch(gate_job, epoch)
+
+
+def cmd_current(argv):
+    if not argv:
+        die("usage: eng current <id>")
+    sys.stdout.write(current_text(argv[0]))
+
+
+def cmd_quotes_superseded(argv):
+    if not argv or len(argv) > 2:
+        die("usage: eng quotes-superseded <id> [<file>|-]")
+    _, body = load(argv[0])
+    src = argv[1] if len(argv) == 2 else "-"
+    try:
+        if src == "-":
+            text = sys.stdin.read()
+        else:
+            with open(src, encoding="utf-8", errors="replace") as f:
+                text = f.read()
+    except OSError as e:
+        die("cannot read %s: %s" % (src, e))
+    hay = norm_text(text)
+    for sentence in superseded_sentences(body):
+        if norm_text(sentence) in hay:
+            print(sentence)
+            sys.exit(0)
+    sys.exit(1)
 
 
 # --- the ending gate (specs/engineering-records.md rules 15-15c) ------------
@@ -1152,7 +1367,10 @@ def cmd_prompt(argv):
           "it, 'crab eng list --state all' the full drawer. A closed "
           "record is history, never a present-tense fact. Every state "
           "change goes through 'crab eng' (touch/settle/kill), never a "
-          "hand edit, so the dates stay true." % (eng_dir(), counts))
+          "hand edit, so the dates stay true; a correction that drops an "
+          "earlier instruction is 'crab eng amend <id> --supersedes "
+          "<its text> <note>', which marks that paragraph superseded so "
+          "no later hand builds from it." % (eng_dir(), counts))
 
 
 # --- migration -------------------------------------------------------------
@@ -1292,7 +1510,9 @@ def main():
     else:
         cmds = dict(shared, settle=cmd_settle, kill=cmd_kill,
                     review=cmd_review, accept=cmd_accept, reject=cmd_reject,
-                    prompt=cmd_prompt, migrate=cmd_migrate)
+                    prompt=cmd_prompt, migrate=cmd_migrate,
+                    amend=cmd_amend, current=cmd_current)
+        cmds["quotes-superseded"] = cmd_quotes_superseded
         usage = __doc__
     # A verb of the other kind is refused with THIS kind's usage (wants
     # rule 14): the states differ, so a silent alias would write a state

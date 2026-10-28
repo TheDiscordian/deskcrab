@@ -302,7 +302,10 @@ and the completion channel a job has back to her.
 27a. The night's selector MUST attach `--record <id>` when its pick names a live engineering
     record, so nightly builds carry the same update and submission gates as daytime record
     builds. It re-reads the record's state immediately before dispatch: only `open` may start
-    a builder; a record moved to `review`, `settled` or `dead` while selection ran is skipped.
+    a builder; a record moved to `review`, `settled` or `dead` while selection ran is skipped,
+    and a record that moved at all since its brief was composed makes that brief stale — not
+    dispatched, composed again from the record as it now stands ([nightly.md](nightly.md) rule
+    60b, which also refuses a brief quoting an instruction the record has superseded).
     A promise or wake pick with no engineering record keeps no invented record association.
 28. A clean build whose record was never touched ends `failed`, with a clear reason NAMING the
     record — in the log, in the sidecar summary, and in the completion wake's reason — so the next

@@ -1340,6 +1340,23 @@ old or more.
 A failed ingest does not stamp — the stamp is a claim that the night happened, and it must be true.
 Sleep is separate from the personal tidy timer, which never touches memory.
 
+### 2026-08-21 — a brief composed from the version before the amendment
+
+At 18:22 a record's store brief was rewritten to drop the exact block from the move prompt, and
+the builder dispatched thirty seconds later still carried the old plan: the brief had been composed
+from the record's first entry, and nothing on the record marked the dropped paragraph as dead. The
+user named it as recurring the same evening. Three things were missing, and the night's work now
+has all three. A record can retire an instruction explicitly — `crab eng amend <id> --supersedes
+<text> <note>` marks the named paragraph superseded where it stands, words kept under a dated
+marker, and nothing is ever inferred from position — the drain hands the selector each record as it
+currently instructs (`crab eng current`, a retired paragraph standing as a stub, so the retired
+words never enter the prompt at all), and a brief that cites a record is held against the record's
+newest state at the door: the composed view is kept, the record is rendered again before dispatch,
+a record that moved at all makes the brief stale and re-judged from the record as it now stands,
+and a brief quoting a retired sentence is refused outright. Rules 58c and 60b of
+[nightly.md](../specs/nightly.md); rules 7a and 9a of
+[engineering-records.md](../specs/engineering-records.md).
+
 ---
 
 ## The debug view

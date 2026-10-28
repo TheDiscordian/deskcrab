@@ -48,6 +48,26 @@ parameterized by kind. Nothing in this contract changes for kind `eng` — it is
 7. `crab eng touch <id> <note>` prepends a dated entry to the body AND bumps `last_touched` in the
    same write. There is no way to add an entry without moving the date — that pairing is the whole
    mechanism the job hook trusts.
+7a. `crab eng amend <id> --supersedes <text> [--supersedes <text>]... <note>` (kind `eng` only) is
+    the one door for a correction that RETIRES an earlier instruction. It does everything `touch`
+    does — a dated entry at the head of the body carrying the note, `last_touched` bumped in the
+    same write, the ending gate of rule 15 held — and, in that same write, marks each named
+    paragraph SUPERSEDED where it stands: the paragraph's words stay, every one of them, but the
+    paragraph is rewritten as a blockquote opening with the marker line
+    `> SUPERSEDED <stamp> (history, not an instruction):`, `<stamp>` being the amendment entry's
+    own datetime, and the entry's note closes with a line naming each retired paragraph by its
+    place in the entry it sits in. A `--supersedes` text must match exactly ONE live paragraph of
+    the body — a whitespace-normalised, case-insensitive substring of it; entry headings, the
+    frontmatter and paragraphs already superseded are never candidates — and no match, an
+    ambiguous match, a paragraph already retired, and two texts naming the same paragraph are
+    each refused in plain words with nothing written. An amendment that names no paragraph is
+    refused too, naming `touch`: nothing is ever INFERRED — a newer entry never supersedes an
+    older one by position, only this door, naming the paragraph, retires anything. The origin
+    (2026-08-21 18:22, record `i-amend-a-record-and-then-act-from-the-version-b`): the store
+    brief was rewritten to drop the exact block from the move prompt, and the builder dispatched
+    thirty seconds later still carried the old plan, because the brief was composed from the
+    record's first entry rather than its current state, and nothing on the record marked the
+    dropped paragraph as dead.
 8. `crab eng settle <id> <what-settled-it>` sets state `settled`, stamps `settled_at`, records the
    argument as `settled_by`, adds a dated entry, and bumps `last_touched`. `crab eng kill <id>
    [reason]` does the same with state `dead`. Neither deletes anything.
@@ -56,6 +76,18 @@ parameterized by kind. Nothing in this contract changes for kind `eng` — it is
    `crab eng touched-since <id> <epoch>` exits 0 exactly when the record's `last_touched` is newer
    than the epoch — the comparison lives here, in the one place that parses the format, not in any
    caller.
+9a. `crab eng current <id>` prints the record as it CURRENTLY instructs: the frontmatter and every
+    entry, newest first, byte for byte as `show` prints them, except that each superseded
+    paragraph is replaced by one stub line — `(a paragraph here was superseded by the amendment
+    of <stamp> — history, not an instruction; crab eng show <id> keeps it)` — so the retired
+    words cannot be read as a live instruction by any hand composing from this view, and a
+    record with nothing superseded renders identical to its file. `show` keeps the whole
+    history, markers and all. `crab eng quotes-superseded <id> [<file>|-]` exits 0 exactly when
+    the text handed to it (a brief; stdin when no file is named) quotes a sentence of a
+    superseded paragraph of the record — whitespace- and case-normalised, emphasis stripped,
+    sentences of five words or more — and prints the sentence it found; 1 when it quotes none.
+    Both readings live here, in the one place that parses the marker, never in a caller
+    ([nightly.md](nightly.md) rule 60b is the caller).
 10. An id the tool does not know is an error, never a silent no-op and never a fresh file.
 
 10a. The records directory is part of the self-change watch set, so every code path of the tool
@@ -77,7 +109,9 @@ parameterized by kind. Nothing in this contract changes for kind `eng` — it is
     the drawer's location, the count of live threads (`review` claims counted by name beside
     them), the count of closed ones, and the doors that reach a record — `crab eng search
     <words>` finds it, `crab eng show <id>` is the whole of it, `crab eng list --state all` the
-    full drawer. No record's title, dates, or prose rides the prompt. What her hands are doing
+    full drawer — and `crab eng amend <id> --supersedes <text> <note>` (rule 7a) is the door for a
+    correction that retires an instruction, so a dropped paragraph reads as dropped to every later
+    hand. No record's title, dates, or prose rides the prompt. What her hands are doing
     right now is the live state layer's to carry; a thread's content lives in the record on
     disk, whole. A rendered record line is a paraphrase, and a paraphrase is stale the moment
     the record moves — a stale line quoted as present-tense fact is the failure this drawer
@@ -217,6 +251,7 @@ parameterized by kind. Nothing in this contract changes for kind `eng` — it is
 | Path | Format |
 |---|---|
 | `~/.local/share/deskcrab/engineering/records/<slug>.md` | frontmatter per rule 2, body per rule 3 |
+| a superseded paragraph, in any record body | a blockquote whose first line is `> SUPERSEDED <YYYY-MM-DD HH:MM:SS> (history, not an instruction):` and whose remaining lines are the retired paragraph, each prefixed `> ` (rule 7a); `current` renders it as its stub, `quotes-superseded` reads its sentences (rule 9a) |
 | `~/.local/share/deskcrab/engineering.md`, `engineering/INDEX.md`, `engineering/*.md` | the pre-records archive: read-only history, still indexed in WHERE THINGS ARE |
 | job sidecar field `record` | the engineering record a job was dispatched against ([jobs.md](jobs.md)) |
 | job sidecar field `record_attached_epoch` | when rule 15b's attach write — or rule 16b's reject attach — touched the record, so the runner's rule-27 floor can discount it ([jobs.md](jobs.md)) |
@@ -242,6 +277,14 @@ own act, never a second writer of anything.
 `touched-since`, search, the prompt pointer of rules 11–11a: counts and retrieval doors with the
 read-the-record-first rule, no record's title, dates, or prose in the block, an empty drawer
 contributing nothing — and migration preserving dates and idempotence);
+`tests/test_eng_amend.sh` (rules 7a and 9a: an amendment retires exactly the named paragraph —
+its words kept under the dated marker, its neighbours in the same entry untouched, the note
+naming the place it retired, `last_touched` bumped — while `current` renders the stub in its
+place and none of the retired words, a record with nothing superseded renders byte-identical to
+its file, two paragraphs retire in one write, and `quotes-superseded` finds a retired sentence
+quoted in a brief through case and whitespace and misses honestly when none is; no match, an
+ambiguous match, a heading, a paragraph already retired, an amendment naming nothing, and the
+wants drawer are each refused with the file unchanged);
 `tests/test_eng_selfchange.sh` (rule 10a: a real `crab eng touch` declares its own write and the
 self-change watcher stays quiet about it, while an undeclared out-of-band edit to the same record
 still raises a wake); `tests/test_job_record.sh` (the job hook, [jobs.md](jobs.md));

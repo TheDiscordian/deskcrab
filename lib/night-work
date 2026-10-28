@@ -17,7 +17,12 @@
 # beside the job list and the night's own ledger, picks what is GENUINELY
 # actionable without the user's voice in the room — never a note, never
 # settled work, never a duplicate of a job running or already dispatched —
-# and writes a self-contained brief per pick. Each brief goes
+# and writes a self-contained brief per pick — from each record as it
+# CURRENTLY instructs (`lib/eng current`, rule 58c: a paragraph an amendment
+# retired is a stub, never a live instruction), and a brief that cites a
+# record is held against the record's newest state at the door (rule 60b: a
+# record that moved since composition makes the brief stale and re-judged; a
+# brief quoting a retired sentence is refused). Each brief goes
 # through the job door (`crab job`), never around it, so every builder
 # carries the whole jobs contract. Then the night waits, re-reads what is
 # still open, and goes again — for hours, until the wall-clock cutoff, at
@@ -485,7 +490,20 @@ cmd_run() {
         fi
         for RID in $UNJUDGED; do
             RF="$RECORDS_DIR/$RID.md"
-            RB="$(wc -c < "$RF" 2>/dev/null)"
+            # The record as it CURRENTLY instructs (rule 58c; records rule
+            # 9a): lib/eng's own rendering, a retired paragraph standing as
+            # its stub so the retired words never enter the prompt, and a
+            # record with nothing superseded byte for byte its file. The
+            # view is KEPT, per record, under the work dir: rule 60b holds
+            # the brief against a fresh rendering at the door, and this is
+            # the one it was composed from. A record the tool cannot render
+            # rides as its raw file, exactly as before.
+            CF="$WORK/composed-$RID.md"
+            if ! DESKCRAB_ENG_DIR="$RECORDS_DIR" "$SCRIPT_DIR/lib/eng" current "$RID" \
+                    > "$CF" 2>/dev/null; then
+                cp -f "$RF" "$CF" 2>/dev/null || : > "$CF"
+            fi
+            RB="$(wc -c < "$CF" 2>/dev/null)"
             # An unreadable record still takes its place in a batch, so the
             # walk always moves and the judge sees it as it is.
             case "$RB" in ''|*[!0-9]*|0) RB=1 ;; esac
@@ -510,7 +528,7 @@ cmd_run() {
             RECORDS_TEXT="$RECORDS_TEXT--- $RID ---
 ${RECORD_PRIOR:+(earlier nights already dispatched builders for this record — judge whether revised work is owed, never the same work again:
 $RECORD_PRIOR)
-}$(utf8_head "$TAKE" "$RF" 2>/dev/null)
+}$(utf8_head "$TAKE" "$CF" 2>/dev/null)
 
 "
             INCLUDED=$(( INCLUDED + 1 ))
@@ -621,6 +639,14 @@ the current job list, and the keys of promise and wake picks the night's
 work has ALREADY dispatched on earlier rounds and nights. An open record
 whose dispatched work can still land is not in this material at all.
 
+Each record rides as it CURRENTLY instructs: every entry, newest first, with
+a one-line stub standing wherever an amendment retired a paragraph — the stub
+is history, never an instruction, and the amendment entry governs. Compose a
+brief from the record's current instructions as a whole, never from its
+opening entry alone: the opening entry is the original ask, a later entry
+amends it only where the record marks the amendment, and nothing an amendment
+retired may be asked of the builder.
+
 Pick AT MOST $FREE items, from ANY of those sources, that are genuinely
 actionable engineering work right now — work that needs no conversation and
 no decision from the user — and write a builder's brief for each. Skip,
@@ -663,7 +689,7 @@ END
 or, when nothing qualifies, exactly:
 NOTHING: <one line saying why>
 
-=== THE OPEN ENGINEERING RECORDS (LIVE — state: open, newest-touched first) ===
+=== THE OPEN ENGINEERING RECORDS (LIVE — state: open, newest-touched first, each as it currently instructs) ===
 $RECORDS_TEXT
 === OPEN RECORDS WAITING FOR A LATER BATCH TONIGHT (live; judged in their own batch, not this one) ===
 $OVERFLOW
@@ -815,6 +841,40 @@ $BRIEF"
                     "$SCRIPT_DIR/lib/eng" field "$KEY" state 2>/dev/null)" || RECORD_STATE=""
                 if [ "$RECORD_STATE" != open ]; then
                     say "round $ROUNDS: '$KEY' is no longer open (${RECORD_STATE:-unreadable}) — skipped"
+                    continue
+                fi
+                # Rule 60b, first check: the brief is held against the
+                # record's NEWEST state, never dispatched on the state it
+                # was composed from. The record is rendered again and
+                # compared byte for byte with the view the selector was
+                # handed; a record that moved at all — an amendment, a
+                # touch, a hand's correction — makes the brief STALE. It is
+                # not dispatched, and the record returns to the unjudged
+                # set so the next round composes the brief again from the
+                # record as it now stands. The origin (2026-08-21 18:22):
+                # the store brief was rewritten to drop the exact block from
+                # the move prompt, and the builder dispatched thirty seconds
+                # later still carried the old plan.
+                local COMPOSED_VIEW="$WORK/composed-$KEY.md" NOW_VIEW="$WORK/now-$KEY.md"
+                if ! DESKCRAB_ENG_DIR="$RECORDS_DIR" "$SCRIPT_DIR/lib/eng" current "$KEY" \
+                        > "$NOW_VIEW" 2>/dev/null; then
+                    cp -f "$RECORDS_DIR/$KEY.md" "$NOW_VIEW" 2>/dev/null || : > "$NOW_VIEW"
+                fi
+                if [ ! -s "$COMPOSED_VIEW" ] || ! cmp -s "$COMPOSED_VIEW" "$NOW_VIEW"; then
+                    say "round $ROUNDS: '$KEY' moved since its brief was composed (last touched $(DESKCRAB_ENG_DIR="$RECORDS_DIR" "$SCRIPT_DIR/lib/eng" field "$KEY" last_touched 2>/dev/null)) — the brief is STALE and is not dispatched; the record is judged again from its current instructions (rule 60b) — $TITLE"
+                    JUDGED=" $(printf '%s' "$JUDGED" | tr ' ' '\n' | grep -vx -- "$KEY" | tr '\n' ' ')"
+                    continue
+                fi
+                # Rule 60b, second check: a brief that quotes a sentence the
+                # record has superseded cannot reach the door, whatever view
+                # it was composed from. lib/eng reads the marker; the night
+                # only asks.
+                local QUOTED
+                if QUOTED="$(DESKCRAB_ENG_DIR="$RECORDS_DIR" "$SCRIPT_DIR/lib/eng" \
+                        quotes-superseded "$KEY" "$WORK/$I.brief" 2>/dev/null)"; then
+                    say "round $ROUNDS: dispatch REFUSED for '$KEY' — the brief quotes an instruction the record has superseded: \"$QUOTED\" (rule 60b) — $TITLE"
+                    printf 'night-work: round %s: dispatch REFUSED for '\''%s'\'' — the brief quotes an instruction the record has superseded: "%s" (rule 60b) — %s\n' \
+                        "$ROUNDS" "$KEY" "$QUOTED" "$TITLE" >&2
                     continue
                 fi
                 RECORD_ARGS=(--record "$KEY")
