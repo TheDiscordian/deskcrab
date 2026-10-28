@@ -64,6 +64,10 @@ STUB
 "$JS" set "$J/raceA.json" slug=race-tidy
 "$JS" new "$J" raceB "$TIDY" "" "$WD" dispatched
 "$JS" set "$J/raceB.json" slug=race-tidy
+# Each hand carries an errand owed at completion (jobs.md rule 7j): the loser
+# must hand its own to the winner, whose wake is the news.
+"$JS" errand "$J/raceA.json" "tell the user the tidy ran (A's errand)" >/dev/null
+"$JS" errand "$J/raceB.json" "tell the user the tidy ran (B's errand)" >/dev/null
 JOBS_DIR="$J" "$REPO/lib/job-runner" raceA "$WD" >/dev/null 2>&1 </dev/null &
 PA=$!
 JOBS_DIR="$J" "$REPO/lib/job-runner" raceB "$WD" >/dev/null 2>&1 </dev/null &
@@ -107,6 +111,14 @@ case "$loser_log" in
     *"building as account"*) fail "the loser must exit before any build begins" "$loser_log" ;;
     *) ok "the loser never booted a builder" ;;
 esac
+check "the loser handed its errand to the incumbent (rule 7j)" \
+    grep -q "on-done errand handed to incumbent job $WIN" "$J/$LOSE.log"
+check_eq "the winner's record holds both errands" \
+    "$("$JS" list "$J/$WIN.json" on_done | wc -l | tr -d ' ')" "2"
+check "the hand-off is on the winner's log too" \
+    grep -q "handed over by duplicate $LOSE" "$J/$WIN.log"
+check "and the winner's completion wake carries both as OWED actions" \
+    grep -q "OWED ERRANDS (2)" "$J/$WIN.log"
 
 # From here on, a builder that answers at once — nothing below runs a race.
 sandbox_stub claude <<'STUB'

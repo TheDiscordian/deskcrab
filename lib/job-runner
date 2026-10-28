@@ -76,6 +76,10 @@ done
 unset _s _sid
 TASK="$("$LIB_DIR/job-status" get "$STATUS" description)"
 [ -n "$TASK" ] || { echo "job-runner: no status file (or empty task) for $ID" >> "$LOG"; exit 1; }
+# The errands owed at completion (specs/jobs.md rules 7j-7k), read here for
+# the duplicate hand-off below and RE-READ at wake time, after the final
+# state write, where the list is complete.
+mapfile -t ERRANDS < <("$LIB_DIR/job-status" list "$STATUS" on_done 2>/dev/null)
 
 # Single flight (specs/jobs.md rule 44). The door's sidecar scan cannot see
 # two dispatches racing in the same instant — on 2026-09-03 the 02:30 tidy
@@ -105,6 +109,21 @@ if [ -n "$JOB_FLIGHT_KEY" ]; then
             "$JOBS_DIR/flight/$JOB_FLIGHT_KEY.lock" 2>/dev/null)"
         INCUMBENT="${INCUMBENT%% *}"
         echo "job-runner: single-flight key '$JOB_FLIGHT_KEY' is already held by job ${INCUMBENT:-unknown} — two hands must never run one brief at once (jobs.md rule 44). This run exits WITHOUT touching any work file; the incumbent's log is $JOBS_DIR/${INCUMBENT:-unknown}.log" >> "$LOG"
+        # Rule 7j: the errands ride to the hand that runs the brief — the
+        # incumbent's wake is the news, so it must arrive holding them. A
+        # hand-off that cannot land is said out loud; an errand nothing
+        # carries is the whole defect this field exists to end.
+        for _e in ${ERRANDS[@]+"${ERRANDS[@]}"}; do
+            _h=""
+            if [ -n "$INCUMBENT" ] && _h="$("$LIB_DIR/job-status" errand "$JOBS_DIR/$INCUMBENT.json" "$_e" 2>&1)"; then
+                echo "job-runner: on-done errand handed to incumbent job $INCUMBENT: $_e" >> "$LOG"
+                printf '%s job-runner: on-done errand handed over by duplicate %s, owed at completion — %s\n' \
+                    "$(date '+%F %T')" "$ID" "$_e" >> "$JOBS_DIR/$INCUMBENT.log"
+            else
+                echo "job-runner: on-done errand could NOT be handed to the incumbent (${INCUMBENT:-unknown}): ${_h:-no incumbent id}. It is owed and nothing carries it: $_e" >> "$LOG"
+            fi
+        done
+        unset _e _h
         "$LIB_DIR/job-status" set "$STATUS" state=duplicate finished=now exit=0 \
             summary="single flight: key '$JOB_FLIGHT_KEY' held by job ${INCUMBENT:-unknown} — stood down without touching any work file"
         exit 0
@@ -154,6 +173,10 @@ STREAM_ARCHIVE="$JOBS_DIR/$ID.stream.log"
 # state=running is its first word (specs/jobs.md rule 9).
 "$LIB_DIR/job-status" set "$STATUS" state=running pid=$$ pidstart="$(_proc_starttime $$)" \
     stream="$STREAMLOG" stream_archive="$STREAM_ARCHIVE" steerable="$JOB_STEERABLE"
+for _e in ${ERRANDS[@]+"${ERRANDS[@]}"}; do
+    echo "job-runner: on-done errand owed at completion — the completion wake carries it as an OWED action: $_e" >> "$LOG"
+done
+unset _e
 # systemctl stop TERMs the whole unit: claude dies first, then this trap runs.
 # Without it a deliberately stopped job would look identical to a crashed one.
 # The day journal gets the stop too, with whatever log the job managed to write.
@@ -187,6 +210,12 @@ Hard rules:
   everything it left running in the background — is killed the moment your
   final message is written, so a backgrounded command is work that silently
   never happens. If something must outlive you, dispatch it with 'crab job'.
+- Your FINAL verification — the suite or live check you commit on — runs in
+  the foreground, and this is a gate, not advice: collection reads your tool
+  record, and a run whose last tool call was a background dispatch
+  (run_in_background, a trailing '&', nohup, setsid) is marked FAILED as
+  having died waiting, whatever your report says (jobs.md rule 39a). Wait
+  for the result, then commit, then report.
 - If you commit, stage with an explicit \`git add -- <paths>\` (never \`git add -A\`;
   another hand may have files open in the same repo).
 - Read the repo's CLAUDE.md before changing anything in it.
@@ -613,6 +642,28 @@ else
         WAKE_REASON="Detached job $ID finished ($STATE, exit $RC${COLLECTION:+; $COLLECTION}). Task was: $(printf '%.200s' "$TASK") — full output in $LOG. Read it and verify its claims yourself before repeating them."
     fi
 fi
+# The errands owed at completion (jobs.md rule 7k), RE-READ after the final
+# state write above: the attach door refuses any state past running under
+# the same lock, so this list is complete — whatever was attached mid-run
+# included — and every completion wake, whatever its outcome, carries each
+# one verbatim as an OWED action. Nothing here decides whether an errand
+# still makes sense over this outcome; the waking session does, and says
+# so either way. A job with no errand books the reason it always did.
+mapfile -t ERRANDS < <("$LIB_DIR/job-status" list "$STATUS" on_done 2>/dev/null)
+if [ "${#ERRANDS[@]}" -gt 0 ]; then
+    ERRAND_NOTE=" OWED ERRAND"
+    [ "${#ERRANDS[@]}" -gt 1 ] && ERRAND_NOTE="${ERRAND_NOTE}S (${#ERRANDS[@]})"
+    ERRAND_NOTE="$ERRAND_NOTE — attached to this job by the hand that dispatched it, to be done when the job exits:"
+    _n=0
+    for _e in "${ERRANDS[@]}"; do
+        _n=$(( _n + 1 ))
+        ERRAND_NOTE="$ERRAND_NOTE $_n) «$_e»"
+    done
+    ERRAND_NOTE="$ERRAND_NOTE — Do it NOW, in this wake. If the outcome above makes it wrong or impossible, say plainly in your reply that it was NOT done and why. Never silently skip it: the errand lives nowhere but here, and it is owed whatever the build did (jobs.md rule 7k)."
+    WAKE_REASON="$WAKE_REASON$ERRAND_NOTE"
+    echo "job-runner: the completion wake carries ${#ERRANDS[@]} owed errand(s) as OWED actions" >> "$LOG"
+    unset _n _e
+fi
 # The review effort override (jobs.md rule 29b): a level the booking side
 # would refuse must fall back rather than cost the job its only channel back.
 case "${JOB_REVIEW_EFFORT:-medium}" in
@@ -693,6 +744,10 @@ elif [ -n "$WANTS_FILE" ]; then
         ${REVIEW_WAKE:+--effort "${JOB_REVIEW_EFFORT:-medium}"} \
         ${REVIEW_WAKE:+--model "${JOB_REVIEW_MODEL:-sol}"} \
         5s event "$WAKE_REASON" >/dev/null 2>&1
+elif [ "${#ERRANDS[@]}" -gt 0 ]; then
+    # No wants file, no completion wake (rule 7) — and therefore nothing to
+    # carry the errand. Said in the one place that outlives this process.
+    echo "job-runner: no WANTS_FILE on this instance, so no completion wake is booked and the owed errand(s) cannot be carried — do them by hand: ${ERRANDS[*]}" >> "$LOG"
 fi
 
 exit "$RC"

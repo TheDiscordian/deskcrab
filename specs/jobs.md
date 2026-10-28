@@ -148,6 +148,35 @@ and the completion channel a job has back to her.
     and any attached engineering record; the existing job-completion wake is the labeled path by
     which Beatrice later learns the result. Builder prose MUST never be written as a `User` block,
     spoken in Beatrice's voice, or displayed as though Ryan said it.
+7j. A job CARRIES the errand owed at its completion. `crab job --on-done '<errand>' <brief>`
+    records on the sidecar, as `on_done`, what the dispatching hand means to do when the job
+    exits — a message to send, a service to restart, a person to tell — and
+    `crab job on-done <id> '<errand>'` attaches one to a job already `queued`, `dispatched` or
+    `running`. An errand is a line: 1000 characters at most, newlines and tabs flattened to
+    spaces because the wake record is one line, otherwise byte for byte what was typed. An empty
+    one is refused, an identical one already attached coalesces, and the flag may repeat.
+    Attachment goes through the one sidecar writer under the job's own lock with the state
+    re-read inside it, and it REFUSES every state but those three in plain words: the runner
+    reads the list AFTER its final state write, so an errand accepted is an errand carried, and
+    an errand that would have missed the wake is refused rather than silently filed. The list
+    rides requeue and the automatic block retry exactly as the record and the slug do, and a
+    duplicate that stands down (rule 44) hands its errands to the incumbent, whose wake is the
+    news. The origin (2026-08-21): a Signal line queued in conversation for a build's exit —
+    "when this job exits, do X" lived only in the transcript, the 17:56 completion wake arrived
+    holding the log and nothing else, and the message was never sent; the user found out from
+    his phone. An intention that must survive a turn boundary rides the thing that crosses it.
+7k. The completion wake carries the errand as an OWED action. Whatever the outcome — collected,
+    failed, died waiting, blocked, the record untouched or unsubmitted — the wake's reason ends
+    with an `OWED ERRAND` block quoting every attached errand VERBATIM and instructing the
+    waking session to perform it now, or to say plainly in its reply that it was NOT done and
+    why; silently skipping it is the named failure. The event wake prints its reason as the
+    session's agenda ([wake-queue.md](wake-queue.md)), so the prompt holds the errand in the
+    dispatcher's own words. The outcome above the block is context, never permission: a blocked
+    or failed job does not cancel the errand, it changes what honest performance looks like — a
+    "the build landed" message is not sent over a failed build; that is reported undone, with
+    the reason. A job with no errand books exactly the wake it always did, byte for byte; an
+    instance that books no completion wake (no `WANTS_FILE`) says in the job log that the errand
+    cannot be carried; and no historical sidecar is re-read for errands — nothing is replayed.
 
 ### State
 
@@ -475,6 +504,25 @@ re-derived it by hand.
     waiting, whatever work sits beside it in the tree — the work is still recorded in full
     (rule 38), so nothing real is lost, only the claim of completion. The completion wake says
     failure. Waiting is not a terminal state for a process that terminates.
+39a. The final verification runs in the FOREGROUND, and a backgrounded last act is a wait died
+    on. A builder's session ends when its final message is written, and everything it left
+    running in the background ends with it — so a builder that hands its last gate (the suite,
+    the live check it means to commit on) to a background dispatch and then reports has no
+    result to report and no process left to commit on it. Job 20260821-183922 did exactly that:
+    914 verified lines on the floor, the suite backgrounded, the report ending on "waiting for
+    it to finish before the commit" — and it had the foreground reminder in its prompt, which is
+    why this is a gate and not another reminder. Collection reads the job's tool-call stream
+    (the archive of rule 22a, else the live stream) and judges the run's LAST tool-calling
+    message, parallel calls included: a `finished` job whose last act was a background dispatch
+    — a Bash call with `run_in_background` set, or a command detached by a trailing `&`,
+    `nohup` or `setsid` — is `failed`, with the `collection` verdict opening "died waiting" and
+    naming the command, exactly as rule 39 fails a report that ends on a wait, so the same
+    completion wake says so. The work is recorded in full as ever; only the claim of completion
+    is refused. The judgement is of the last act alone: a background start followed by
+    foreground work (a server brought up and then exercised) is a run that went on to do
+    something, and rule 39's closing-words gate still stands behind it for the builder that
+    backgrounds, polls once and writes "waiting". A job with no readable stream is judged on
+    its report alone. The runner's system prompt MUST state the gate and its consequence.
 40. Work is findable after any death. `crab job collect <id>` runs the same collection by hand on a
     job in any ended state — died mid-suite, stopped, blocked-then-forced, never pushed — recording
     what is actually on disk without changing any state but `finished`'s. `crab job show <id>`
@@ -552,7 +600,7 @@ log still held only the account banner. These rules make the protection structur
 
 | Path | Format |
 |---|---|
-| `~/.local/share/deskcrab/jobs/<id>.json` | `{id, description, workdir, record, want, slug, daily, queued, queued_epoch, started, started_epoch, model, model_request, effort, unit, state, pid, pidstart, attempts, history, finished, finished_epoch, exit, retry, retry_of, branch, commits, unpushed, dirty, tests, collection, collected_at}` — `workdir` is where the builder ran, recorded so `requeue` never has to ask (rule 7a); sidecars older than a field simply lack it. `record` is the engineering record the job was dispatched against (rules 7b, 27–29), absent when none was; `record_attached_epoch` is when the ending gate's attach write touched that record, so rule 27's floor can discount it (engineering-records.md rule 15b), absent on every other dispatch. `want` is the shelf title a want-linked dispatch matched (rule 30). `slug` is the explicit single-flight key and `daily` the recurring brief's own HH:MM occurrence (rules 42 and 45), both absent on a brief that named neither. `queued`/`queued_epoch` are when the brief was shelved (rule 32); `started`/`started_epoch` are the dispatch. `model`/`effort` are what the builder ran with (rule 35) — `model` is re-stamped by rule 5b's family walk so it stays what actually ran, and `model_request` is the per-job override of rule 5c, absent when none was given. `attempts` is one line per account attempt (rule 37); `history` is the transition list `[{at, state}, …]` (rule 36). `retry` is the spent automatic retry of a blocked job (the new job's id, `fired`, or `abandoned`) and `retry_of` names the blocked job a retry came from (rules 18b, 18f). `branch`, `commits` (`["shorthash subject", …]`), `unpushed`, `dirty`, `tests`, `collection`, `collected_at` are what collection found (rules 38–40); `tree_commits` is how many commits the git window saw on a job that declared `commit=none`, present only there, because those are other hands' (rule 38c) |
+| `~/.local/share/deskcrab/jobs/<id>.json` | `{id, description, workdir, record, want, slug, daily, queued, queued_epoch, started, started_epoch, model, model_request, effort, unit, state, pid, pidstart, attempts, history, finished, finished_epoch, exit, retry, retry_of, branch, commits, unpushed, dirty, tests, collection, collected_at, on_done}` — `workdir` is where the builder ran, recorded so `requeue` never has to ask (rule 7a); sidecars older than a field simply lack it. `record` is the engineering record the job was dispatched against (rules 7b, 27–29), absent when none was; `record_attached_epoch` is when the ending gate's attach write touched that record, so rule 27's floor can discount it (engineering-records.md rule 15b), absent on every other dispatch. `want` is the shelf title a want-linked dispatch matched (rule 30). `slug` is the explicit single-flight key and `daily` the recurring brief's own HH:MM occurrence (rules 42 and 45), both absent on a brief that named neither. `queued`/`queued_epoch` are when the brief was shelved (rule 32); `started`/`started_epoch` are the dispatch. `model`/`effort` are what the builder ran with (rule 35) — `model` is re-stamped by rule 5b's family walk so it stays what actually ran, and `model_request` is the per-job override of rule 5c, absent when none was given. `attempts` is one line per account attempt (rule 37); `history` is the transition list `[{at, state}, …]` (rule 36). `retry` is the spent automatic retry of a blocked job (the new job's id, `fired`, or `abandoned`) and `retry_of` names the blocked job a retry came from (rules 18b, 18f). `branch`, `commits` (`["shorthash subject", …]`), `unpushed`, `dirty`, `tests`, `collection`, `collected_at` are what collection found (rules 38–40); `tree_commits` is how many commits the git window saw on a job that declared `commit=none`, present only there, because those are other hands' (rule 38c). `on_done` is the list of errands owed at completion (rules 7j–7k), one line each, absent on a job that was given none |
 | `~/.local/share/deskcrab/jobs/<id>.log` | the builder's report, written live as the stream produces it (rule 26) |
 | `~/.local/share/deskcrab/jobs/<id>.stream.log` | the durable twin of the tool-call stream (rule 22a): every event the live stream carried, written by the same tee as the events are produced; the sidecar names it as `stream_archive`; pruned with the record by report's keep-days sweep |
 | `~/.local/share/deskcrab/jobs/blocked` | `<epoch> \t <family[,family…]|all> \t <reason>` (rule 16), last block wins; a two-field marker from before the families field reads as `all` |
@@ -688,6 +736,21 @@ exactly one writer by content and mtime, the loser `duplicate` with the key and 
 its own log, having booted no builder; a stale-queued `--daily` brief superseded at the door
 with no unit started while a fresh one dispatches, the dry run dropping nothing; and a stale
 flight lock from a dead pid recovered rather than standing).
+`tests/test_job_on_done.sh` (rules 7j–7k: `--on-done` lands the errand on a dispatched and on a
+queued sidecar and the dry run names it; an empty or over-long errand is refused at the door;
+`crab job on-done` attaches to a running and to a queued job, coalesces an identical errand,
+and refuses an ended job in plain words with nothing written; the runner's completion wake —
+the booked record and the fired event wake's prompt alike — quotes the errand verbatim under
+the OWED ERRAND block on a clean run, a failed run and a died-waiting run, and the builder's
+prompt carries rule 39a's gate; a job without an errand books a reason with no such block and
+shows no such line; requeue and the automatic block retry carry the list);
+`tests/test_job_single_flight.sh` also holds rule 7j's hand-off: the duplicate's errands land
+on the incumbent, named in the loser's log;
+`tests/test_job_collect.sh` also holds rule 39a: a finished run whose last tool act was a
+background dispatch — `run_in_background`, a trailing `&`, `nohup`, a parallel call beside a
+read — is failed with the command in a died-waiting verdict, by the stream archive and by the
+runner end to end; a background start followed by foreground work collects, `&&` is not a
+detach, a failed run is not re-judged, and a run with no stream is judged on its report alone;
 `tests/test_job_model_fallback.sh` (rules 5b, 5c, 16-17: the per-job `--model` override
 dispatching on its own model with `model_request` on the sidecar, the conf's bytes untouched
 and a flag-less dispatch unchanged; a malformed name refused at the door; the family-scoped

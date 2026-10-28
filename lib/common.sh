@@ -9386,13 +9386,85 @@ job_steer() {  # <id> <correction>
     echo "Correction queued directly for active job $id. Its builder will receive it at the next tool boundary."
 }
 
+# The errand's door test, shared by `--on-done` and `crab job on-done`
+# (jobs.md rule 7j): non-empty once whitespace is stripped, and a line — the
+# bound job-status holds too, judged here so the refusal lands before any
+# sidecar exists. <errand> [refusal-prefix]
+job_errand_check() {
+    local errand="${1:-}" prefix="${2:-Not attached}"
+    if [ -z "$(printf '%s' "$errand" | tr -d '[:space:]')" ]; then
+        echo "$prefix — the on-done errand is empty: an errand says what to do when the job exits (jobs.md rule 7j)."
+        return 1
+    fi
+    if [ "${#errand}" -gt 1000 ]; then
+        echo "$prefix — the on-done errand is ${#errand} characters; an errand is a line, 1000 at most (jobs.md rule 7j). Put the long form in a file or the brief and name it."
+        return 1
+    fi
+}
+
+# Attach each errand to a sidecar that exists, through the one locked writer
+# (job-status errand), and note it in the job's own log so a reader of the
+# log sees what is owed. A refusal is printed, never swallowed: a dispatch
+# whose errand did not land must say so where the dispatcher can see it.
+# <id> [errand ...]
+job_errands_attach() {
+    local id="$1" e out; shift
+    for e in "$@"; do
+        if out="$("$LIB_DIR/job-status" errand "$JOBS_DIR/$id.json" "$e" 2>&1)"; then
+            case "$out" in
+                "Errand attached"*)
+                    printf '%s crab job: on-done errand owed at completion — %s\n' \
+                        "$(date '+%F %T')" "$e" >> "$JOBS_DIR/$id.log"
+                    echo "  on-done errand owed at completion: $e" ;;
+            esac
+        else
+            echo "  $out"
+        fi
+    done
+}
+
+# `crab job on-done <id> <errand>` — attach the errand owed at this job's
+# completion to a job already queued, dispatched or running (jobs.md rule
+# 7j). Not a wake, not a correction, not a second job: the errand rides the
+# sidecar, the runner reads the list after its final state write, and the
+# completion wake arrives holding it as an OWED action (rule 7k). The state
+# is judged inside the writer's own lock — an ended job is refused in plain
+# words, because its wake is already booked and an errand filed now would be
+# the 2026-08-21 shape again: a promise nothing carries.
+job_on_done() {  # <id> <errand...>
+    local id="${1:-}" errand out
+    [ $# -gt 0 ] && shift
+    errand="$*"
+    case "$id" in
+        ''|*[!A-Za-z0-9._-]*)
+            echo "Usage: crab job on-done <id> <errand>   (ids: crab jobs)"
+            return 1 ;;
+    esac
+    local sidecar="$JOBS_DIR/$id.json"
+    [ -e "$sidecar" ] || { echo "No such job: $id   (ids: crab jobs)"; return 1; }
+    job_errand_check "$errand" "Not attached" || return 1
+    if out="$("$LIB_DIR/job-status" errand "$sidecar" "$errand" 2>&1)"; then
+        echo "$out"
+        case "$out" in
+            "Errand attached"*)
+                printf '%s crab job on-done: errand attached, owed at completion — %s\n' \
+                    "$(date '+%F %T')" "$errand" >> "$JOBS_DIR/$id.log"
+                echo "  It rides the completion wake as an OWED action: done there, or reported undone in plain words (jobs.md rule 7k)." ;;
+        esac
+    else
+        echo "$out"
+        return 1
+    fi
+}
+
 job_start() {
     # The id of whatever this call shelves or dispatches, for callers that
     # need it programmatically (the chore gate, turn-pipeline rule 16c) —
     # parsing it back out of the human messages below was the alternative.
     JOB_START_ID="" JOB_START_QUEUED=""
     local workdir="$PROJECT_DIR" force="" origin="" record="" want="" redo_of=""
-    local slug="" daily="" model_request=""
+    local slug="" daily="" model_request="" od_note="" _od
+    local -a on_done=()
     while :; do
         case "${1:-}" in
             -C) workdir="${2:-$PROJECT_DIR}"; shift 2 2>/dev/null || shift $# ;;
@@ -9412,6 +9484,14 @@ job_start() {
             # the record is the one carrier that survives — and requeue and
             # the automatic block retry carry it like the record and slug.
             --model) model_request="${2:-}"; shift 2 2>/dev/null || shift $# ;;
+            # The errand owed at completion (jobs.md rules 7j-7k): what the
+            # dispatching hand means to do when this job exits, carried on
+            # the sidecar so the completion wake arrives holding it as an
+            # OWED action — the 2026-08-21 Signal line lived only in the
+            # conversation and was never sent. May repeat; judged at the
+            # door below; attached through the one locked writer once the
+            # sidecar exists.
+            --on-done) on_done+=("${2:-}"); shift 2 2>/dev/null || shift $# ;;
             # -O names the blocked job this dispatch is the automatic retry of
             # (lib/job-block-retry, jobs.md rule 18b). Internal, not offered in
             # the usage line: the stamps it writes below are what make the
@@ -9434,12 +9514,12 @@ job_start() {
             --want|-W) want="${2:-}"; shift 2 2>/dev/null || shift $# ;;
             # Any other flag is a mistake, not a task description — once, a
             # stray --help was dispatched as a real job that ran `claude --help`.
-            -*) echo "Unknown option '$1'. Usage: crab job [-C <workdir>] [--record <eng-id>] [--want <ref>] [--slug <key>] [--daily <HH:MM>] [--model <name>] [-f] <description of the work>"; return 1 ;;
+            -*) echo "Unknown option '$1'. Usage: crab job [-C <workdir>] [--record <eng-id>] [--want <ref>] [--slug <key>] [--daily <HH:MM>] [--model <name>] [--on-done <errand>] [-f] <description of the work>"; return 1 ;;
             *) break ;;
         esac
     done
     local task="$*"
-    [ -n "$task" ] || { echo "Usage: crab job [-C <workdir>] [--record <eng-id>] [--want <ref>] [--slug <key>] [--daily <HH:MM>] [--model <name>] [-f] <description of the work>"; return 1; }
+    [ -n "$task" ] || { echo "Usage: crab job [-C <workdir>] [--record <eng-id>] [--want <ref>] [--slug <key>] [--daily <HH:MM>] [--model <name>] [--on-done <errand>] [-f] <description of the work>"; return 1; }
     # A slug is a key, and a key is a filename: the flight lock of rule 44
     # lives at flight/<key>.lock, so the character set is validated here,
     # before anything exists (the same discipline as the id check in steer).
@@ -9466,6 +9546,13 @@ job_start() {
             echo "Not dispatched — --model '$model_request' is not a model name (letters, digits, dot, dash, underscore and colon; jobs.md rule 5c)."
             return 1 ;;
     esac
+    # An errand is judged at the door (jobs.md rule 7j), before anything
+    # exists: empty is a broken substitution's shape, over-long is a brief
+    # wearing the errand's hat. The note joins the dry-run line below.
+    for _od in ${on_done[@]+"${on_done[@]}"}; do
+        job_errand_check "$_od" "Not dispatched" || return 1
+        od_note="${od_note:+$od_note; }$_od"
+    done
     # Live steering is a synchronous ACTIONS control, not build work. Sending
     # this one-line correction to a detached builder delays it and makes a
     # second personality responsible for the assistant's own play.
@@ -9491,6 +9578,13 @@ job_start() {
         # brief was pinned to, never whatever the conf says on the day.
         [ -z "$model_request" ] && \
             model_request="$("$LIB_DIR/job-status" get "$JOBS_DIR/$origin.json" model_request 2>/dev/null)"
+        # ...and the errands owed at completion (rule 7j): the retry is the
+        # run that will exit, so it is the run whose wake must carry them.
+        if [ "${#on_done[@]}" -eq 0 ]; then
+            mapfile -t on_done < <("$LIB_DIR/job-status" list "$JOBS_DIR/$origin.json" on_done 2>/dev/null)
+            od_note=""
+            for _od in ${on_done[@]+"${on_done[@]}"}; do od_note="${od_note:+$od_note; }$_od"; done
+        fi
     fi
     # An id the records drawer does not know is refused before any sidecar or
     # unit exists — a job tied to a record nobody can touch could only ever
@@ -9558,6 +9652,10 @@ job_start() {
             "$LIB_DIR/job-status" set "$JOBS_DIR/$id.json" daily="$daily"
         [ -n "$model_request" ] && \
             "$LIB_DIR/job-status" set "$JOBS_DIR/$id.json" model_request="$model_request"
+        # The errands owed at completion ride the queued record (rule 7j):
+        # the night dispatches the same sidecar, and the wake it books must
+        # arrive holding them.
+        job_errands_attach "$id" ${on_done[@]+"${on_done[@]}"}
         echo "Job $id QUEUED for the night — not dispatched. Awake, the door dispatches only want-linked work (jobs.md rule 30); the night takes up the queue after sleep."
         echo "  now instead: crab job dispatch $id   (or --want <ref> to link a want, -f to force)"
         echo "  list: crab jobs    drop: crab job drop $id"
@@ -9596,7 +9694,7 @@ job_start() {
     # — one of which fired a completion wake at me, seven hours later, about a
     # job whose scratch log had long since been deleted.
     if [ -n "${DESKCRAB_NO_DISPATCH:-}" ]; then
-        echo "Would dispatch (DESKCRAB_NO_DISPATCH set) in $workdir: $task${origin:+ (retry of $origin)}${record:+ (against record $record)}${want_title:+ (want: $want_title)}${model_request:+ (model: $model_request)}"
+        echo "Would dispatch (DESKCRAB_NO_DISPATCH set) in $workdir: $task${origin:+ (retry of $origin)}${record:+ (against record $record)}${want_title:+ (want: $want_title)}${model_request:+ (model: $model_request)}${od_note:+ (on-done: $od_note)}"
         return 0
     fi
     local id
@@ -9623,6 +9721,10 @@ job_start() {
     # it, and the worker reads it back past the conf's own assignment.
     [ -n "$model_request" ] && \
         "$LIB_DIR/job-status" set "$JOBS_DIR/$id.json" model_request="$model_request"
+    # And the errands owed at completion (rules 7j-7k): the runner reads
+    # them back after its final state write and the completion wake carries
+    # each one verbatim as an OWED action.
+    job_errands_attach "$id" ${on_done[@]+"${on_done[@]}"}
     if [ -n "$origin" ]; then
         # jobs.md rules 18b and 18f: the new sidecar names the blocked job it
         # came from — `crab jobs` shows it, and job-runner reads it to never
@@ -9871,11 +9973,16 @@ job_requeue() {
     # ...and the per-job model (rule 5c): a brief pinned to a model stays
     # pinned through its redispatch.
     mreq="$("$LIB_DIR/job-status" get "$sidecar" model_request 2>/dev/null)"
-    local -a args=(-C "$workdir" -X "$id")
+    # ...and the errands owed at completion (rule 7j): the redispatch is the
+    # run that will exit, so its wake is the one that must carry them.
+    local -a od=() args=(-C "$workdir" -X "$id")
+    local _e
+    mapfile -t od < <("$LIB_DIR/job-status" list "$sidecar" on_done 2>/dev/null)
     [ -n "$record" ] && args+=(--record "$record")
     [ -n "$slug" ] && args+=(--slug "$slug")
     [ -n "$daily" ] && args+=(--daily "$daily")
     [ -n "$mreq" ] && args+=(--model "$mreq")
+    for _e in ${od[@]+"${od[@]}"}; do args+=(--on-done "$_e"); done
     job_start "${args[@]}" "$desc"
 }
 

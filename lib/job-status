@@ -5,7 +5,7 @@ Each job is one small JSON file <id>.json beside its log <id>.log:
     {id, description, workdir, record, want, queued, queued_epoch, started,
      started_epoch, model, effort, unit, state, pid, pidstart, attempts, steering,
      history, finished, finished_epoch, exit, retry, retry_of, branch,
-     commits, unpushed, dirty, tests, collection, collected_at}
+     commits, unpushed, dirty, tests, collection, collected_at, on_done}
 state: queued | dispatched | running | finished | collected | failed |
        stopped | died | blocked | duplicate | superseded
        queued is a brief on the shelf — no unit, no builder — waiting for the
@@ -37,6 +37,10 @@ retry / retry_of: the one automatic re-dispatch of a blocked job (specs/jobs.md
        report prints the lineage (rule 18f).
 branch/commits/unpushed/dirty/tests/collection/collected_at: what collection
        found in the workdir and the report (lib/job-collect, rules 38-40).
+on_done: the errands owed at completion (specs/jobs.md rules 7j-7k) — one
+       line each, attached by `errand` below and read back by the worker
+       after its final state write, so the completion wake carries every one
+       of them verbatim as an OWED action. Absent on a job given none.
 
     job-status new <dir> <id> <description> <unit> [workdir] [state]
     job-status set <file> key=value [key=value ...]
@@ -49,11 +53,19 @@ branch/commits/unpushed/dirty/tests/collection/collected_at: what collection
     job-status flight-key <slug> <description>
     job-status flight-incumbent <dir> <slug> <description> <exclude-id>
                                 [states-csv]
+    job-status errand <file> <text>
+    job-status list <file> <key>
 
 `set` coerces digit values to ints, treats the value "now" as a timestamp
 (writing both <key> and <key>_epoch), and an empty value as "remove the key".
 Setting `state` appends a {at, state} entry to `history` in the same write.
 `append` grows a list field (attempts, commits) by one string entry.
+`errand` attaches an on-done errand (rule 7j): under the job's lock it
+re-reads the state and REFUSES — exit 1, nothing written — any state but
+queued, dispatched or running, because the worker reads the list after its
+final state write and an errand accepted past that point would never be
+carried. An identical errand already on the list coalesces (exit 0, nothing
+written). `list` prints a list field one entry per line for a shell reader.
 
 Every read-modify-write here — set, append, and report's reap — happens under
 the job's own <id>.lock (specs/jobs.md rules 11 and 36): the lock lives in the
@@ -117,8 +129,10 @@ def update(path, mutate):
     try:
         with open(path) as f:
             data = json.load(f)
-        mutate(data)
-        write(path, data)
+        # A mutator that returns False declines the write: the errand door
+        # refuses or coalesces without moving the file.
+        if mutate(data) is not False:
+            write(path, data)
     finally:
         fd.close()
     return data
@@ -260,6 +274,83 @@ def cmd_get(argv):
     path, key = argv
     with open(path) as f:
         print(json.load(f).get(key, ""))
+
+
+def cmd_list(argv):
+    """A list field, one entry per line, for a shell `mapfile`. Entries
+    are written flat (errand flattens its line; attempts and commits are
+    one-liners by construction), so a line is an entry."""
+    path, key = argv
+    with open(path) as f:
+        cur = json.load(f).get(key)
+    if isinstance(cur, list):
+        for e in cur:
+            print(" ".join(str(e).splitlines()))
+
+
+ERRAND_STATES = ("queued", "dispatched", "running")
+ERRAND_MAX = 1000
+
+
+def errand_text(text):
+    """The errand as the record holds it (specs/jobs.md rule 7j): newlines
+    and tabs flattened to spaces because the wake record is one line, the
+    ends stripped, and otherwise byte for byte what was typed."""
+    return (str(text or "").replace("\r", " ").replace("\n", " ")
+            .replace("\t", " ").strip())
+
+
+def cmd_errand(argv):
+    """Attach an on-done errand (specs/jobs.md rule 7j), under the lock.
+
+    The state is re-read INSIDE the lock and anything but queued, dispatched
+    or running is refused with nothing written: the worker reads the list
+    after its final state write, which the same lock serialises, so an
+    errand this accepts is on the list the worker reads, and one that would
+    have missed the wake is refused in plain words rather than filed where
+    nothing will ever carry it. Prints one line; exit 1 on refusal.
+    """
+    path, text = argv[0], errand_text(argv[1] if len(argv) > 1 else "")
+    jid = os.path.basename(path)[:-len(".json")] if path.endswith(".json") \
+        else path
+    if not text:
+        print("Not attached — the errand is empty: an errand says what to do "
+              "when job %s exits (jobs.md rule 7j)." % jid)
+        sys.exit(1)
+    if len(text) > ERRAND_MAX:
+        print("Not attached — the errand is %d characters; an errand is a "
+              "line, %d at most (jobs.md rule 7j). Put the long form in a "
+              "file or the brief and name it." % (len(text), ERRAND_MAX))
+        sys.exit(1)
+    outcome = {}
+
+    def mutate(data):
+        state = data.get("state")
+        if state not in ERRAND_STATES:
+            outcome["refused"] = state or "?"
+            return False
+        cur = data.get("on_done")
+        if not isinstance(cur, list):
+            cur = []
+        if text in cur:
+            outcome["dup"] = True
+            return False
+        cur.append(text)
+        data["on_done"] = cur
+        outcome["state"] = state
+
+    update(path, mutate)
+    if "refused" in outcome:
+        print("Not attached — job %s is '%s', not queued, dispatched or "
+              "running: its completion wake is already booked (or never will "
+              "be), so an errand attached now would never be carried "
+              "(jobs.md rule 7j). Do it yourself in this turn, or attach it "
+              "to the job that replaces this one." % (jid, outcome["refused"]))
+        sys.exit(1)
+    if "dup" in outcome:
+        print("That errand is already attached to job %s." % jid)
+        return
+    print("Errand attached to job %s (%s): %s" % (jid, outcome["state"], text))
 
 
 def flight_key_str(slug, desc):
@@ -585,7 +676,8 @@ def cmd_show(argv):
         if v == "" or v is None:
             continue
         print("  %-14s %s" % (label + ":", v))
-    for key, label in (("commits", "commits"), ("attempts", "attempts"),
+    for key, label in (("on_done", "owed at completion"),
+                       ("commits", "commits"), ("attempts", "attempts"),
                        ("steering", "steering"),
                        ("history", "history")):
         entries = job.get(key)
@@ -601,7 +693,8 @@ def cmd_show(argv):
 
 def main():
     cmds = {"new": cmd_new, "set": cmd_set, "append": cmd_append,
-            "get": cmd_get, "show": cmd_show,
+            "get": cmd_get, "list": cmd_list, "errand": cmd_errand,
+            "show": cmd_show,
             "report": cmd_report, "since": cmd_since,
             "flight-key": cmd_flight_key,
             "flight-incumbent": cmd_flight_incumbent}

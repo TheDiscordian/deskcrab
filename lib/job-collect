@@ -21,10 +21,14 @@ answers without anyone opening a log:
     collection   one line of verdict
     collected_at when this ran
 
-and it holds the one gate rule 39 demands: a run that exited clean whose
+and it holds the gate rule 39 demands: a run that exited clean whose
 report ENDS ON AN INTENTION — standing by, waiting on another job, holding
 the commit until later — is `failed`, never finished, with the verdict
-quoting the waiting. The work beside it is still recorded in full; only the
+quoting the waiting — and rule 39a's twin of it, read from the tool-call
+stream rather than the prose: a run whose LAST tool act was a background
+dispatch handed its final gate to a process that died with the session
+(job 20260821-183922: the suite backgrounded, 914 verified lines never
+committed), and is failed the same way, the verdict naming the command. The work beside it is still recorded in full; only the
 claim of completion is refused. Everything else that was `finished` moves to
 `collected`, the terminal state of a job whose work has been located — and a
 job MUST NOT fail for having produced no commits, because reading and
@@ -117,6 +121,13 @@ PRECHANGE_RE = re.compile(
 COMMIT_LINE_RE = re.compile(
     r"\bcommit(?:ted|ting|s)?\b[^\n]*?\b(?=[0-9a-f]*\d)[0-9a-f]{7,40}\b",
     re.IGNORECASE)
+
+# Rule 39a: a shell-level detach in a Bash command — a trailing `&` that is
+# not the second half of `&&` (optionally closing a subshell), or nohup /
+# setsid opening a command. `run_in_background` is read off the tool input
+# itself and needs no pattern.
+DETACH_TAIL_RE = re.compile(r"(?<![&|])&\s*(?:\)\s*)?$")
+DETACH_HEAD_RE = re.compile(r"(?:^|[;&|(]\s*)(?:nohup|setsid)\s")
 
 
 def sentence_of(text, pos):
@@ -244,6 +255,69 @@ def waiting_tail(report):
     return None
 
 
+def background_dispatch(block):
+    """The command, if this tool_use block is a background dispatch
+    (rule 39a); None otherwise. Only Bash dispatches anything."""
+    if block.get("name") != "Bash":
+        return None
+    args = block.get("input") or {}
+    if not isinstance(args, dict):
+        return None
+    cmd = " ".join(str(args.get("command") or "").split())
+    if args.get("run_in_background") in (True, 1, "true", "True"):
+        return cmd or "(a backgrounded command)"
+    if cmd and (DETACH_TAIL_RE.search(cmd) or DETACH_HEAD_RE.search(cmd)):
+        return cmd
+    return None
+
+
+def stream_path(jobs_dir, job):
+    """The tool-call trace to judge: the durable archive first (rule 22a),
+    the live stream next, then the archive's computed path for a sidecar
+    written before the field existed. Empty when none is readable."""
+    for c in (job.get("stream_archive") or "", job.get("stream") or "",
+              os.path.join(jobs_dir, "%s.stream.log" % (job.get("id") or ""))):
+        if c and os.path.isfile(c):
+            return c
+    return ""
+
+
+def last_act_background(path):
+    """The command of the background dispatch in the run's LAST
+    tool-calling message, or None (rule 39a).
+
+    Parallel calls in one message are one act, so any background dispatch
+    among the final message's tool calls counts: a suite backgrounded
+    beside a file read is still a suite nobody waited for. A background
+    start followed by a LATER tool-calling message is a run that went on
+    to do something, and is not judged here.
+    """
+    if not path:
+        return None
+    last = None
+    try:
+        with open(path, encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                try:
+                    event = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(event, dict) or event.get("type") != "assistant":
+                    continue
+                content = (event.get("message") or {}).get("content") or []
+                calls = [b for b in content
+                         if isinstance(b, dict) and b.get("type") == "tool_use"]
+                if calls:
+                    last = calls
+    except OSError:
+        return None
+    for block in last or []:
+        cmd = background_dispatch(block)
+        if cmd:
+            return cmd[:200]
+    return None
+
+
 def cmd_run(argv):
     if len(argv) != 2:
         print("usage: job-collect run <jobs-dir> <id>", file=sys.stderr)
@@ -326,6 +400,12 @@ def cmd_run(argv):
         facts.append("tests: %s" % tally)
 
     waiting = waiting_tail(report) if report else None
+    # Rule 39a reads the tool record, not the prose: the last act of the run.
+    # Only a finished job is judged by it, exactly as rule 39 — a failed or
+    # died run is not re-judged, and a job with no readable stream is judged
+    # on its report alone.
+    backgrounded = (last_act_background(stream_path(jobs_dir, job))
+                    if state == "finished" else None)
 
     # The verdict — and rule 39's gate, on `finished` alone. Any other state
     # keeps itself: a died job's facts are recorded, its death is not
@@ -338,6 +418,15 @@ def cmd_run(argv):
                    "existing is a task that did not happen (rule 39)."
                    % waiting) + (" Work on disk: %s." % "; ".join(facts)
                                  if facts else "")
+    elif state == "finished" and backgrounded:
+        final = "failed"
+        verdict = ("died waiting — the run's last tool act was a background "
+                   "dispatch: \"%s\". The session ends when the final message "
+                   "is written and everything it backgrounded dies with it, so "
+                   "a final gate handed to the background was never read and "
+                   "nothing was left to commit on it (rule 39a)."
+                   % backgrounded) + (" Work on disk: %s." % "; ".join(facts)
+                                      if facts else "")
     elif state == "finished":
         final = "collected"
         verdict = ("collected: %s" % "; ".join(facts)

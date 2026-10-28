@@ -69,6 +69,9 @@ echo
 echo "commit=none means the window's commits are another hand's (rule 38c):"
 # The shape of job 20260902-224329: it stood down, touched nothing, and was
 # credited with two commits a live session had landed in the same tree.
+# The window opens at dispatch to the second, so the previous case's commit
+# must be a whole second behind this dispatch or it lands inside the window.
+sleep 1
 mkjob sd1 finished 0
 sleep 1
 echo other > "$WD/another-hand.txt"
@@ -289,3 +292,103 @@ check "and quotes rule 39's why" \
     contains "$(cat "$T/jobs2/e2ewait.log")" "a promise made by a process that stops existing"
 [ ! -s "$T/wakes" ] && ok "scratch run reached no live wake" \
     || fail "a scratch runner must never wake the live assistant" "$(cat "$T/wakes")"
+
+echo
+echo "the last act backgrounded is a wait died on (rule 39a):"
+# Job 20260821-183922's shape: the suite handed to the background, the report
+# written, the process gone before any result existed. The tool record, not
+# the prose, is what says so.
+bgstream() { # <id> <spec...> — "name|json-input" per call, "--" between messages
+    python3 - "$J/$1.stream.log" "${@:2}" <<'PY'
+import json, sys
+out = open(sys.argv[1], "w")
+msgs = [[]]
+for spec in sys.argv[2:]:
+    if spec == "--":
+        msgs.append([]); continue
+    name, _, inp = spec.partition("|")
+    msgs[-1].append({"type": "tool_use", "id": "t%d" % len(msgs),
+                     "name": name, "input": json.loads(inp or "{}")})
+for blocks in msgs:
+    if blocks:
+        out.write(json.dumps({"type": "assistant",
+                              "message": {"content": blocks}}) + "\n")
+out.write(json.dumps({"type": "assistant", "message": {"content": [
+    {"type": "text", "text": "Done."}]}}) + "\n")
+out.write(json.dumps({"type": "result", "result": "Done."}) + "\n")
+PY
+    "$JS" set "$J/$1.json" stream_archive="$J/$1.stream.log"
+}
+collect_bg() { # <id> <report> [stream spec...] — a finished job over this report and record
+    local id="$1" report="$2"; shift 2
+    mkjob "$id" finished 0
+    printf '%b' "$report" > "$J/$id.log"
+    [ $# -gt 0 ] && bgstream "$id" "$@"
+    "$JC" run "$J" "$id" 2>/dev/null
+}
+REPORT='Edits are in and the suite is running. Done.\nVERDICT: tests=0/0 commit=none\n'
+check_eq "run_in_background on the last call is failed" \
+    "$(collect_bg bg1 "$REPORT" 'Read|{"file_path":"/tmp/x"}' -- \
+        'Bash|{"command":"bash tests/run.sh","run_in_background":true}')" "failed"
+v="$("$JS" get "$J/bg1.json" collection)"
+check "the verdict opens on died waiting, so the wake branch is rule 39's" \
+    contains "$v" "died waiting"
+check "and names the background dispatch" contains "$v" "background dispatch"
+check "quoting the command" contains "$v" "bash tests/run.sh"
+check "with rule 39a's why" contains "$v" "nothing was left to commit on it"
+check_eq "a trailing & is a detach" \
+    "$(collect_bg bg2 "$REPORT" 'Bash|{"command":"bash tests/run.sh > /tmp/out 2>&1 &"}')" "failed"
+check_eq "so is nohup" \
+    "$(collect_bg bg3 "$REPORT" 'Bash|{"command":"nohup make test"}')" "failed"
+check_eq "a parallel call beside a read is still the last act" \
+    "$(collect_bg bg4 "$REPORT" 'Bash|{"command":"bash tests/run.sh","run_in_background":true}' \
+        'Read|{"file_path":"/tmp/x"}')" "failed"
+check_eq "a background start followed by foreground work collects" \
+    "$(collect_bg fg1 "$REPORT" 'Bash|{"command":"python3 serve.py &"}' -- \
+        'Bash|{"command":"curl -s localhost:8000/health"}')" "collected"
+check_eq "&& is not a detach" \
+    "$(collect_bg fg2 "$REPORT" 'Bash|{"command":"git add -- a && git commit -m x"}')" "collected"
+check_eq "a run with no stream is judged on its report alone" \
+    "$(collect_bg fg3 "$REPORT")" "collected"
+mkjob bgf failed 1
+printf 'The build broke.\n' > "$J/bgf.log"
+bgstream bgf 'Bash|{"command":"make &"}'
+check_eq "a failed run is not re-judged" "$("$JC" run "$J" bgf 2>/dev/null)" "failed"
+check "its verdict is the plain facts line" \
+    contains "$("$JS" get "$J/bgf.json" collection)" "facts recorded on a failed job"
+
+echo
+echo "…and the runner fails a builder whose last act was a background dispatch (rule 39a):"
+python3 - "$T/claude-bg" <<'PY'
+import json, sys
+# A conclusive closing sentence on purpose: rule 39's closing-words gate must
+# NOT be what catches this run — the tool record is.
+text = "Edits are in and the suite is running. Done."
+lines = [
+    json.dumps({"type": "assistant", "message": {"model": "stub", "content": [
+        {"type": "tool_use", "id": "t1", "name": "Bash",
+         "input": {"command": "bash tests/run.sh > /tmp/suite.out 2>&1",
+                   "run_in_background": True}}]}}),
+    json.dumps({"type": "user", "message": {"content": [
+        {"type": "tool_result", "tool_use_id": "t1", "content": "started"}]}}),
+    json.dumps({"type": "assistant", "message": {"model": "stub", "content": [
+        {"type": "text", "text": text}]}}),
+    json.dumps({"type": "result", "result": text}),
+]
+body = "#!/bin/bash\ncat > /dev/null\n"
+for l in lines:
+    body += "echo " + "'" + l.replace("'", "'\\''") + "'" + "\n"
+body += "exit 0\n"
+open(sys.argv[1], "w").write(body)
+PY
+chmod +x "$T/claude-bg"
+"$JS" new "$T/jobs2" e2ebg "a brief whose suite was backgrounded" "" "$WD" dispatched
+rm -f "$T/wakes"
+run_runner "$T/jobs2" e2ebg "$T/claude-bg"
+check_eq "exit 0 plus a backgrounded last act is failed" \
+    "$("$JS" get "$T/jobs2/e2ebg.json" state)" "failed"
+check "the collection names the dispatch" \
+    contains "$("$JS" get "$T/jobs2/e2ebg.json" collection)" "background dispatch"
+check "the suppressed wake reason says it died on a wait" \
+    contains "$(cat "$T/jobs2/e2ebg.log")" "FAILED by dying on a wait"
+check "and carries rule 39a's why" contains "$(cat "$T/jobs2/e2ebg.log")" "rule 39a"

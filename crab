@@ -741,6 +741,17 @@ What you did tonight is journaled from your tool activity without your help, so 
             job_steer "$JOB_STEER_ID" "$@"
             exit $?
         fi
+        if [ "${1:-}" = "on-done" ]; then
+            # The errand owed at this job's completion, attached to a job
+            # already in flight (specs/jobs.md rules 7j-7k): it rides the
+            # sidecar and the completion wake carries it as an OWED action.
+            # Owns its word outright, like steer.
+            shift
+            JOB_OD_ID="${1:-}"
+            [ $# -gt 0 ] && shift
+            job_on_done "$JOB_OD_ID" "$@"
+            exit $?
+        fi
         if [ "${1:-}" = "requeue" ]; then
             # Re-dispatch a recorded job from its own sidecar: the description
             # and the workdir come off the record, so no hand retypes a field
@@ -1035,7 +1046,7 @@ What you did tonight is journaled from your tool activity without your help, so 
         # asked of me as a message — sixteen times on 2026-08-07 a script or a
         # hand reaching for usage started a whole desktop turn where I was told
         # "help" with no context. Usage is printed, never spoken to.
-        echo "Usage: crab start|stop|status|seal|revive|shutup|face <verb>|face-window|claim <what>|unclaim|touching <paths>|numb [-w secs] <paths>|checkpoint <note>|resolve <name>|job [-C <dir>] [--record <eng-id>] [--want <ref>] <desc>|job log|activity|show|collect|dispatch|drop|requeue|steer <id>|jobs [--state <s>]|eng <new|list|show|touch|review|accept|reject|settle|kill|search> …|want <new|list|show|touch|dormant|revive|grown|retire|link|search|migrate> …|journal [YYYY-MM-DD]|metrics [YYYY-MM-DD|backfill]|context [--profile <p>]|--layers|wake|wake-now <reason>|wake-at <when> [kind] [reason]|wake-cancel <unit>|--all|wake-restore|wake-tidy|serve [port]|openrsc-link [base-url]|signal <verb>|remote <text>|notify <text>|play <file>|tired|shelf-check|<message>"
+        echo "Usage: crab start|stop|status|seal|revive|shutup|face <verb>|face-window|claim <what>|unclaim|touching <paths>|numb [-w secs] <paths>|checkpoint <note>|resolve <name>|job [-C <dir>] [--record <eng-id>] [--want <ref>] [--on-done <errand>] <desc>|job log|activity|show|collect|dispatch|drop|requeue|steer|on-done <id>|jobs [--state <s>]|eng <new|list|show|touch|review|accept|reject|settle|kill|search> …|want <new|list|show|touch|dormant|revive|grown|retire|link|search|migrate> …|journal [YYYY-MM-DD]|metrics [YYYY-MM-DD|backfill]|context [--profile <p>]|--layers|wake|wake-now <reason>|wake-at <when> [kind] [reason]|wake-cancel <unit>|--all|wake-restore|wake-tidy|serve [port]|openrsc-link [base-url]|signal <verb>|remote <text>|notify <text>|play <file>|tired|shelf-check|<message>"
         exit 0
         ;;
 
@@ -1051,7 +1062,7 @@ What you did tonight is journaled from your tool activity without your help, so 
             -*) echo "Unknown option '$1' — run crab with no arguments for usage."; exit 1 ;;
         esac
         if [ -z "$TEXT" ]; then
-            echo "Usage: crab start|stop|status|seal|revive|shutup|face <verb>|face-window|claim <what>|unclaim|touching <paths>|numb [-w secs] <paths>|checkpoint <note>|resolve <name>|job [-C <dir>] [--record <eng-id>] [--want <ref>] <desc>|job log|activity|show|collect|dispatch|drop|requeue|steer <id>|jobs [--state <s>]|eng <new|list|show|touch|review|accept|reject|settle|kill|search> …|want <new|list|show|touch|dormant|revive|grown|retire|link|search|migrate> …|journal [YYYY-MM-DD]|metrics [YYYY-MM-DD|backfill]|context [--profile <p>]|--layers|wake|wake-now <reason>|wake-at <when> [kind] [reason]|wake-cancel <unit>|--all|wake-restore|wake-tidy|serve [port]|openrsc-link [base-url]|signal <verb>|remote <text>|notify <text>|play <file>|tired|shelf-check|<message>"
+            echo "Usage: crab start|stop|status|seal|revive|shutup|face <verb>|face-window|claim <what>|unclaim|touching <paths>|numb [-w secs] <paths>|checkpoint <note>|resolve <name>|job [-C <dir>] [--record <eng-id>] [--want <ref>] [--on-done <errand>] <desc>|job log|activity|show|collect|dispatch|drop|requeue|steer|on-done <id>|jobs [--state <s>]|eng <new|list|show|touch|review|accept|reject|settle|kill|search> …|want <new|list|show|touch|dormant|revive|grown|retire|link|search|migrate> …|journal [YYYY-MM-DD]|metrics [YYYY-MM-DD|backfill]|context [--profile <p>]|--layers|wake|wake-now <reason>|wake-at <when> [kind] [reason]|wake-cancel <unit>|--all|wake-restore|wake-tidy|serve [port]|openrsc-link [base-url]|signal <verb>|remote <text>|notify <text>|play <file>|tired|shelf-check|<message>"
             exit 1
         fi
         stop_tts

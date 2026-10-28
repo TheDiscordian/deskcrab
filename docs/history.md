@@ -632,6 +632,24 @@ event wake (only if `WANTS_FILE` is set) so the assistant hears the result and r
 running/finished list is spliced into the state block, so a later turn can report on work it neither
 started nor waited for.
 
+### 2026-08-21 — the errand promised for a build's exit died with the turn that promised it
+
+At 17:40 a one-line Signal message for a friend was queued in conversation "to send when build
+20260821-173439 exits". The build finished; the 17:56 completion wake verified the wiring, restarted
+the chess bridge, spoke a summary — and never sent the message, because the promise lived only in
+the transcript while the wake arrived holding the job's log and nothing else. The user found out
+from his phone, and could not name one time the notification half of a job had worked. The same
+evening, 18:59, the other face of the class: job 20260821-183922 built and live-verified a 914-line
+change, then BACKGROUNDED the repo suite and ended its report on "waiting for it to finish before
+the commit" — it stopped existing mid-wait, the foreground reminder already in its prompt, and the
+work sat dirty beside ten files belonging to other hands. One defect twice: an intention that must
+cross a turn boundary, carried by nothing. The repair (specs/jobs.md rules 7j–7k and 39a): the
+errand rides the job — `crab job --on-done`, `crab job on-done <id>` for a job already in flight,
+the sidecar's `on_done` list, and every completion wake's reason ending with each errand verbatim
+as an OWED action to do or to report undone — and collection reads the tool-call stream and fails
+a finished run whose last act was a background dispatch, exactly as it already failed a report that
+ends on a wait. A reminder was tried and did not hold; a gate is what holds.
+
 ### 2026-08-26 — a builder settled its own ask on a narrowed substitute
 
 The record `the-chess-table-maintains-a-second-conversation` asked for the chess table as a thin
