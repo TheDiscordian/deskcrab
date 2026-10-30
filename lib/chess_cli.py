@@ -6,7 +6,8 @@ One JSON file per game under $DESKCRAB_CHESS_DIR/games (default
 is replayed from it on every invocation, so state on disk can never drift
 from the rules. Run through the `betty-chess` wrapper, which owns the venv.
 
-Commands: new, list, show, move, undo, status, png, resign, draw, engine.
+Commands: new, list, show, move, undo, status, png, resign, draw, engine,
+next-side (her colour for the next new game, once).
 """
 
 import argparse
@@ -85,6 +86,72 @@ def save_game(g: dict) -> None:
     # After the file is safely down: a finished game enters reflex memory, a
     # reopened one leaves it. sync_game contains its own failures.
     chess_reflex.sync_game(g)
+
+
+# ------------------------------------------------------- the called colour
+#
+# The one-shot colour call (specs/chessweb.md rule 26): a file beside the
+# games naming HER colour for the next new game. Every creation door reads
+# it from disk at the moment it deals — so a serve already running honours a
+# call made after it started — and the door that spends it removes the file
+# before the record is saved, so the game after takes the ordinary deal.
+
+NEXT_SIDE_FILE = CHESS_DIR / "next-side"
+SIDES = ("white", "black")
+
+
+def load_next_side() -> dict | None:
+    """The standing call as written — {"side", "called"} — or None. A file
+    that is not a readable call is named on stderr and read as no call at
+    all: nothing is ever guessed from it (rule 26d)."""
+    try:
+        with open(NEXT_SIDE_FILE) as f:
+            doc = json.load(f)
+    except FileNotFoundError:
+        return None
+    except (OSError, ValueError) as e:
+        print(f"betty-chess: ignoring unreadable {NEXT_SIDE_FILE}: {e}",
+              file=sys.stderr)
+        return None
+    side = doc.get("side") if isinstance(doc, dict) else None
+    if side not in SIDES:
+        print(f"betty-chess: ignoring {NEXT_SIDE_FILE}: {side!r} is not a "
+              "colour", file=sys.stderr)
+        return None
+    return doc
+
+
+def write_next_side(side: str) -> None:
+    if side not in SIDES:
+        raise CliError(f"{side!r} is not a colour")
+    CHESS_DIR.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=CHESS_DIR, prefix=".tmp-next-side-")
+    try:
+        with os.fdopen(fd, "w") as f:
+            json.dump({"side": side, "called": now()}, f)
+            f.write("\n")
+        os.replace(tmp, NEXT_SIDE_FILE)
+    except BaseException:
+        os.unlink(tmp)
+        raise
+
+
+def clear_next_side() -> bool:
+    """Remove the call; True when one was there to remove."""
+    try:
+        os.unlink(NEXT_SIDE_FILE)
+    except FileNotFoundError:
+        return False
+    return True
+
+
+def take_next_side() -> str | None:
+    """Spend the standing call: its colour, with the file already gone — the
+    one-shot discipline of rule 26a. An unreadable file is discarded too,
+    named once, so it cannot be named again at every deal that follows."""
+    doc = load_next_side()
+    clear_next_side()
+    return doc["side"] if doc else None
 
 
 # Turn metrics for the chess move path (specs/chessweb.md rule 17, kind
@@ -863,6 +930,14 @@ def print_position(g: dict, board: chess.Board) -> None:
 def cmd_new(args):
     tc, ck = make_live_time_control(args.time_control)
     player = clean_player(getattr(args, "player", None))
+    # Her colour (rule 26a): an explicit --as is her call for this game and
+    # leaves a standing call where it is; without one the standing call is
+    # spent here, and failing that the CLI's old default of white is dealt.
+    if args.side:
+        side, side_by = args.side, "called"
+    else:
+        called = take_next_side()
+        side, side_by = (called, "called") if called else ("white", "dealt")
     slug = slugify(args.opponent)
     taken = {g["id"] for g in load_all()}
     n = 1
@@ -871,7 +946,8 @@ def cmd_new(args):
     g = {
         "id": f"{slug}-{n:03d}",
         "opponent": args.opponent,
-        "my_side": args.side,
+        "my_side": side,
+        "side_by": side_by,
         "moves": [],
         "resigned_by": None,
         "draw_agreed": False,
@@ -885,8 +961,9 @@ def cmd_new(args):
         g["clock"] = ck
         g["flag_fell"] = None
     save_game(g)
-    opp_side = "black" if args.side == "white" else "white"
-    print(f"{g['id']}: you are {args.side}, {args.opponent} is {opp_side}")
+    opp_side = "black" if side == "white" else "white"
+    print(f"{g['id']}: you are {side} ({side_by}), {args.opponent} is "
+          f"{opp_side}")
     if tc:
         print(f"time control: {tc['name']} {tc['speed']} — "
               f"{tc['base_ms'] // 60000} min + {tc['inc_ms'] // 1000}s/move")
@@ -1033,6 +1110,10 @@ def cmd_status(args):
     print(f"fen: {board.fen()}")
     if g.get("engine_level") is not None:
         print(f"engine level: {g['engine_level']}")
+    if g.get("side_by"):
+        # Rule 26c: was her colour called or dealt? Absent on a record from
+        # before the rule, and then nothing is printed — never guessed.
+        print(f"colour: {g['side_by']}")
 
 
 def cmd_resign(args):
@@ -1070,6 +1151,31 @@ def cmd_label(args):
     g["player"] = name
     save_game(g)
     print(f"{g['id']}: playing {name}")
+
+
+def cmd_next_side(args):
+    """Call her colour for the next new game, once (specs/chessweb.md rule
+    26). white/black is HER side; random withdraws the call; no argument
+    says what stands. The call is spent by the next creation that carries
+    no colour of its own, on any door, and never by a load or a join."""
+    if args.side is None:
+        doc = load_next_side()
+        if doc:
+            print(f"next new game: you are {doc['side']} (called "
+                  f"{doc.get('called') or 'at an unrecorded time'}); the "
+                  "game after it takes the coin again")
+        else:
+            print("next new game: the coin (no call standing)")
+        return
+    if args.side == "random":
+        if clear_next_side():
+            print("next new game: the coin — the standing call is withdrawn")
+        else:
+            print("next new game: the coin (no call was standing)")
+        return
+    write_next_side(args.side)
+    print(f"next new game: you are {args.side} — one game only, then the "
+          "coin again")
 
 
 def cmd_record(args):
@@ -1291,7 +1397,10 @@ def main(argv=None):
     sp = sub.add_parser("new", help="start a game against an opponent")
     sp.add_argument("opponent")
     sp.add_argument("--as", dest="side", choices=["white", "black"],
-                    default="white", help="which side you play (default white)")
+                    default=None,
+                    help="which side you play: your call for this game "
+                         "(specs/chessweb.md rule 26a); omitted, a standing "
+                         "next-side call is spent, else white")
     sp.add_argument("--engine-level", type=int, default=None,
                     help="stockfish skill 0-20, if you want engine replies")
     sp.add_argument("--time-control", default="untimed",
@@ -1356,6 +1465,14 @@ def main(argv=None):
     sp.add_argument("game")
     sp.add_argument("name")
     sp.set_defaults(func=cmd_label)
+
+    sp = sub.add_parser("next-side",
+                        help="call your colour for the next new game, once "
+                             "(specs/chessweb.md rule 26); random withdraws "
+                             "it; no argument says what stands")
+    sp.add_argument("side", nargs="?", choices=["white", "black", "random"],
+                    default=None)
+    sp.set_defaults(func=cmd_next_side)
 
     sp = sub.add_parser("record",
                         help="win-loss per player, counted from the games "

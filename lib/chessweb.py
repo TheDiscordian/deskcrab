@@ -477,6 +477,10 @@ class Store:
         # "random" means: flip a fresh coin for every NEW game, not once at
         # startup — otherwise one service run hands out the same colour forever.
         self.random_side = her_side == "random"
+        # The launch flag's own colour, kept apart from her_side: load() and
+        # a called game (rule 26) both move her_side, and the game after a
+        # called one must take the flag again, never the call carried on.
+        self.flag_side = None if self.random_side else her_side
         self.her_side = "white" if self.random_side else her_side
         self.game_id = game_id
         self.time_control = time_control  # a TIME_CONTROLS name, or None
@@ -516,7 +520,17 @@ class Store:
         the same save_game either way, so the record and the ledger split by
         variant off one implementation. `player` is the sitter's own name
         (rule 23), already validated; None is an unlabeled game."""
-        if self.random_side:
+        # Her standing call (rule 26) is read from disk here, at the deal,
+        # and spent before the record is saved: a serve already running
+        # honours a call made after it started, and the game after this
+        # one takes the ordinary deal again. It outranks the flag and the
+        # alternation alike, for this one game.
+        called = chess_cli.take_next_side()
+        if called:
+            self.her_side = called
+            side_by = "called"
+        elif self.random_side:
+            side_by = "dealt"
             # "random" alternates (rule 4): the user gets the colour they
             # did not have in the most recent game against this opponent,
             # whatever its state; only the very first game is a coin flip.
@@ -537,14 +551,17 @@ class Store:
                                  else "white")
             else:
                 self.her_side = random.choice(("white", "black"))
+        else:
+            side_by = "dealt"
+            self.her_side = self.flag_side
         slug = chess_cli.slugify(self.opponent)
         taken = {g["id"] for g in chess_cli.load_all()}
         n = 1
         while f"{slug}-{n:03d}" in taken:
             n += 1
         g = {"id": f"{slug}-{n:03d}", "opponent": self.opponent,
-             "my_side": self.her_side, "moves": [], "resigned_by": None,
-             "draw_agreed": False, "engine_level": None,
+             "my_side": self.her_side, "side_by": side_by, "moves": [],
+             "resigned_by": None, "draw_agreed": False, "engine_level": None,
              "created": chess_cli.now()}
         if player:
             g["player"] = player
@@ -559,7 +576,9 @@ class Store:
         log(f"created {g['id']}"
             + (f" against {player}" if player else "")
             + f": the user is "
-              f"{'black' if self.her_side == 'white' else 'white'}")
+              f"{'black' if self.her_side == 'white' else 'white'}"
+            + (f" (her {self.her_side} called, the call spent)"
+               if called else ""))
         return g
 
 
@@ -1279,7 +1298,9 @@ class Hub:
                     "control": tc["name"] if tc else "untimed",
                     "player": g.get("player"),
                     "your_side": ("white" if self.human_side() == chess.WHITE
-                                  else "black")}, 200
+                                  else "black"),
+                    # Rule 26c: called or dealt, off the record just saved.
+                    "side_by": g.get("side_by")}, 200
 
     # -- protocol ----------------------------------------------------------
     def on_join(self, conn, player):
@@ -1909,6 +1930,9 @@ def make_handler(hub, client_dir):
                      "your_turn": key == "active" and board.turn == human,
                      "human_side": ("white" if human == chess.WHITE
                                     else "black"),
+                     # Rule 26c: how her colour came to be — called or
+                     # dealt; null on a record from before the rule.
+                     "side_by": g.get("side_by"),
                      "state": key, "desc": desc, "result": result,
                      "legal": legal,
                      # Rule 22f: the control and the live clock, the running

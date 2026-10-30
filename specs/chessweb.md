@@ -70,7 +70,9 @@ cannot be changed.
    `random` alternates: the user gets the colour they did not have in the most recent game
    against this opponent, whatever its state, so the colours swap game after game; only the
    first game against an opponent is a coin flip. Either way the choice is made per new game,
-   not once per process, so a long-lived server does not hand out one colour forever.
+   not once per process, so a long-lived server does not hand out one colour forever. A
+   standing call of hers (rule 26) outranks all of this — the alternation, the coin, a fixed
+   `--human-side` — for exactly the one game that spends it.
    NewGame while the stored game is still active creates nothing — and is never silent: the
    seat gets an Error naming the way out (Resign ends the game, then New Game deals the next),
    and the sync still follows, so a stock client that leans on NewGame as its sync loses
@@ -714,7 +716,8 @@ cannot be changed.
        `save_game` — so the game record, the reflex ledger's control column and
        `betty-chess list` split the browser-dealt game by variant with no second
        implementation, and colour is dealt exactly as rule 4 deals it (alternation against
-       this opponent, only the first game a coin flip; the page offers no colour choice).
+       this opponent, only the first game a coin flip, or her own standing call, rule 26; the
+       page offers no colour choice).
        Enforcement is server-side ONLY, rule 22b's posture: the submitted control must be a
        NAME from the standard set — an out-of-set name, a non-string (a forged
        `{name, base_ms}` object), or an unreadable body is an HTTP 400 refusal with nothing
@@ -1000,6 +1003,42 @@ cannot be changed.
     browser itself reports no network), and the board is visibly greyed until the resync lands.
     This rule exists because until 2026-09-03 a dropped connection left the page exactly as it
     stood — a live-looking board, silently frozen mid-game, until a human noticed and reloaded.
+
+26. **The called colour.** The deal of rule 4 is the default, and it stays the default; but
+    the table is hers, and until this rule nothing outside the serve's launch flag could touch
+    the colour of the next game — on 2026-08-22 "I'll even take black" was empty talk, because
+    she could not. `betty-chess next-side <white|black|random>` writes a one-shot call:
+    `white` or `black` names HER colour in the next new game — the user's is the complement,
+    which is how the call reaches the bridge's human-side vocabulary — and `random` withdraws
+    a standing call, restoring the coin. `betty-chess next-side` with no argument says what
+    stands. The call is a file beside the games (`$DESKCRAB_CHESS_DIR/next-side`: the colour
+    and when it was called), and the creation path reads it from disk at the moment it deals,
+    so a serve already running honours a call made after it started — no launch flag changes,
+    nothing restarts.
+    a. One shot, spent where it lands. The first game created with no colour of its own spends
+       the call, whichever door creates it — a wire NewGame, `POST /new`, or `betty-chess new`
+       without `--as` — and the file is gone before the record is saved, so the game after it
+       takes the ordinary deal again: the alternation, the coin, or a fixed `--human-side`'s
+       own colour (never the called one carried forward). A call can therefore never persist,
+       silently or otherwise, past one game, which is the whole point of its being one shot.
+       `betty-chess new --as` carries its own colour and leaves a standing call where it is.
+       For the one game it names, the call outranks a fixed `--human-side`: the flag is a
+       default, the call is a decision. A creation that is refused (rule 4's board still in
+       flight, rule 22h's bad control) spends nothing.
+    b. Only a creation spends it. Loading the active game at serve start, a join, a rejoin
+       after a drop, an observer, `/state`, and every sync replay the store and leave the call
+       standing; a serve stopped and started again before the next game still finds it.
+    c. Provenance on the record. Every game created from this rule on carries `side_by`:
+       `called` when a standing call, or an explicit `--as`, set her colour; `dealt` when the
+       alternation, the coin, the launch flag or the CLI's own default did. That is what lets
+       the ledger tell a game she chose from a game she was dealt — a record of 3-9 as black
+       means nothing if some of those were picked. `betty-chess status` prints it, `GET
+       /state` and `POST /new`'s answer carry it. A record without the field predates the rule
+       and is read as absence, never guessed into either word.
+    d. Refusals. An argument outside the three words is refused by the parser with nothing
+       written. A file that is not a readable call — garbage, or a colour that is not one — is
+       named on the serve log or stderr, discarded, and the deal proceeds as if no call stood;
+       nothing is ever guessed from it.
 
 A dependency-free HTML/CSS/JS page (`index.html`, `style.css`, `board.js`), served by rule 1 as
 the default client. It speaks the stock wire exactly — client framing out (one-byte lengths,
