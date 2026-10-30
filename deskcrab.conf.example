@@ -196,6 +196,21 @@ WHISPER_MODEL="/usr/share/whisper.cpp-model-small.en/ggml-small.en.bin"
 # WAKE_STALE_MODEL="claude-fable-5" # the staleness judge
 # WAKE_STALE_TIMEOUT=45             # seconds before the judge is abandoned
 
+# Optional: a detached job's completion return (specs/wake-queue.md rule 27d,
+# jobs.md rule 7c). The completion wake is a job's only channel back to the
+# user, so the busy and in-flight gates may DELAY its news and never consume
+# it: the delivery waits in process, re-reading both gates together every
+# WAKE_JOB_NEWS_POLL seconds, and delivers the reply already in hand the
+# moment they clear. The wait is ONE budget for the whole delivery; when it
+# runs dry, or quiet hours arrive mid-wait, the original reason is re-booked
+# whole under the job-runner identity WAKE_JOB_NEWS_RETRY seconds out, stamped
+# once for the staleness gate above. Recognised by the booking's provenance
+# (--by job-runner), never by reading the reply.
+# WAKE_JOB_NEWS_HOLD=1    # set 0 and a job's return takes the ordinary exits
+# WAKE_JOB_NEWS_WAIT=120  # seconds the delivery waits for the moment to pass
+# WAKE_JOB_NEWS_POLL=2    # seconds between re-reads of the two gates
+# WAKE_JOB_NEWS_RETRY=300 # seconds out the news is re-booked after a dry wait
+
 # Optional: seconds without life signs before an autonomous wake is presumed
 # hung and reaped (default: 300). There is no wall-clock limit on wakes — a
 # session counts as alive while it streams output OR its process tree burns
