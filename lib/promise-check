@@ -1305,12 +1305,21 @@ cmd_sweep() {
     fi
 
     # The day, as evidence: every reply she gave in order, each beside the
-    # outcome and work trace its session left. A job's entry is a builder's
-    # log, not her voice. Long replies are clipped — the sweep judges
-    # commitments and fulfilment, not prose — and the clip is marked.
+    # outcome and work trace its session left. Two kinds of row are not her
+    # voice and are read for no commitment (nightly.md rule 51a): a job's
+    # entry is a builder's log, and the tidy's row (kind=tidy) is her
+    # housekeeping — a note to no listener, the review's own separation
+    # (rule 40), which the sweep never received until the 2026-10-28 sweep
+    # of 10-27 quoted the tidy's line as a spoken commitment and booked a
+    # wake over a record that had stood on disk three seconds before the
+    # line was written. The exclusion is those two kinds alone: a note she
+    # wrote in her own wake was said in her voice and is swept as speech.
+    # Long replies are clipped — the sweep judges commitments and
+    # fulfilment, not prose — and the clip is marked.
     local DIGEST
     DIGEST="$(python3 - "$JOURNAL" <<'PY'
 import json, sys
+NOT_HER_VOICE = ("job", "tidy")
 out = []
 entries = []
 for raw in open(sys.argv[1], encoding="utf-8"):
@@ -1321,7 +1330,7 @@ for raw in open(sys.argv[1], encoding="utf-8"):
         e = json.loads(raw)
     except ValueError:
         continue
-    if e.get("kind") == "job":
+    if e.get("kind") in NOT_HER_VOICE:
         continue
     if not (e.get("reply") or e.get("outcome")):
         continue
@@ -1384,7 +1393,9 @@ PY
     # path-shaped token the day's REPLIES name, statted from the disk itself
     # — a dated artefact whose mtime is consistent with the claim is the
     # claim's own witness, whoever's hand wrote it and however compressed the
-    # journal's outcome line reads. Fails SOFT: an ungatherable section is
+    # journal's outcome line reads. The same rows the digest above holds: a
+    # builder's log and the tidy's housekeeping name files for nobody here
+    # (rule 51a). Fails SOFT: an ungatherable section is
     # presented AS ungatherable and named on the trace, never omitted.
     local SWEEP_FILES
     if ! SWEEP_FILES="$(python3 - "$LIB_DIR" "$JOURNAL" \
@@ -1404,13 +1415,14 @@ try:
     fh = open(journal, encoding="utf-8", errors="replace")
 except OSError:
     sys.exit(1)
+NOT_HER_VOICE = ("job", "tidy")
 with fh:
     for raw in fh:
         try:
             e = json.loads(raw)
         except ValueError:
             continue
-        if not isinstance(e, dict) or e.get("kind") == "job":
+        if not isinstance(e, dict) or e.get("kind") in NOT_HER_VOICE:
             continue
         for raw_tok in re.findall(r"[^\s\"'`()\[\]{}<>|,;]+",
                                   str(e.get("reply") or "")):

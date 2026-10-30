@@ -754,6 +754,63 @@ check_eq "a CLEAN verdict over the widened evidence books and ledgers nothing" \
     "$(ledger_n)$(records)" "00"
 
 echo
+echo "the tidy's housekeeping is not her voice (rule 51a): a kind:tidy row is read for"
+echo "no commitment, a kind:wake row saying the same words with nothing behind it is"
+echo "still a miss, and a builder's kind:job row stays out as before:"
+reset
+TIDY_CLAIM="Filed an engineering record naming the volume-control window whose monitor streams the busy signal has read as a person on the microphone since the evening of the 24th."
+mkdir -p "$T/tidy-named"
+printf 'x\n' > "$T/tidy-named/record.md"
+# First: a journal whose only replying rows are the tidy's line and a
+# builder's log — the recorded false-miss shape of the 2026-10-28 sweep of
+# 10-27, which quoted the tidy's 03:20 line as a spoken commitment. The stub
+# judge is primed to accuse it, so a row that reached the judge would land.
+cat > "$DAY_JOURNAL_DIR/$DAY.jsonl" <<EOF
+{"epoch": 1786326000, "time": "${DAY}T02:30:00-0400", "kind": "job", "duration": 900, "user": "NIGHTLY TIDY", "reply": "I'll file the engineering record now. JOB-LOG-MARK", "pid": 90}
+{"epoch": 1786329622, "time": "${DAY}T03:20:22-0400", "kind": "tidy", "duration": null, "user": "", "reply": "$TIDY_CLAIM See $T/tidy-named/record.md."}
+EOF
+sandbox_stub claude <<STUB
+#!/bin/bash
+printf '%s\n' "\$*" >> "${SANDBOX_CLAUDE_LOG}"
+cat > "$T/model-stdin"
+printf '%s\n' '{"type":"assistant","message":{"model":"stub","content":[{"type":"text","text":"MISS: \"Filed an engineering record naming the volume-control window\" @ 03:20 | no outcome or work trace shows the record being filed"}]}}'
+printf '%s\n' '{"type":"result","result":"ok"}'
+STUB
+"$T/repo/lib/promise-check" sweep "$DAY" >/dev/null 2>&1
+check_eq "housekeeping alone is nothing to sweep: the judge was never called" "$(claude_n)" "0"
+check "and the trace says the journal held no replies of hers" \
+    grep -q "journal holds no replies — nothing to sweep" "$CHECK_LOG"
+check_eq "no sweep row landed" "$(ledger_n)" "0"
+check_eq "and no morning wake was booked" "$(records)" "0"
+
+# Second: the same words on a wake row of hers with no artefact behind them,
+# beside the tidy's row naming a file that exists. Said in her voice, the
+# claim is a miss exactly as before; the tidy's named file is statted for
+# nobody, and the builder's log is still nobody's voice.
+cat > "$DAY_JOURNAL_DIR/$DAY.jsonl" <<EOF
+{"epoch": 1786326000, "time": "${DAY}T02:30:00-0400", "kind": "job", "duration": 900, "user": "NIGHTLY TIDY", "reply": "I'll file the engineering record now. JOB-LOG-MARK", "pid": 90}
+{"epoch": 1786329622, "time": "${DAY}T03:20:22-0400", "kind": "tidy", "duration": null, "user": "", "reply": "$TIDY_CLAIM See $T/tidy-named/record.md."}
+{"epoch": 1786329696, "time": "${DAY}T03:21:36-0400", "kind": "wake", "duration": 77, "user": "the tidy finished", "reply": "$TIDY_CLAIM", "pid": 91, "outcome": "asked: the tidy finished | did: ran no tools, touched nothing | replied: Filed an engineering record."}
+EOF
+"$T/repo/lib/promise-check" sweep "$DAY" >/dev/null 2>&1
+check_eq "one model call swept the day" "$(claude_n)" "1"
+check "the wake's claim reached the judge in her voice" \
+    grep -qF "wake] reply: $TIDY_CLAIM" "$T/model-stdin"
+check_eq "and the tidy's identical line did not — the words ride once, on the wake row" \
+    "$(sandbox_count_in "Filed an engineering record naming" "$T/model-stdin")" "1"
+check_eq "under no tidy heading" \
+    "$(sandbox_count_in "tidy\] reply:" "$T/model-stdin")" "0"
+check_eq "the builder's log stays out as before" \
+    "$(sandbox_count_in "JOB-LOG-MARK" "$T/model-stdin")" "0"
+check_eq "the file the tidy's line named was statted for nobody (rule 52a reads her speech)" \
+    "$(sandbox_count_in "tidy-named/record.md" "$T/model-stdin")" "0"
+check_eq "the wake's claim with nothing behind it lands as a sweep row" \
+    "$(sandbox_count_in '"type": "sweep"' "$T/ledger.jsonl")" "1"
+check "quoting it" \
+    grep -q "Filed an engineering record naming the volume-control window" "$T/ledger.jsonl"
+check_eq "and books the morning wake" "$(records)" "1"
+
+echo
 echo "the resolve door (rule 53f): one decision onto one identified sweep row:"
 reset
 RSTIME="$(date +%F)T03:20:00-0400"

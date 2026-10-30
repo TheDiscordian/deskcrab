@@ -1538,3 +1538,20 @@ action, consumed by the episode it classifies, never expired or armed by elapsed
 doors' provocation record already had exactly these delayed-evidence semantics; the runner's
 marker was the one place that demanded instant retaliation. Unprovoked combat keeps the far
 clearance retreat untouched.
+
+### 2026-10-28 — the sweep read the tidy's housekeeping line as a promise she had spoken
+
+The night sweep of 2026-10-27 booked its 09:45 wake over one miss: the tidy's own journal line,
+"Filed an engineering record naming the volume-control window …", quoted as a first-person
+commitment with "no outcome or work trace", when the record it named had been opened at 03:20:19,
+three seconds before the line was written at 03:20:22. The sweep's digest dropped only `kind=job`
+rows, so the tidy's `kind=tidy` row — a note to no listener, written by a builder's job — reached
+the judge beside her wake and phone replies as something she had said, and the named-files scan
+beside it stats only path-shaped tokens, which a line naming a record by its subject never
+carries. The claudism review had carried the same defect and settled it on 2026-10-04 (nightly.md
+rule 40a: the tidy's prose is its own housekeeping series, never pooled with speech); the sweep
+never received the separation. The repair is nightly.md rule 51a: the digest and the named-files
+scan exclude the tidy's row as they exclude a job's, and nothing else — a note she left in her own
+wake was said in her voice and stays swept. The 10-26 sweep's four items were exactly such notes,
+a different question. The morning wake of 10-28 had resolved the historical accusation `fulfilled`
+from the record's own timestamps; it could not fix the filter.

@@ -647,6 +647,20 @@ night is where the day's promises are settled honestly, from the whole record at
     — so a completed-work claim that slipped the live pre-check is refuted here from the day's
     own record, or shown done by it: a claim whose day carries no matching trace surfaces as a
     miss, and one whose trace names the work is dropped.
+51a. The sweep reads the journal in the review's two series (rule 40) and sweeps her SPEECH
+    alone: the desk, phone and wake rows, each a reply beside its own outcome and trace. The
+    tidy's row (`kind=tidy`) is her HOUSEKEEPING — a note to no listener, never spoken — and no
+    commitment is read from it: it enters neither the day digest the judge is handed nor the
+    named-files scan of rule 52a, exactly as a job's row (a builder's log, not her voice) enters
+    neither. The exclusion is those two kinds alone, never a row's wording: a note she left in
+    her own wake (`kind=note`) was said in her voice and is swept as speech, and the standard of
+    rule 52 is not loosened for anything that is. On 2026-10-28 the sweep of 10-27 quoted the
+    tidy's 03:20 line — "Filed an engineering record naming the volume-control window …" — as a
+    spoken commitment with "no outcome or work trace", and booked the 09:45 wake over a record
+    that had stood on disk since 03:20:19, three seconds before the line was written (the record
+    `the-promise-sweep-reads-the-tidy-s-housekeeping`); the review had carried the same defect
+    and kept the two series apart since 2026-10-04 (rule 40a), and the sweep never received the
+    separation.
 52. The sweep surfaces only genuine end-of-day misses. A commitment fulfilled later in the day
     — promised at noon, visibly done by a later session's record — is reconciled and dropped,
     whether or not the live checker caught it; a commitment never caught during the day and
@@ -1216,6 +1230,10 @@ refused; the cap holds; and no wake is booked.
 `tests/test_promise_check.sh` — rules 51-53c: the sweep
 hands the model the day's replies with their outcomes and the live ledger, surfaces a genuine miss
 as a ledger record and one morning wake in the checker's name, and books nothing on a clean day;
+the two series (rule 51a) — a journal whose only replying rows are the tidy's line and a builder's
+log is nothing to sweep, no judge called, no row and no wake, while the same words on a wake row
+of hers with no artefact behind them are still a miss, the tidy's identical line and the file it
+names absent from what the judge is handed, and the job's log absent as before;
 the widened evidence (rule 52a) — the day's named files statted from disk, an existing artefact
 with its modification time and a claimed one shown NOT found alike, and the resident player's
 game outcomes at their own timestamps — reaches the judge as labelled sections, with an absent
