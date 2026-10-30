@@ -430,6 +430,33 @@ for reduction here — every rule below makes the queue **visible and bounded**,
     reply that ends the run. This is not rule 29's forbidden after-the-fact judgement: nothing
     weighs the words — the channel is defined by position, the way the display half is defined
     by its delimiter.
+27f. The user-busy gate's MICROPHONE reading is made one stream at a time, and a peak meter is
+     not a capture. The hardware question behind rule 27 — is the microphone open — is answered
+     from `pactl list source-outputs`, and a stream counts as someone on the microphone only when
+     all three hold: it carries an application name; that name is not her own capture tooling
+     (whisper, parley, crab, piper, aplay, arecord — the exclusions that keep her from reading
+     herself as a reason for silence); and the stream is not a peak meter. A peak meter reads a
+     level for a display and records nothing for anyone: pavucontrol opens one for every device
+     and every stream it shows (`media.name` "Peak detect", binary `pavucontrol`, application name
+     "PulseAudio Volume Control", id `org.PulseAudio.pavucontrol`), and either sound server marks
+     the flag itself (`resample.peaks = "true"` under pipewire-pulse, `Resample method: peaks`
+     under PulseAudio). Any one of those marks makes the stream a meter. Measured 2026-10-24 22:36
+     through 2026-10-30 03:07: one volume-control window left open held 88 such streams, the old
+     reading — any application name anywhere in the listing outside the exclusion list — called
+     it a person on the microphone, and every own-time return for six nights was deferred
+     `he is mid-capture or mid-speech at the desk`, 230 times, with nobody at the desk at all.
+     - **Per stream, so that ignoring the meters hides nothing beside them.** A browser, a
+       meeting app or a recorder on the microphone in the same listing still reads busy, meters
+       or no meters; and her own tooling beside such a capture still does not excuse it. A
+       listing-wide exclusion of pavucontrol's marks would have been the mirror of the old bug.
+     - **The line is the meter, never the monitor and never the cork.** A capture of a sink's
+       monitor that RECORDS — a screen recorder taking the desktop's audio — still counts, because
+       her voice would land in it. A corked stream still counts: a muted microphone in a meeting
+       is still a meeting. A stream with no application name does not count, as it never did (a
+       loopback module's output is not a person).
+     - Only the answer changes. The mute, its journal wording and rule 40b's `idle-defer` reason
+       are untouched; the other busy readings — the push-to-talk pidfile, the speech pidfile, a
+       parley recording — stand before this one exactly as before.
 28. A wake that regrouped against a live turn MUST carry the other reply forward as one reply, never
     restate it, never queue its own thought for later, and never default to silence. Rule 27c is
     not that queueing: the choice it forbids is the WRITER'S — a reply that answers "later" instead
@@ -984,7 +1011,16 @@ loud, on a box where no private manager can be started),
 with no account variable set anywhere the wake still invokes the CLI exactly once; a CLI that dies
 writing nothing is journaled with its exit code and its agenda is re-booked; the launcher's own
 last words reach the journal line; a clean silent wake books
-no failure retry).
+no failure retry),
+`tests/test_user_busy_mic.sh` (rule 27f, against pactl fixtures under `tests/data/pactl/`: a
+listing of nothing but pavucontrol's peak meters — pipewire-pulse's shape, with the window's own
+marks stripped down to each single mark in turn, and PulseAudio's own shape — reads not busy; a
+browser, a meeting app and a recorder on the microphone each read busy, and still do with the
+meters beside them in the same listing; whisper, parley, crab, piper, aplay and arecord stay
+excluded alone and beside the meters, and do not excuse a browser capture beside them; a
+corked capture and a monitor capture that records still count; a nameless loopback output and an
+empty listing do not; a pactl that cannot reach the server reads not busy; and the pidfile,
+speech-pidfile and parley readings each still say busy over an idle listing).
 
 **To be written:**
 

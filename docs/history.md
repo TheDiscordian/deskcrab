@@ -1555,3 +1555,22 @@ scan exclude the tidy's row as they exclude a job's, and nothing else — a note
 wake was said in her voice and stays swept. The 10-26 sweep's four items were exactly such notes,
 a different question. The morning wake of 10-28 had resolved the historical accusation `fulfilled`
 from the record's own timestamps; it could not fix the filter.
+
+### 2026-10-30 — a volume-control window read as six nights on the microphone
+
+From 2026-10-24 22:36 to 2026-10-30 03:07 every own-time return was deferred `idle-defer` with
+the reason "he is mid-capture or mid-speech at the desk" — 230 deferrals, no other reason on any
+row, the last own-time wake to run at 21:25 on the 24th. Nothing was recording. A pavucontrol
+window opened at 22:01 that evening and left open held 88 source-outputs, every one a peak meter:
+application.name "PulseAudio Volume Control", media.name "Peak detect", `resample.peaks = "true"`.
+`user_busy`'s microphone branch was one grep over the whole `pactl list source-outputs` listing
+for any application name outside whisper|parley|crab|piper|aplay|arecord, and a meter has an
+application name. The tidy could not test the branch for three nights because a job context has
+no `XDG_RUNTIME_DIR` and plain `pactl` answered "Connection refused"; with `PULSE_SERVER` pointed
+at the socket the exact pipeline returned busy. The repair is wake-queue.md rule 27f: the
+listing is judged one stream at a time by `mic_held_by_other`, a stream counts only when it is
+named, not her own tooling, and not a peak meter — pavucontrol's own marks or either server's
+record of the peak flag — and the line is the meter, never the monitor or the cork, so a screen
+recorder taking the desktop's audio and a muted microphone in a meeting both still count.
+Per-stream so that ignoring the meters hides nothing beside them. The window itself was not
+touched; it is the user's to close, and the fix is what makes closing it unnecessary.

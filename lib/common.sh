@@ -3416,13 +3416,57 @@ user_busy() {
     local PARLEY_STATE="${XDG_RUNTIME_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}}/parley/state.json"
     [ -f "$PARLEY_STATE" ] && return 0
     [ -f "$HOME/.local/state/parley/state.json" ] && return 0
-    # Someone else is on the mic. Exclude our own capture tooling so crab never
-    # sees itself as a reason to stay silent.
+    # Someone else is on the mic — judged one stream at a time by
+    # mic_held_by_other below (specs/wake-queue.md rule 27f).
     command -v pactl >/dev/null 2>&1 || return 1
-    pactl list source-outputs 2>/dev/null \
-        | grep 'application.name' \
-        | grep -qviE 'whisper|parley|crab|piper|aplay|arecord' && return 0
+    pactl list source-outputs 2>/dev/null | mic_held_by_other && return 0
     return 1
+}
+
+# The one reader of `pactl list source-outputs` (specs/wake-queue.md rule
+# 27f): the listing on stdin, 0 when some stream in it is a person's capture.
+# One judgement PER STREAM, never one grep over the whole listing — the old
+# reading took any application.name outside our own tooling anywhere in the
+# output as someone on the microphone, and from 2026-10-24 22:36 to 2026-10-30
+# 03:07 that someone was a pavucontrol window: 88 peak meters, every one
+# application.name "PulseAudio Volume Control" and media.name "Peak detect",
+# and every own-time return for six nights deferred as "mid-capture" over a
+# desk nobody sat at.
+#
+# A stream counts when all three hold:
+#   named   it carries an application.name — a nameless output (a loopback
+#           module's) never counted and still does not;
+#   !ours   the name is not our own capture tooling, so crab never reads
+#           itself as a reason to stay silent (the exclusion list and its
+#           case-blindness are the old grep's, verbatim);
+#   !meter  it is not a peak meter. A meter reads a level for a display and
+#           records nothing for anyone. Any one of these marks makes one:
+#           pavucontrol's own identity — media.name "Peak detect", the binary,
+#           the application name, the application id — and the flag as either
+#           server records it: `resample.peaks = "true"` under pipewire-pulse,
+#           `Resample method: peaks` under PulseAudio.
+# The line is the meter, not the monitor and not the cork: a screen recorder
+# taking the desktop's audio off a sink monitor still counts (her voice would
+# land in it), and a corked capture still counts (a muted microphone in a
+# meeting is still a meeting). Per stream so that ignoring the meters hides
+# nothing beside them — a browser or a meeting app in the same listing still
+# reads busy, and our own tooling beside such a capture does not excuse it.
+mic_held_by_other() {
+    awk '
+        function judge() { if (named && !ours && !meter) held = 1 }
+        /^Source Output #/ { judge(); named = 0; ours = 0; meter = 0; next }
+        /^[ \t]*application\.name = / {
+            named = 1
+            if (tolower($0) ~ /whisper|parley|crab|piper|aplay|arecord/) ours = 1
+            if ($0 ~ /"PulseAudio Volume Control"/) meter = 1
+        }
+        /^[ \t]*application\.process\.binary = "pavucontrol"/ { meter = 1 }
+        /^[ \t]*application\.id = "org\.PulseAudio\.pavucontrol"/ { meter = 1 }
+        /^[ \t]*media\.name = "Peak detect"/ { meter = 1 }
+        /^[ \t]*resample\.peaks = "true"/ { meter = 1 }
+        /^[ \t]*Resample method: peaks/ { meter = 1 }
+        END { judge(); exit (held ? 0 : 1) }
+    '
 }
 
 # Is the conversation HOT — is he mid-exchange right now? user_busy above asks

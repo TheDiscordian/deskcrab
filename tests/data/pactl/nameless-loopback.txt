@@ -1,0 +1,19 @@
+Source Output #31
+	Driver: module-loopback.c
+	Owner Module: 27
+	Client: n/a
+	Source: 1
+	Sample Specification: s16le 2ch 44100Hz
+	Channel Map: front-left,front-right
+	Format: pcm, format.sample_format = "\"s16le\""  format.rate = "44100"  format.channels = "2"  format.channel_map = "\"front-left,front-right\""
+	Corked: no
+	Mute: no
+	Volume: front-left: 65536 / 100% / 0.00 dB,   front-right: 65536 / 100% / 0.00 dB
+	        balance 0.00
+	Buffer Latency: 0 usec
+	Source Latency: 0 usec
+	Resample method: n/a
+	Properties:
+		media.name = "Loopback to Built-in Audio"
+		media.role = "abstract"
+		module-stream-restore.id = "source-output-by-media-role:abstract"
