@@ -355,6 +355,23 @@ WHISPER_MODEL="/usr/share/whisper.cpp-model-small.en/ggml-small.en.bin"
 # PROMISE_CHECK_REBOOK_MAX=2        # wakes one verbatim promise may earn a day
 # PROMISE_SWEEP_WAKE_AT="09:45"     # when the night sweep's misses are surfaced
 
+# Job references and job-fate claims (specs/jobs.md rules 46-47). A message
+# that refers to a builder, a job or a fix by description carries a prompt
+# layer listing the job records its words resolve to — ranked by the words,
+# never by recency — so the fate she states is read off the record, not
+# remembered. After delivery, a reply that states what became of a job
+# (killed, finished, committed, still running) is resolved the same way; a
+# claim the record contradicts, or one no record backs, lands on the
+# job-claims ledger and books an immediate correction wake. Both are
+# mechanical: no model is ever spent on either.
+# JOB_REF_LAYER=1                   # set 0 to drop the prompt layer
+# JOB_REF_WINDOW_HOURS=72           # how far back "the builder" may reach unnamed
+# JOB_REF_MAX=5                     # candidate records the layer lists, at most
+# JOB_CLAIM_CHECK=1                 # set 0 to disable the after-delivery check
+# JOB_CLAIM_WAKE_DELAY="1s"         # urgent correction lane; never delays speech
+# JOB_CLAIM_WAKE_CAP=2              # pending correction wakes, at most
+# JOB_CLAIM_REBOOK_MAX=2            # correction wakes one job may earn a day
+
 # The chore gate (specs/turn-pipeline.md rule 16c): a displayed reply that
 # hands the user a command line to run has that chore converted into ONE
 # detached job — through the job door's own policy — and the display names

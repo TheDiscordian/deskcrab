@@ -236,8 +236,9 @@ slot is the loudest statement this machine can make that it was not listening.
 18. A CLI error text MUST NEVER be voiced in her own voice on any path.
 19. The display window MUST open as soon as the display half is known, and MUST NOT wait for speech
     to finish.
-20. Out-of-band work (memory judge, promise audit, promise checker, claudism capture) MUST run
-    after the user has their answer, MUST be detached, and MUST NOT hold any lock the turn held.
+20. Out-of-band work (memory judge, promise audit, promise checker, job-claim checker, claudism
+    capture) MUST run after the user has their answer, MUST be detached, and MUST NOT hold any
+    lock the turn held.
 21. Every detached child MUST inherit the full set of instance redirects: config path, state prefix,
     memory directory, jobs directory, wakes directory, account state file, and the current
     login. A child that inherits some of them writes into the live instance from a scratch one.
@@ -535,6 +536,24 @@ ledger.
      prompt reads this receipt before reconstructing what the preceding turn did. The receipt is
      live state outside the repository, expires from prompt use after a bounded interval, and
      records `wake-now` bookings by unit so a later retraction can cancel the actual queued effect.
+32g. **The job-claim checker.** A reply that states what became of a specific job — ran, was
+     killed or stopped, died, failed, was blocked, finished, committed, is still running, is
+     queued, or the negation of any — makes a factual claim about an artefact whose record exists
+     ([jobs.md](jobs.md) rule 47), and every delivered reply on every channel — desk, phone, wake
+     — MUST be handed to that check after delivery, detached, at the same out-of-band moment as
+     the promise checker and under the same prohibition: it never holds, rewrites or vetoes the
+     reply, and no checker prose is ever delivered in her voice. A pattern pre-check
+     (`job_claim_precheck`: a job noun or id anywhere in the reply beside a fate word anywhere in
+     it) gates the child, so the ordinary reply costs a grep and one trace line; the child
+     (`lib/job-claim-check`) needs no stream snapshot — its evidence is the jobs ledger and the
+     journal — and takes the directories as arguments, never from the unit's bare environment.
+     It resolves each claim's job from the claiming sentence and the user's message, compares the
+     claimed fate with the record, and books the correction wake for a MISMATCH or an UNBACKED
+     claim ([wake-queue.md](wake-queue.md) rule 43c), quoting the claim and the record. No model
+     is called on any path. The 2026-08-21 18:09 reply — "I killed that builder two minutes in"
+     about the builder his words named, whose record read collected with one commit — is the
+     regression this rule exists for: under it the record's line reaches him within seconds,
+     from the record, instead of three replies later from his anger.
 
 ### Turn metrics
 
@@ -579,6 +598,8 @@ file rather than re-instrumented every time the question comes up.
 | `${STATE_PREFIX}-promise-check.log` | `fire_promise_check`, `lib/promise-check` | one line per run: the pre-check's verdict, the model's verdicts, or why nothing was judged |
 | `${STATE_PREFIX}-chore-gate.log` | `chore_gate_pass` (rule 16c) | one line per scanned display half: clean, fired with the job id, or why the conversion failed open |
 | `${STATE_PREFIX}-promise-evidence-*` | `fire_promise_check` (rule 32a) | the turn's stream log, snapshotted for the detached checker, removed by it |
+| `~/.local/share/deskcrab/job-claims.jsonl` | `lib/job-claim-check` (rule 32g, [jobs.md](jobs.md) rule 47a) | one JSON line per MISMATCH or UNBACKED job-fate claim: the claim verbatim, the record line, the verdict, and what became of the wake |
+| `${STATE_PREFIX}-job-claims.log` | `fire_job_claim_check`, `lib/job-claim-check` | one line per run: the pre-check's verdict, each claim's verdict, or why nothing was judged |
 | `~/.local/share/deskcrab/last-origin` | `record_origin` | `desk` or `phone`, durable |
 | `~/.local/share/deskcrab/metrics/<date>.log` | `turn_metric` (rule 33) | `epoch.ms \t pid \t kind \t stage \t detail` |
 | `voice-claude-archive/` | rotation | archived transcript and summary pairs |
@@ -727,6 +748,14 @@ clean day books nothing. Rule 32e by observation: a real desk turn and a real ph
 outcome carrying the turn's own tool trace (or the explicit no-tools record), and the sweep is
 handed a desk claim's refuting trace and a desk claim's fulfilling trace alike — the traceless
 claim surfaces, the traced one is dropped.
+
+`tests/test_job_reference.sh` — rule 32g and [jobs.md](jobs.md) rules 46–47b: the job-reference
+layer and the job-claim checker against the 2026-08-21 evening rebuilt as sidecars; the checker
+fires from a stubbed desk turn's delivery path (the pre-check trace and the detached dispatch are
+witnessed, a fate-free reply spawns nothing), rules the 18:09 kill claim MISMATCH against the
+finished builder his words named and books the correction wake quoting claim and record, and
+rules the supported kill, the self-correction and the supported finish SUPPORTED with nothing
+booked.
 
 `tests/test_empty_delivery.sh` — rule 16b on the desk and phone paths, and
 [speech-output.md](speech-output.md) rule 57: a marker-only reply reaches no speaker, no window,

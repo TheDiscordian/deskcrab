@@ -1,0 +1,475 @@
+#!/usr/bin/env python3
+"""Which job does he mean, and what does its record say? (specs/jobs.md rules 46-47)
+
+On 2026-08-21 at 18:09 the user referred, in plain words, to the similar-game
+builder that had finished that evening, and the reply said three times
+running that it had been killed two minutes in — the fate of a DIFFERENT
+builder, the errand one dispatched an hour later and stopped at fifty-six
+seconds. Nothing was checked before speaking: the reference was resolved by
+conversational recency, and the fate came from memory. Every one of those
+jobs had a record the whole time — dispatch time, runtime, exit and
+collection on its sidecar, the whole run on the day's journal.
+
+Two verbs, both mechanical, both model-free, both stdlib only:
+
+    job-resolve refs   <jobs-dir> <journal-dir> <window-hours> <max> <message>
+        The prompt block for a message that refers to a job: the candidate
+        records his WORDS resolve to, ranked by description overlap and
+        never by recency, each with its dispatch, runtime, state, exit,
+        commits and collection verdict. Prints nothing when the message
+        carries no job-shaped reference, so the layer is absent.
+
+    job-resolve claims <jobs-dir> <journal-dir> <window-hours> <reply> [message]
+        The claim gate: every sentence of the reply that asserts a job's
+        FATE — killed, stopped, died, failed, blocked, finished, committed,
+        running, queued, and each one's negation — resolved against the
+        same records, with the user's message as the other half of the
+        reference. One tab-separated line per claim:
+            verdict \\t fate \\t job-id \\t record \\t claim-sentence
+        where verdict is SUPPORTED (the resolved job's record, or some
+        candidate's when the reference is ambiguous, holds the fate),
+        MISMATCH (the record contradicts it), or UNBACKED (no record in
+        the window to resolve against at all). A reply with no fate claim
+        prints nothing.
+
+The pool is the jobs ledger — every sidecar, bounded by the report's own
+keep-days prune — plus the journal's `job` entries from the window whose
+sidecar has gone (joined by dispatch epoch), so a builder older than the
+ledger's memory still has a line. Ranking is the sum of idf-weighted shared
+tokens, the measure lib/job-similar settled on; a clear winner (above the
+floor and ahead of the runner-up by the margin) resolves, anything closer is
+AMBIGUOUS and said so, never silently picked. Exit is always 0 on both verbs:
+an unreadable ledger costs the block or the verdicts, never the turn.
+"""
+
+import glob
+import json
+import math
+import os
+import re
+import sys
+import time
+
+STOP = set("""this that with from into over when what which their there they
+have been will must than then them the and for are but not you your a an of
+to in on it is as at by be or if so no do its was were while about just
+like really think thing things some more very also still only even want
+would could should does done did make made going went come came said says
+know knew mean meant yeah okay right well sure here where every both each
+same other another because before after since until again back does
+nothing anything something everything minute hour second today tonight
+yesterday evening morning night time ago later earlier three four five
+builder build worker dispatch dispatched running finished killed stopped
+done record ledger exactly actually already""".split())
+
+FLOOR = 1.0       # the lightest score that resolves anything at all
+STRONG = 2.5      # one shared word carries a reference alone only past this
+MARGIN = 1.5      # the lead the best must hold over the runner-up
+JOB_ID_RE = re.compile(r"\b(20\d{6}-\d{6}(?:-\d+)?)\b")
+NOUN_RE = re.compile(r"\b(builders?|jobs?|workers?|the build|that build|this build)\b", re.I)
+# A reference: a job noun, a job id, or the fix/patch/wiring he says she did.
+REF_RE = re.compile(
+    r"\b(?:the|that|this|your|my|which|a|an|both|those|these|two|other|last|first|second|new|old|same)\s+"
+    r"(?:\w+\s+){0,2}(?:builders?|jobs?|workers?|builds?)\b"
+    r"|\bbuilders?\b|\bjobs?\s+(?:you|that|which|it)\b"
+    r"|\b(?:the|that|this|your)\s+(?:[\w-]+\s+){0,3}(?:fix|patch|wiring|change|work|thing|one|feature|lookup|retrieval|search)\b[.,]?\s+"
+    r"(?:that\s+|which\s+)?(?:you|it|she)\s+(?:just\s+|already\s+|finally\s+)?"
+    r"(?:did|made|wired|connected|landed|built|ran|dispatched|kicked|launched|sent|started|finished|committed|killed|stopped|fixed|wrote|shipped|pushed)\b"
+    r"|\byou\s+(?:just\s+)?(?:dispatched|kicked off|launched|spun up|sent out)\b"
+    r"|\b20\d{6}-\d{6}(?:-\d+)?\b",
+    re.I)
+# The senses of "job" that are not a builder.
+NOT_JOB_RE = re.compile(
+    r"\b(good|great|nice|fine|bad|day|real|new|old|full-time|part-time|dream|first)\s+jobs?\b"
+    r"|\b(my|your|his|her|their|our)\s+(own\s+)?jobs?\b(?!\s+(?:you|that|which|it)\b)"
+    r"|\bjobs?\s+(interview|market|title|offer|hunt|search|application)s?\b"
+    r"|\bon the job\b|\bjob done\b",
+    re.I)
+
+FATES = [
+    # (name, pattern, states that hold it)
+    ("stopped", r"\b(killed|stopped|cancel+ed|halted|aborted|terminated|pulled the plug|shut (?:it|that|them|the \w+) down|stood (?:it|that) down|stopping|killing)\b",
+     {"stopped", "died"}),
+    ("died", r"\b(died|crashed|fell over|blew up|keeled over|dead)\b",
+     {"died", "failed", "stopped"}),
+    ("failed", r"\b(failed|failure)\b",
+     {"failed", "died", "blocked"}),
+    ("blocked", r"\b(blocked|never (?:ran|started|began)|refused|got refused)\b",
+     {"blocked"}),
+    ("committed", r"\b(committed|commit landed|pushed|merged)\b",
+     {"collected", "finished"}),
+    ("finished", r"\b(finished|completed|came back|wrapped up|is done|was done|(?<!-)landed|collected|ran (?:the )?full|ran to (?:the )?end|all the way through)\b",
+     {"finished", "collected"}),
+    ("running", r"\b(still running|is running|running now|running right now|mid-run|in flight|still going|still at it|underway|is on it|working on it right now|is building|still building)\b",
+     {"running", "dispatched"}),
+    ("queued", r"\b(queued|on the shelf|shelved|waiting for (?:the night|tonight)|for tonight)\b",
+     {"queued"}),
+]
+FATE_RES = [(n, re.compile(p, re.I), s) for n, p, s in FATES]
+NEG_RE = re.compile(
+    r"\b(not|never|didn'?t|did not|hasn'?t|has not|hadn'?t|had not|wasn'?t|was not|isn'?t|is not|"
+    r"no longer|without|before (?:it|that|they|anything)|nothing|nor)\b(?:\W+\w+){0,3}\W*$", re.I)
+ENDED = ("finished", "collected", "failed", "died", "stopped", "blocked",
+         "duplicate", "superseded")
+
+
+def tokens(text):
+    out = set()
+    for w in re.findall(r"[a-z0-9']{4,}", (text or "").lower()):
+        w = w.strip("'")
+        if len(w) < 4 or w in STOP:
+            continue
+        if len(w) > 4 and w.endswith("s") and not w.endswith("ss"):
+            w = w[:-1]
+        if w in STOP:
+            continue
+        out.add(w)
+    return out
+
+
+def fmt_dur(secs):
+    try:
+        secs = int(secs)
+    except (TypeError, ValueError):
+        return "?"
+    if secs < 60:
+        return "%ds" % secs
+    if secs < 3600:
+        return "%dm%02ds" % (secs // 60, secs % 60)
+    return "%dh%02dm" % (secs // 3600, (secs % 3600) // 60)
+
+
+def when(epoch):
+    try:
+        return time.strftime("%Y-%m-%d %H:%M", time.localtime(int(epoch)))
+    except (TypeError, ValueError, OverflowError):
+        return "?"
+
+
+def load_pool(jobs_dir, journal_dir, window_hours):
+    """Every sidecar, plus the journal's job rows from the window whose
+    sidecar is gone. Newest-first order is irrelevant here: rank is by
+    words, and the caller decides what recency may mean."""
+    pool = []
+    try:
+        paths = glob.glob(os.path.join(jobs_dir, "*.json"))
+    except OSError:
+        paths = []
+    for p in paths:
+        try:
+            with open(p, encoding="utf-8", errors="replace") as f:
+                job = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if not isinstance(job, dict) or not job.get("id"):
+            continue
+        job["_source"] = "ledger"
+        pool.append(job)
+    # The journal: `job` rows carry the task, the duration, the outcome
+    # ("collected (exit 0)", "stopped", "failed (exit 0)") and the start
+    # epoch — enough for a line when the sidecar has been pruned.
+    try:
+        hours = float(window_hours)
+    except (TypeError, ValueError):
+        hours = 72.0
+    now = time.time()
+    cut = now - hours * 3600
+    starts = [j.get("started_epoch") or 0 for j in pool]
+    days = set()
+    t = cut
+    while t <= now + 86400:
+        days.add(time.strftime("%Y-%m-%d", time.localtime(t)))
+        t += 86400
+    for day in sorted(days):
+        path = os.path.join(journal_dir or "", day + ".jsonl")
+        try:
+            fh = open(path, encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        with fh:
+            for line in fh:
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(row, dict) or row.get("kind") != "job":
+                    continue
+                ep = row.get("epoch") or 0
+                if ep < cut:
+                    continue
+                if any(abs(ep - s) <= 300 for s in starts if s):
+                    continue       # its sidecar is still in the ledger
+                outcome = str(row.get("outcome") or "").strip()
+                m = re.match(r"([a-z]+)(?:\s*\(exit\s*(\d+)\))?", outcome)
+                state = m.group(1) if m else "ended"
+                job = {
+                    "id": "journal-%s" % time.strftime("%Y%m%d-%H%M%S", time.localtime(ep)),
+                    "description": row.get("user") or "",
+                    "state": state,
+                    "started_epoch": ep,
+                    "finished_epoch": ep + (row.get("duration") or 0),
+                    "collection": "(sidecar pruned — this line is from the day's journal)",
+                    "_source": "journal",
+                }
+                if m and m.group(2) is not None:
+                    job["exit"] = int(m.group(2))
+                pool.append(job)
+    return pool
+
+
+def record_line(job):
+    state = job.get("state", "?")
+    bits = []
+    se, fe = job.get("started_epoch"), job.get("finished_epoch")
+    bits.append("dispatched %s" % when(se) if se else "dispatch time unknown")
+    if state in ("running", "dispatched"):
+        bits.append("running %s so far" % fmt_dur(time.time() - (se or time.time())))
+    elif state == "queued":
+        bits.append("queued, no builder has run")
+    else:
+        if fe:
+            bits.append("ended %s" % when(fe))
+        if se and fe:
+            bits.append("ran %s" % fmt_dur(fe - se))
+        if job.get("exit") is not None and job.get("exit") != "":
+            bits.append("exit %s" % job.get("exit"))
+    commits = job.get("commits")
+    if isinstance(commits, list):
+        if commits:
+            bits.append("%d commit%s%s" % (len(commits), "" if len(commits) == 1 else "s",
+                                            (" on " + job["branch"]) if job.get("branch") else ""))
+        elif state in ENDED and job.get("collected_at"):
+            bits.append("no commits")
+    elif state == "collected":
+        bits.append("commits unknown")
+    verdict = str(job.get("collection") or "").strip()
+    if verdict:
+        verdict = " ".join(verdict.split())
+        if len(verdict) > 160:
+            verdict = verdict[:160] + "…"
+        bits.append("collection: " + verdict)
+    desc = " ".join(str(job.get("description") or "").split())
+    if len(desc) > 150:
+        desc = desc[:150] + "…"
+    return "job %s — %s — %s — «%s»" % (job.get("id", "?"), state, ", ".join(bits), desc)
+
+
+def rank(pool, words):
+    """Candidates scored by idf-weighted shared tokens; (score, job, shared)."""
+    if not words or not pool:
+        return []
+    n = len(pool)
+    docs = [(job, tokens(job.get("description"))) for job in pool]
+    df = {}
+    for _, toks in docs:
+        for t in toks:
+            df[t] = df.get(t, 0) + 1
+    scored = []
+    for job, toks in docs:
+        shared = words & toks
+        if not shared:
+            continue
+        score = sum(math.log(1.0 + n / df[t]) for t in shared)
+        scored.append((score, job, sorted(shared, key=lambda t: -math.log(1.0 + n / df[t]))))
+    scored.sort(key=lambda x: (-x[0], -(x[1].get("started_epoch") or 0)))
+    return scored
+
+
+def hours_of(window_hours):
+    try:
+        return float(window_hours)
+    except (TypeError, ValueError):
+        return 72.0
+
+
+def recent_jobs(pool, window_hours):
+    """The window's jobs, newest first, plus anything still live or queued."""
+    cut = time.time() - hours_of(window_hours) * 3600
+    recent = [j for j in pool
+              if max(j.get("started_epoch") or 0, j.get("finished_epoch") or 0) >= cut
+              or j.get("state") in ("running", "dispatched", "queued")]
+    recent.sort(key=lambda j: -(j.get("started_epoch") or 0))
+    return recent
+
+
+def resolve(pool, words, ids, window_hours):
+    """-> (kind, jobs, note) with kind one of exact | clear | ambiguous | recent | none."""
+    by_id = {j.get("id"): j for j in pool}
+    hits = [by_id[i] for i in ids if i in by_id]
+    if ids and hits:
+        return "exact", hits, "named by id"
+    if ids and not hits:
+        return "none", [], "no record for id %s" % ", ".join(ids)
+    scored = rank(pool, words)
+    if scored and scored[0][0] >= FLOOR:
+        best = scored[0]
+        strong = len(best[2]) >= 2 or best[0] >= STRONG
+        if strong and (len(scored) == 1 or scored[1][0] * MARGIN <= best[0]):
+            return "clear", [best[1]], "matched on " + ", ".join(best[2][:4])
+        close = [s for s in scored if s[0] * MARGIN > best[0]]
+        if strong:
+            return "ambiguous", [s[1] for s in close], \
+                "his words fit %d records about equally" % len(close)
+        # One shared word, and a common one: a hint, never an identity. The
+        # recent window rides beside it so a weak hint cannot accuse alone.
+        weak = [s[1] for s in close]
+        for j in recent_jobs(pool, window_hours):
+            if j not in weak:
+                weak.append(j)
+        return "ambiguous", weak, "only a weak word match (%s); the recent jobs ride beside it" % ", ".join(best[2][:2])
+    recent = recent_jobs(pool, window_hours)
+    if recent:
+        return "recent", recent, "none of his words match a brief; these are the recent ones, newest first — recency is not identity"
+    return "none", [], "no job record in the last %g hours" % hours_of(window_hours)
+
+
+def cmd_refs(argv):
+    if len(argv) < 5:
+        return 0
+    jobs_dir, journal_dir, window, maxn, message = argv[0], argv[1], argv[2], argv[3], " ".join(argv[4:])
+    plain = NOT_JOB_RE.sub(" ", message)
+    if not REF_RE.search(plain):
+        return 0
+    try:
+        maxn = max(1, int(maxn))
+    except ValueError:
+        maxn = 5
+    pool = load_pool(jobs_dir, journal_dir, window)
+    ids = JOB_ID_RE.findall(message)
+    kind, jobs, note = resolve(pool, tokens(plain), ids, window)
+    out = []
+    out.append("HE IS REFERRING TO A JOB. Which builder, job or fix he means, and what became of it, is read from the record below — never from whichever builder is freshest in your head. The candidates his words resolve to, ranked by the words (%s):" % note)
+    if not jobs:
+        out.append("  (no record resolves — there is no job in the ledger or the journal that his words or the window reach)")
+    else:
+        shown = jobs[:maxn]
+        for i, job in enumerate(shown, 1):
+            out.append("  %d. %s" % (i, record_line(job)))
+        if len(jobs) > len(shown):
+            out.append("  (…%d more candidates; 'crab jobs' lists them)" % (len(jobs) - len(shown)))
+        if kind in ("clear", "exact", "ambiguous"):
+            others = [j for j in recent_jobs(pool, window) if j not in jobs][:2]
+            if others:
+                out.append("  Other recent jobs, which his words do NOT name — a fate of theirs is not a fate of the above:")
+                for job in others:
+                    out.append("  - %s" % record_line(job))
+    if kind == "clear" or kind == "exact":
+        out.append("That is the job; its line above is its fate. Before you say it ran, finished, was killed, died or committed, say what the line says and nothing the line does not.")
+    elif kind == "ambiguous":
+        out.append("His words fit more than one of these. Do not pick the freshest: say which ones there are, by what each did, and ask which he means — or read the conversation above for the one he was already talking about. A fate belongs to one line only.")
+    elif kind == "recent":
+        out.append("None of these is named by his words. If the conversation above makes clear which one he means, use that line; if not, ask. Never carry one job's fate onto another, and never state a fate for a job that has no line here — 'crab job show <id>' has the whole record.")
+    else:
+        out.append("Say that you have no record of it rather than inventing one; 'crab jobs' is the full list.")
+    print("\n".join(out))
+    return 0
+
+
+def sentences(text):
+    text = (text or "").replace("---DISPLAY---", "\n")
+    parts = re.split(r"(?<=[.!?])\s+(?=[A-Z\"'(*`\-])|\n+", text)
+    return [p.strip() for p in parts if p and p.strip()]
+
+
+def extract_claims(sentence):
+    """-> [(fate, negated, matched-words)] for one sentence about a job."""
+    if not (NOUN_RE.search(NOT_JOB_RE.sub(" ", sentence)) or JOB_ID_RE.search(sentence)):
+        return []
+    out = []
+    for name, rx, _ in FATE_RES:
+        for m in rx.finditer(sentence):
+            before = sentence[max(0, m.start() - 40):m.start()]
+            negated = bool(NEG_RE.search(before))
+            if name == "committed" and re.search(
+                    r"\b(nothing|anything)\b", sentence[m.end():m.end() + 20], re.I) \
+                    and re.search(r"\b(committed|pushed)\s+nothing\b", sentence, re.I):
+                negated = True
+            out.append((name, negated, m.group(0)))
+    # "killed ... before it committed anything": the stopped claim stands and
+    # the commit claim is negated by its own clause; both are judged.
+    seen = set()
+    uniq = []
+    for c in out:
+        if (c[0], c[1]) in seen:
+            continue
+        seen.add((c[0], c[1]))
+        uniq.append(c)
+    return uniq
+
+
+def fate_holds(name, negated, job):
+    state = job.get("state", "?")
+    states = next(s for n, _, s in FATES if n == name)
+    holds = state in states
+    if name == "committed":
+        commits = job.get("commits")
+        if state == "collected":
+            holds = isinstance(commits, list) and len(commits) > 0
+        elif state == "finished":
+            holds = True          # uncollected: the commits are not yet known
+        else:
+            holds = False
+    return holds != negated
+
+
+def cmd_claims(argv):
+    if len(argv) < 4:
+        return 0
+    jobs_dir, journal_dir, window, reply = argv[0], argv[1], argv[2], argv[3]
+    message = argv[4] if len(argv) > 4 else ""
+    pool = None
+    user_words = tokens(NOT_JOB_RE.sub(" ", message))
+    reply_words = tokens(NOT_JOB_RE.sub(" ", reply))
+    for sent in sentences(reply):
+        claims = extract_claims(sent)
+        if not claims:
+            continue
+        if pool is None:
+            pool = load_pool(jobs_dir, journal_dir, window)
+        ids = JOB_ID_RE.findall(sent)
+        words = tokens(NOT_JOB_RE.sub(" ", sent)) | user_words
+        kind, jobs, note = resolve(pool, words, ids, window)
+        if kind == "recent" and reply_words - words:
+            # The sentence and his message name nothing; the rest of the
+            # reply may ("The similar-game lookup. I killed that builder.").
+            kind2, jobs2, note2 = resolve(pool, words | reply_words, ids, window)
+            if kind2 in ("clear", "ambiguous"):
+                kind, jobs, note = kind2, jobs2, note2 + " (from the rest of the reply)"
+        flat = " ".join(sent.split())
+        for name, negated, matched in claims:
+            fate = ("not " if negated else "") + name
+            if not jobs:
+                print("\t".join(["UNBACKED", fate, "-", note, flat]))
+                continue
+            if kind in ("exact", "clear"):
+                job = jobs[0]
+                verdict = "SUPPORTED" if fate_holds(name, negated, job) else "MISMATCH"
+                print("\t".join([verdict, fate, str(job.get("id")),
+                                 record_line(job) + " [" + note + "]", flat]))
+            else:
+                fitting = [j for j in jobs if fate_holds(name, negated, j)]
+                if fitting:
+                    job = fitting[0]
+                    print("\t".join(["SUPPORTED", fate, str(job.get("id")),
+                                     record_line(job) + " [reference " + kind + "; a candidate holds it]", flat]))
+                else:
+                    lines = "; ".join(record_line(j) for j in jobs[:4])
+                    print("\t".join(["MISMATCH", fate, ",".join(str(j.get("id")) for j in jobs[:4]),
+                                     "no candidate holds it [reference " + kind + "] — " + lines, flat]))
+    return 0
+
+
+def main():
+    if len(sys.argv) >= 2 and sys.argv[1] == "refs":
+        return cmd_refs(sys.argv[2:])
+    if len(sys.argv) >= 2 and sys.argv[1] == "claims":
+        return cmd_claims(sys.argv[2:])
+    sys.stderr.write(__doc__)
+    return 2
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main())
+    except BrokenPipeError:
+        sys.exit(0)

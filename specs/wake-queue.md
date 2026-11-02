@@ -239,6 +239,24 @@ for reduction here — every rule below makes the queue **visible and bounded**,
     never by re-grepping the whole accumulated log: an earlier account's refusal plus a later
     account's silent network death wears the same whole-log shape (limit text standing, no
     genuine output).
+23b. Rules 23 and 24 are judged on the FINAL attempt's slice of the stream — from the byte mark
+    the walk recorded when that attempt began (account-fallback.md rule 14) — never on the whole
+    accumulated log. Every attempt appends to one log: a capacity retry (model-backends.md rule
+    12a) or the next account follows the error result the attempt before it left, and read whole
+    that result stands over a last attempt that ran clean without a text block. Measured
+    2026-11-02 at 01:24: a codex wake hit server capacity five tool calls in, retried the same
+    model, wrote its moment through five more and ended on an empty non-error result; the journal
+    called it "failed before the model ran", and the day digest the want reflection reads never
+    saw the moment. The verdicts, in order: a last slice holding an error result and no genuine
+    text is rule 23's failure, and one cut mid-run is rule 23's cut — a cut can stand in the last
+    slice only because the list ran out behind it, since the walk rides every other cut to the
+    next login; a last slice with genuine text (an assistant text block, a text delta, or a
+    non-error result carrying text) is the reply; a last slice with neither is rule 24's silence,
+    and the extracted reply is DISCARDED for it, because the extractor reads the whole log and,
+    with nothing genuine anywhere in it, hands back the CLI's own error text from an earlier
+    attempt as the reply (account-fallback.md rule 16's error-only shape) — spoken past the gate,
+    that is the 2026-08-11 incident in a mixed walk. Rule 25's work record still reads the whole
+    log: every attempt's tool calls ran.
 24. A wake that produced no output on a clean exit MUST be journaled as silence, not as a crash.
 24a. A wake whose CLI exited **non-zero** with no genuine model output is rule 23's outage in
     different clothes, and MUST be treated the same way: journal the failure and re-book the kinded
@@ -758,6 +776,21 @@ for reduction here — every rule below makes the queue **visible and bounded**,
     commitments neither fill nor drain the auditor's classes. The checker's sweep
     ([nightly.md](nightly.md) rules 51-53) books through the same door under the same identity:
     one morning event wake naming the day's genuine misses, none on a clean day.
+43c. The job-claim checker (`lib/job-claim-check`, [turn-pipeline.md](turn-pipeline.md) rule 32g,
+    [jobs.md](jobs.md) rules 47–47b) books a fourth class: the **job-fate correction** wake — her
+    reply stated what became of a specific job and the jobs ledger says otherwise (a MISMATCH:
+    "I killed that builder two minutes in" against a record reading collected with one commit,
+    2026-08-21 18:09), or holds no record of it at all (UNBACKED). Its reason MUST open with the
+    job-claim prefix (a constant in `lib/common.sh` beside the other three), MUST quote the claim
+    exactly and the record's own line, and MUST instruct her to tell him what the record says —
+    never to restate the claim, never to invent a fate for a job she has not read — on the urgent
+    one-second lane at the configured `WAKE_EFFORT`. No model is consulted in deciding to book:
+    the verdict is the record compared with the words. The wake path MUST skip the promise AUDIT
+    for this prefix exactly as for the other three, and the CHECKER still runs on these wakes —
+    a correction that is itself wrong is caught the same way — the chain bounded by
+    `JOB_CLAIM_REBOOK_MAX` (default 2) correction wakes per job per day, counted from the
+    ledger's own booking lines, and the class's own scoped cap `JOB_CLAIM_WAKE_CAP` (default 2,
+    rule 44).
 44. Any cap on the number of pending wakes a booker may hold MUST be counted from the records under
     the booking lock, and MUST **drain** as well as gate. A cap that only gates new bookings lets a
     queue five times its own size stand for hours. The drain MUST let go of the **furthest-out**
@@ -1012,6 +1045,14 @@ with no account variable set anywhere the wake still invokes the CLI exactly onc
 writing nothing is journaled with its exit code and its agenda is re-booked; the launcher's own
 last words reach the journal line; a clean silent wake books
 no failure retry),
+`tests/test_wake_capacity_retry.sh` (rule 23b, with model-backends.md rule 12a's last clause: the
+classifier handed the final attempt's byte mark reads a capacity error, the retry note and a clean
+tool-only slice as silence, and the same log from byte 0 as the failure it was; a lone capacity
+attempt is still failed; an error in the final retry is not acquitted by tool work or genuine text
+in an earlier one; the walk leaves the mark where the retry began; and the whole wake against a
+stub app-server at capacity once — tool work, a file written, no words — journals `silent — wrote …`
+with its write list and books no outage retry, while persistent capacity and a retry that dies on
+the network both journal the failure, the latter naming the retry's own error, and re-book),
 `tests/test_user_busy_mic.sh` (rule 27f, against pactl fixtures under `tests/data/pactl/`: a
 listing of nothing but pavucontrol's peak meters — pipewire-pulse's shape, with the window's own
 marks stripped down to each single mark in turn, and PulseAudio's own shape — reads not busy; a

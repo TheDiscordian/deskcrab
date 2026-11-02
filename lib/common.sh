@@ -2822,6 +2822,13 @@ _prompt_budget() {  # <L1..L8|regroup> <profile>
         # makes the layer read `over` and rides whole (rule 4), up to the
         # capture bound TURN_INTERRUPT_PARTIAL_MAX.
         interrupt:turn) v=2600 ;;
+        # The job-reference layer (rule 36d, jobs.md rule 46): the
+        # instructions measure about 700 bytes, and each record line — id,
+        # state, dispatch, runtime, exit, commits, the collection verdict
+        # and the brief's first 150 characters — about 330. JOB_REF_MAX
+        # (default 5) candidates plus two "other recent" lines fit inside
+        # this; a longer verdict reads `over` and rides whole (rule 4).
+        jobref:turn) v=3200 ;;
         # The dispute frame is a turn-only layer: a wake has no message to be
         # pushed back on. Sized to its measured text plus margin — 1,800
         # until 2026-08-10 evening; the frame then took on the named register
@@ -3300,6 +3307,16 @@ $SHELVES}"
     local INTERRUPT=""
     [ "$PROMPT_PROFILE" = turn ] && INTERRUPT="$(_interrupt_context)"
     _prompt_layer interrupt "the cut turn's own journal entry" "$INTERRUPT"
+
+    # ---- job reference ----------------------------------------------------
+    # Conditional, turn-only (prompt-assembly rule 36d, jobs.md rule 46):
+    # rendered when claude_generate's grep found a job-shaped reference in
+    # his message and the resolver had records for it. The block is the
+    # ledger's own lines, ranked by his words; it sits here, beside the
+    # frame, so the fate is the last fact read before the reply is written.
+    local JOBREF=""
+    [ "$PROMPT_PROFILE" = turn ] && JOBREF="${PROMPT_JOBREF:-}"
+    _prompt_layer jobref "crab jobs" "$JOBREF"
 
     # ---- dispute ----------------------------------------------------------
     # Conditional, like regroup: rendered only when the caller that took the
@@ -4788,6 +4805,10 @@ DEFERRED_PROMISE_REASON_PREFIX="You promised him and nothing was booked:"
 # beside the auditor's two: her reply claimed a concrete action and the turn's
 # own tool record shows nothing performed or booked it.
 PROMISE_CHECK_REASON_PREFIX="You claimed this and the record shows nothing did it:"
+# The job-claim CHECKER's class (specs/wake-queue.md rule 43c), a fourth: her
+# reply stated what became of a specific job — killed, finished, committed,
+# still running — and the jobs ledger says otherwise, or has no record of it.
+JOB_CLAIM_REASON_PREFIX="You said this about a job and its record says otherwise:"
 
 # Is this wake's reason one of the follow-up classes, and so exempt from
 # re-AUDITING? One question, asked wherever a wake decides whether to audit.
@@ -4798,7 +4819,7 @@ PROMISE_CHECK_REASON_PREFIX="You claimed this and the record shows nothing did i
 promise_audit_own_reason() {  # <wake reason>
     case "${1:-}" in
         "$PROMISE_AUDIT_REASON_PREFIX"*|"$DEFERRED_PROMISE_REASON_PREFIX"*) return 0 ;;
-        "$PROMISE_CHECK_REASON_PREFIX"*) return 0 ;;
+        "$PROMISE_CHECK_REASON_PREFIX"*|"$JOB_CLAIM_REASON_PREFIX"*) return 0 ;;
     esac
     return 1
 }
@@ -4875,6 +4896,80 @@ fire_promise_check() {  # <journal-kind> <response>
         -mmin +120 -delete 2>/dev/null
     detach_turn_child promise-check "$SCRIPT_DIR/lib/promise-check" turn \
         "$1" "${SESSION_START:-$(date +%s)}" "$$" "$SNAP" "$PROMISE_LEDGER" "$2"
+}
+
+# --- Job references and job-fate claims -------------------------------------
+# specs/jobs.md rules 46-47, prompt-assembly.md rule 36d, turn-pipeline.md
+# rule 32g. On 2026-08-21 at 18:09 he referred, in plain words, to the
+# similar-game builder that had finished that evening, and three replies
+# running said it had been killed two minutes in — the fate of the OTHER
+# builder, the errand one dispatched an hour later. The reference was
+# resolved by whichever builder was freshest in her head and the fate came
+# from memory, while every one of those jobs had a record the whole time.
+#
+# Two hands, both mechanical, no model in either. BEFORE the reply: a
+# message that refers to a job by description ("the builder", "that job",
+# "the fix you did") carries a conditional prompt layer listing the records
+# his words resolve to — ranked by the words, never by recency — each with
+# its dispatch, runtime, state, exit and commits, so the fate is in front of
+# her before she writes. AFTER delivery: a reply that states a job's fate is
+# handed to the detached checker, which resolves the same way and compares
+# the claimed fate with the record; a contradiction or an unbacked claim
+# lands on the ledger and books the urgent correction wake. Both are gated
+# by a grep so the ordinary reply pays nothing.
+JOB_CLAIM_LEDGER="${JOB_CLAIM_LEDGER:-${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab/job-claims.jsonl}"
+
+# The shape of a reference to a job, cheaply: a job noun with a determiner, a
+# bare "builder", a job id, or the fix/thing/one "you did/wired/connected".
+# The resolver applies the real pattern and the day-job exclusions; this only
+# decides whether to pay for the python at all.
+JOB_REF_RE="\b(the|that|this|your|my|which|a|an|both|those|these|two|other|last|first|second|new|old|same) ([a-z-]+ ){0,2}(builders?|jobs?|workers?|builds?)\b|\bbuilders?\b|\bjobs? (you|that|which|it)\b|\b(the|that|this|your) ([a-z-]+ ){0,3}(fix|patch|wiring|change|work|thing|one|feature|lookup|retrieval|search)\b[.,]? (that |which )?(you|it|she) (just |already |finally )?(did|made|wired|connected|landed|built|ran|dispatched|kicked|launched|sent|started|finished|committed|killed|stopped|fixed|wrote|shipped|pushed)\b|\byou (just )?(dispatched|kicked off|launched|spun up|sent out)\b|\b20[0-9]{6}-[0-9]{6}\b"
+
+job_reference_precheck() {  # <message>
+    # The day-job senses go first, so "good job" and "job interview" never
+    # pay for the resolver; the resolver repeats the exclusion in full.
+    printf '%s' "${1:-}" \
+        | LC_ALL=C sed -E 's/\b(good|great|nice|fine|bad|day|real|new|old|dream|first) jobs?\b/ /Ig; s/\bjobs? (interview|market|title|offer|hunt|search|application)s?\b/ /Ig' \
+        | LC_ALL=C grep -qiE "$JOB_REF_RE"
+}
+
+# The job-reference layer's text (prompt-assembly rule 36d): the records his
+# message resolves to, or nothing when the resolver finds no reference.
+_jobref_context() {  # <message>
+    [ "${JOB_REF_LAYER:-1}" = "1" ] || return 0
+    [ -x "$LIB_DIR/job-resolve" ] || return 0
+    python3 "$LIB_DIR/job-resolve" refs "$JOBS_DIR" "$DAY_JOURNAL_DIR" \
+        "${JOB_REF_WINDOW_HOURS:-72}" "${JOB_REF_MAX:-5}" "$1" 2>/dev/null
+    return 0
+}
+
+# The shape of a fate claim about a job: a job noun or id somewhere in the
+# reply, and a fate word somewhere in it. Liberal on purpose — the sentence
+# test and the resolution live in lib/job-resolve, and a false hit here costs
+# one small python process after delivery, never a model call.
+JOB_CLAIM_NOUN_RE="\b(builders?|jobs?|workers?)\b|\b(the|that|this) build\b|\b20[0-9]{6}-[0-9]{6}\b"
+JOB_CLAIM_FATE_RE="\b(killed|stopped|cancell?ed|halted|aborted|terminated|died|crashed|dead|failed|failure|blocked|never ran|never started|refused|committed|pushed|merged|finished|completed|landed|collected|wrapped up|came back|is done|was done|running|in flight|underway|mid-run|still going|queued|shelved|on the shelf)\b"
+
+job_claim_precheck() {  # <reply>
+    printf '%s' "${1:-}" | LC_ALL=C grep -qiE "$JOB_CLAIM_NOUN_RE" \
+        && printf '%s' "${1:-}" | LC_ALL=C grep -qiE "$JOB_CLAIM_FATE_RE"
+}
+
+fire_job_claim_check() {  # <journal-kind> <user-text> <response>
+    [ "${JOB_CLAIM_CHECK:-1}" = "1" ] || return 0
+    [ -x "$SCRIPT_DIR/lib/job-claim-check" ] || return 0
+    [ -n "$(printf '%s' "${3:-}" | tr -d '[:space:]')" ] || return 0
+    if ! job_claim_precheck "$3"; then
+        printf '%s\t%s\tpre-check: no job-fate shape — nothing resolved\n' \
+            "$(date '+%F %T')" "$1" >> "${STATE_PREFIX}-job-claims.log" 2>/dev/null
+        return 0
+    fi
+    # The directories ride as arguments, not environment: a detached unit
+    # gets a bare environment, and a scratch instance's child must read the
+    # scratch ledger, never the live one.
+    detach_turn_child job-claim-check "$SCRIPT_DIR/lib/job-claim-check" turn \
+        "$1" "${SESSION_START:-$(date +%s)}" "$$" "$JOBS_DIR" "$DAY_JOURNAL_DIR" \
+        "$JOB_CLAIM_LEDGER" "$2" "$3"
 }
 
 # --- Claudism capture: the phrase-habit flag log ----------------------------
@@ -7556,6 +7651,10 @@ run_claude_wake() {
     # record whoever was listening, and the checker judges fresh words
     # against fresh evidence, never the agenda (turn-pipeline rule 32a).
     fire_promise_check wake "$RESPONSE"
+    # And the job-claim checker (rule 32g): a wake that states what became
+    # of a job is held to the ledger exactly as a turn is — a correction
+    # wake's own reply included, which is how a wrong correction is caught.
+    fire_job_claim_check wake "${WAKE_REASON:-}" "$RESPONSE"
     # Wakes shape the standing mood whether or not a later delivery gate
     # keeps their words quiet. This is detached, just like the desk path.
     fire_face_mood "${WAKE_REASON:-$PROMPT_TEXT}" "$RESPONSE"
@@ -8088,6 +8187,16 @@ claude_generate() {
             low|medium) EFFORT="${DISPUTE_EFFORT:-high}" ;;
         esac
         turn_metric dispute "pushback detected — model $MODEL, effort $EFFORT"
+    fi
+    # The job-reference layer (prompt-assembly rule 36d): a message that
+    # refers to a builder, a job or a fix by description carries the records
+    # its words resolve to, so the fate she states is read, not remembered.
+    # A grep gates the resolver; PROMPT_JOBREF reaches build_system_prompt
+    # through the subshell exactly as PROMPT_DISPUTE does.
+    local PROMPT_JOBREF=""
+    if job_reference_precheck "$TEXT"; then
+        PROMPT_JOBREF="$(_jobref_context "$TEXT")"
+        [ -n "$PROMPT_JOBREF" ] && turn_metric jobref "job reference resolved from the ledger"
     fi
     local SYSTEM_PROMPT
     SYSTEM_PROMPT="$(build_system_prompt)"
@@ -8943,6 +9052,10 @@ _run_claude_remote_locked() {
     # (turn-pipeline rule 32a). A held (superseded) turn arrives here with
     # RESPONSE already emptied, so nothing of an unspoken reply is judged.
     fire_promise_check phone "$RESPONSE"
+    # The job-claim checker (rule 32g) needs no stream snapshot — its
+    # evidence is the jobs ledger — but it fires here beside the promise
+    # checker so a held turn's emptied RESPONSE is judged by neither.
+    fire_job_claim_check phone "$TEXT" "$RESPONSE"
 
     rm -f "$DEBUGLOG"
     # Reply audio the client has had time to fetch. Scoped to THIS instance's
@@ -9246,6 +9359,10 @@ run_claude_and_respond() {
         # Pattern-gated: most replies cost a grep here and no model call
         # (turn-pipeline rules 32a-32d).
         fire_promise_check desktop "$RESPONSE"
+        # And did I state what became of a job — killed, finished, committed
+        # — that its own record contradicts? Pattern-gated the same way; the
+        # evidence is the jobs ledger, no model (rule 32g, jobs.md rule 47).
+        fire_job_claim_check desktop "$TEXT" "$RESPONSE"
     else
         # He asked out loud and nothing deliverable came back — no text at
         # all, whitespace, or a bare quiet marker (rule 16b): every shape of

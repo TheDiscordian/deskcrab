@@ -55,6 +55,8 @@ A push-to-talk desktop assistant for Linux, powered by the Claude Code CLI. The 
 | `lib/job-collect` | after a run: the branch, commits, tests and verdict, onto the sidecar |
 | `lib/chess_benchmark.py` | timed benchmark selection and scheduling from recorded evidence; `tools/chess-benchmark` launches the native self-play workers |
 | `lib/job-log-stream` | turns a builder's live stream into the human job log as it is written |
+| `lib/job-resolve` | which job his words mean, from the ledger and the journal, never from recency: the job-reference prompt layer and the fate-claim verdicts |
+| `lib/job-claim-check` | after delivery: a stated job fate held against its record; a contradiction or an unbacked claim books the correction wake |
 | `lib/promise-audit` | did the reply state a want that is not on the shelf? |
 | `lib/promise-check` | did the reply promise an action the turn's tool record never performed? |
 | `lib/promise_ledger.py` | the one reader of sweep-row identity: runs, ordinals, and which rows a resolution has settled |

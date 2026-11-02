@@ -596,6 +596,74 @@ log still held only the account banner. These rules make the protection structur
     incident above is dropped at the door and the 02:30 occurrence runs alone. The dry run
     (`DESKCRAB_NO_DISPATCH`) says "would drop" and writes nothing.
 
+### References and fate claims
+
+On 2026-08-21 at 18:09 the user referred, in plain and unambiguous words, to the similar-game
+builder that had finished that evening — dispatched 17:34, twenty minutes, exit 0, one commit,
+collected — and the reply said, three replies running, that she had killed it two minutes in.
+That was the OTHER builder: the errand one, dispatched at 18:01 and stopped at fifty-six seconds.
+Nothing was checked before speaking. The reference was resolved by whichever builder was freshest
+in her head, the fate came from memory, and the whole answer about whether the feature helped was
+then reasoned downstream of a job that had not happened to the thing he asked about. He named it
+gaslighting, and without the assumption of good intent it is indistinguishable from inventing a
+past to win an argument. The shape is general: a reference to a recent event resolved by
+conversational recency instead of from the record, and never verified before it is spoken — while
+every one of those jobs had a record the whole time, on its sidecar and on the day's journal.
+
+46. A message that refers to a job by description — "the builder", "that job", "the fix you did",
+    "the one you dispatched", a job id — carries, on the turn profile, the conditional
+    job-reference layer ([prompt-assembly.md](prompt-assembly.md) rule 36d): the records his
+    words resolve to, each as one line — id, state, dispatch time, runtime, exit, commits and
+    branch, the collection verdict, and the brief's opening words — so the fate is in front of her
+    before she writes. Resolution is by the WORDS, never by recency: the candidates are the whole
+    ledger (plus the journal's `job` rows from the window whose sidecar the keep-days prune has
+    taken, joined by dispatch epoch so a pruned builder still has a line), ranked by idf-weighted
+    shared tokens between his message and each brief, the measure rule 7i settled on. ONE
+    implementation does this (`lib/job-resolve refs`), stdlib and model-free, gated by a grep in
+    `claude_generate` so a message with no job-shaped reference costs nothing and the layer is
+    absent. The day-job senses ("good job", "my job", "job interview") are excluded by pattern.
+46a. The block states its own confidence and never picks silently. A CLEAR resolution — two shared
+    words, or one rare enough to carry it, and a lead over the runner-up — names the job and says
+    its line is its fate. An AMBIGUOUS one lists the near-ties and tells her to say which there
+    are and ask, or read the conversation for the one already under discussion. A message whose
+    words match no brief lists the window's recent jobs newest first and says in those words that
+    recency is not identity. After a clear or ambiguous resolution the block also names up to two
+    OTHER recent jobs as not the referent — the one she may have in her head is usually there,
+    and a fate of theirs is not a fate of the above. And when no record reaches at all, the block
+    says to say so rather than invent one.
+47. An assertion that a specific job ran, was killed, stopped, died, failed, was blocked, finished,
+    committed, is still running or is queued — and each one's negation — is a factual claim about
+    an artefact, and it is CHECKED the way the promise checker checks artefacts
+    ([turn-pipeline.md](turn-pipeline.md) rule 32g): after delivery, on every channel, detached,
+    mechanically. The checker (`lib/job-claim-check`, verdicts from `lib/job-resolve claims`)
+    reads every sentence of the reply that carries a job noun or id beside a fate word, resolves
+    which job it is about from the sentence's words and his message — by id when one is named,
+    by the same word ranking otherwise, with the rest of the reply as a fallback — and compares
+    the claimed fate with the record's state: killed or stopped against `stopped`/`died`, died
+    against `died`/`failed`/`stopped`, failed against `failed`/`died`/`blocked`, finished against
+    `finished`/`collected`, committed against a collected record with commits on it, running
+    against `running`/`dispatched`, queued against `queued`; a negated claim holds when the
+    record does NOT. Verdicts: SUPPORTED when the resolved job's record holds the fate, or — for
+    an ambiguous reference — when any candidate's does; MISMATCH when the record contradicts it,
+    or no candidate holds it; UNBACKED when no record in the window exists to resolve against.
+47a. A MISMATCH and an UNBACKED claim each land on the durable job-claims ledger and book one
+    immediate event wake on the queue's urgent lane ([wake-queue.md](wake-queue.md) rule 43c),
+    the reason opening with the job-claim prefix, quoting the claim verbatim and the record's own
+    line, and instructing the waking hand to tell him what the record says — naming the job by
+    what it was for, saying which was which if two were confused — never to restate the claim,
+    and never to invent a fate for a job whose record it has not read. The claimed fate is thus
+    corrected by the record within seconds of being spoken; a SUPPORTED claim is traced and
+    nothing else happens. The class is bounded like the promise checker's: at most
+    `JOB_CLAIM_REBOOK_MAX` (default 2) correction wakes per job per day, counted from the
+    ledger's own booking lines, and its own scoped cap `JOB_CLAIM_WAKE_CAP` (default 2).
+47b. The asymmetry is deliberate: a false accusation is the same failure pointed the other way. A
+    reference that resolves on one weak shared word is never CLEAR — the window's recent jobs
+    ride beside it as candidates — and a fate any candidate holds is SUPPORTED; "half-landed" is
+    about files, not a job; a negation anywhere in the four words before the fate word flips it;
+    and the checker never holds, rewrites or vetoes the reply (rule 32a's standing prohibition).
+    Neither hand calls a model: the resolver and the checker are a grep, a python process and
+    the ledger, so the ordinary reply pays the grep and one trace line.
+
 ## DATA
 
 | Path | Format |
@@ -606,6 +674,8 @@ log still held only the account banner. These rules make the protection structur
 | `~/.local/share/deskcrab/jobs/blocked` | `<epoch> \t <family[,family…]|all> \t <reason>` (rule 16), last block wins; a two-field marker from before the families field reads as `all` |
 | `~/.local/share/deskcrab/jobs/<id>.lock` | guards read-modify-write of the sidecar — taken by the status writer itself, so every call site inherits it (rule 36), and by `crab job drop` around its check-and-delete (rule 33) |
 | `~/.local/share/deskcrab/jobs/flight/<key>.lock` | the single-flight lock (rule 44): flock'd by the worker for the life of its run; the `<pid> <job id>` line inside is legibility only, never the lock itself; pruned by report's keep-days sweep |
+| `~/.local/share/deskcrab/job-claims.jsonl` | `lib/job-claim-check` (rule 47a): one JSON line per MISMATCH or UNBACKED fate claim — time, channel, turn epoch and pid, verdict, fate, job id (or `unbacked`), the claim verbatim, the record line, and what became of the wake |
+| `${STATE_PREFIX}-job-claims.log` | `fire_job_claim_check`, `lib/job-claim-check`: one line per run — the pre-check's verdict, each claim's verdict, or why nothing was judged |
 | systemd unit `deskcrab-job-<id>` | the worker, collected on exit |
 | systemd unit `deskcrab-job-retry-<id>` | the one-shot timer that re-dispatches a blocked job's brief once the hold expires (rule 18a) |
 
@@ -795,7 +865,21 @@ an over-ceiling `running` orphan claims no new byte, and nothing calls a non-run
 `tests/test_job_news_delivery.sh` (rule 7c from the delivery side — the completion wake's news
 through the busy and in-flight gates: delayed, delivered exactly once after the gate clears, and
 re-booked whole under the runner's own identity when the moment outlasts the wait; the cases live
-with the other delivery gates in [wake-queue.md](wake-queue.md) rule 27d).
+with the other delivery gates in [wake-queue.md](wake-queue.md) rule 27d);
+`tests/test_job_reference.sh` (rules 46–47b, against the 2026-08-21 evening rebuilt as sidecars:
+the similar-game builder collected with a commit and the errand builder stopped at fifty-six
+seconds and MORE RECENT — his 18:09 message resolves the layer to the finished builder, names it
+clear, and names the killed one as not the referent; a bare "the builder" lists both newest
+first and says recency is not identity; a day-job sentence raises no layer; the layer rides the
+assembled turn prompt between the interrupt and dispute layers and no wake or job prompt; the
+checker rules the 18:09 "I killed that builder two minutes in" MISMATCH against the finished
+builder, ledgers it and books the correction wake quoting claim and record, rules the 18:02
+kill and the 18:10 self-correction SUPPORTED with nothing booked, rules the 2026-08-25 "it
+finished a minute ago" SUPPORTED, rules a fate claim with no record in the window UNBACKED with
+a wake saying so, rules an ambiguous reference SUPPORTED when any candidate holds the fate and
+MISMATCH when none does, books at most the rebook bound per job per day, and fires from the
+delivery path — a stubbed desk turn's pre-check trace and detached dispatch are witnessed, and a
+fate-free reply spawns nothing).
 
 **To be written:**
 

@@ -50,11 +50,12 @@ flowchart TD
   L5["L5 WHERE THINGS ARE<br/>path index"]
   L6["L6 TRANSCRIPT<br/>summary + live conversation"]
   INT["conditional INTERRUPT<br/>he spoke over a turn — the cut context, turn-pipeline rule 15f"]
+  JOB["conditional JOB REFERENCE<br/>he named a builder or job — its record, jobs.md rule 46"]
   DSP["conditional DISPUTE<br/>he is pushing back — specs/dispute-turn.md"]
   L7["L7 RANKING RULE<br/>how to weigh what he said"]
   L8["L8 TURN FRAME<br/>names the message below as the subject"]
   MSG["THE MESSAGE<br/>delivered as the user message, never inside the system prompt"]
-  L1 --> L2 --> L3 --> L4 --> L5 --> L6 --> INT --> DSP --> L7 --> L8 --> MSG
+  L1 --> L2 --> L3 --> L4 --> L5 --> L6 --> INT --> JOB --> DSP --> L7 --> L8 --> MSG
 ```
 
 6. **L8 MUST be the last thing in the system prompt, and the user's latest message MUST be the user
@@ -91,8 +92,9 @@ flowchart TD
 | L8 turn frame | 3,500 | 3,500 | 200 | 200 |
 | conditional regroup | 2,000 | 2,000 | 0 | 0 |
 | conditional interrupt | 2,600 | 0 | 0 | 0 |
+| conditional job reference | 3,200 | 0 | 0 | 0 |
 | conditional dispute | 3,200 | 0 | 0 | 0 |
-| **system-prompt total** | **≤ 65,700** | **≤ 59,700** | **≤ 3,000** | **≤ 200** |
+| **system-prompt total** | **≤ 68,900** | **≤ 59,700** | **≤ 3,000** | **≤ 200** |
 | user message | the turn's text | the wake agenda, ≤ 3,600 | the task description | the question and its material |
 
 L5 read 600 here until 2026-08-08, and the assembler has always set 1,000. The table is corrected to
@@ -148,6 +150,12 @@ cap), the rest stay on disk behind `crab eng list --state all`, and the section 
 is holding back. Settling remains the right bookkeeping — it is what moves a thread out of the
 open list and, once the window has passed, out of the block entirely. The two speaking totals move
 by the same 4,000.
+
+The job-reference row joined the table on 2026-11-02 (rule 36d). Its instructions measure about
+700 bytes and each record line — id, state, dispatch, runtime, exit, commits, the collection
+verdict clipped at 160 characters and the brief's first 150 — about 330, so `JOB_REF_MAX` (default
+5) candidates plus the two "other recent" lines sit inside 3,200; a longer verdict reads `over` and
+rides whole (rule 4). Turn-only, so only the turn total moves, by the same 3,200.
 
 Three rows moved on 2026-08-15, the day the assembly was reconciled to what it actually measures —
 at revive that morning the wake build warned 48,958 bytes against 30,500, everything carried and
@@ -394,6 +402,23 @@ roughly 800 bytes off every speaking prompt, with nothing removed that a turn ca
     length, never a loss. An empty snapshot — the run was cut before any text landed — is stated
     as exactly that, because rule 29's discipline holds inside a block too: nothing points at
     text that is not there.
+
+36d. **The job-reference layer.** A turn whose message refers to a job by description — "the
+    builder", "that job", "the fix you did", "the one you dispatched", a job id — carries one
+    conditional layer between the interrupt layer and the dispute layer: the job records his
+    words resolve to, one line each (id, state, dispatch, runtime, exit, commits, the collection
+    verdict, the brief's opening words), ranked by the words and never by recency, with the
+    resolver's own confidence stated and up to two other recent jobs named as NOT the referent
+    ([jobs.md](jobs.md) rules 46–46a). It exists because on 2026-08-21 she told him three times
+    that the builder he had plainly named was killed two minutes in, when its record said
+    collected with a commit — the fate of a different builder, resolved by recency from memory.
+    The block is `lib/job-resolve refs`, gated by a grep in `claude_generate` so a message with
+    no job-shaped reference pays nothing and the layer is absent; it reaches the assembler as
+    `PROMPT_JOBREF` exactly as the dispute flag does. Turn-only, like the dispute layer: a wake
+    has no message referring to anything. It sits beside the frame on purpose, so the record is
+    the last fact read before the reply is written; the instruction inside it tells her to say
+    what the line says and nothing the line does not, and — when the words fit more than one
+    record — to say which there are and ask rather than pick the freshest.
 
 37. **In the regroup block, the quote and the instructions are both emitted whole.** The block is
     instructions wrapped around a quote of the words being spoken. Under the trim era's generic
