@@ -537,9 +537,9 @@ ledger.
      live state outside the repository, expires from prompt use after a bounded interval, and
      records `wake-now` bookings by unit so a later retraction can cancel the actual queued effect.
 32g. **The job-claim checker.** A reply that states what became of a specific job — ran, was
-     killed or stopped, died, failed, was blocked, finished, committed, is still running, is
-     queued, or the negation of any — makes a factual claim about an artefact whose record exists
-     ([jobs.md](jobs.md) rule 47), and every delivered reply on every channel — desk, phone, wake
+     killed or stopped, died, failed, was blocked, finished, committed, pushed, merged, is still
+     running, is queued, or the negation of any — makes a factual claim about an artefact whose
+     record exists ([jobs.md](jobs.md) rule 47), and every delivered reply on every channel — desk, phone, wake
      — MUST be handed to that check after delivery, detached, at the same out-of-band moment as
      the promise checker and under the same prohibition: it never holds, rewrites or vetoes the
      reply, and no checker prose is ever delivered in her voice. A pattern pre-check
@@ -547,9 +547,12 @@ ledger.
      it) gates the child, so the ordinary reply costs a grep and one trace line; the child
      (`lib/job-claim-check`) needs no stream snapshot — its evidence is the jobs ledger and the
      journal — and takes the directories as arguments, never from the unit's bare environment.
-     It resolves each claim's job from the claiming sentence and the user's message, compares the
-     claimed fate with the record, and books the correction wake for a MISMATCH or an UNBACKED
-     claim ([wake-queue.md](wake-queue.md) rule 43c), quoting the claim and the record. No model
+     It resolves each claim's job from the claiming sentence and the user's message — a sentence
+     that only refers back ("It was killed") is about the job the reply last named ([jobs.md](jobs.md)
+     rule 47c) — compares the claimed fate with the record (an artefact fate with what collection
+     observed, never with a state), and books the correction wake for a MISMATCH or an UNBACKED
+     claim ([wake-queue.md](wake-queue.md) rule 43c), quoting the claim and the record; an
+     UNVERIFIED negation is traced and books nothing. No model
      is called on any path. The 2026-08-21 18:09 reply — "I killed that builder two minutes in"
      about the builder his words named, whose record read collected with one commit — is the
      regression this rule exists for: under it the record's line reaches him within seconds,
@@ -749,13 +752,15 @@ outcome carrying the turn's own tool trace (or the explicit no-tools record), an
 handed a desk claim's refuting trace and a desk claim's fulfilling trace alike — the traceless
 claim surfaces, the traced one is dropped.
 
-`tests/test_job_reference.sh` — rule 32g and [jobs.md](jobs.md) rules 46–47b: the job-reference
+`tests/test_job_reference.sh` — rule 32g and [jobs.md](jobs.md) rules 46–47c: the job-reference
 layer and the job-claim checker against the 2026-08-21 evening rebuilt as sidecars; the checker
 fires from a stubbed desk turn's delivery path (the pre-check trace and the detached dispatch are
 witnessed, a fate-free reply spawns nothing), rules the 18:09 kill claim MISMATCH against the
 finished builder his words named and books the correction wake quoting claim and record, and
 rules the supported kill, the self-correction and the supported finish SUPPORTED with nothing
-booked.
+booked; and, against a finished-but-uncollected sidecar, a blocked and a queued one, refuses to
+certify a commit the record never observed, judges "the builder ran" from the state and
+"finished. It was killed" across the sentence break, the pre-check admitting both shapes.
 
 `tests/test_empty_delivery.sh` — rule 16b on the desk and phone paths, and
 [speech-output.md](speech-output.md) rule 57: a marker-only reply reaches no speaker, no window,

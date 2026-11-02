@@ -21,16 +21,25 @@ Two verbs, both mechanical, both model-free, both stdlib only:
 
     job-resolve claims <jobs-dir> <journal-dir> <window-hours> <reply> [message]
         The claim gate: every sentence of the reply that asserts a job's
-        FATE — killed, stopped, died, failed, blocked, finished, committed,
-        running, queued, and each one's negation — resolved against the
-        same records, with the user's message as the other half of the
-        reference. One tab-separated line per claim:
+        FATE — ran, killed, stopped, died, failed, blocked, finished,
+        committed, pushed, merged, running, queued, and each one's
+        negation — resolved against the same records, with the user's
+        message as the other half of the reference. A sentence that names
+        no job but refers back to one ("It was killed before committing
+        anything") is about the job the reply last established, unless its
+        own words name another or a switch word (other, earlier, second)
+        breaks the thread. One tab-separated line per claim:
             verdict \\t fate \\t job-id \\t record \\t claim-sentence
         where verdict is SUPPORTED (the resolved job's record, or some
         candidate's when the reference is ambiguous, holds the fate),
-        MISMATCH (the record contradicts it), or UNBACKED (no record in
-        the window to resolve against at all). A reply with no fate claim
-        prints nothing.
+        MISMATCH (the record contradicts it), UNBACKED (no record in the
+        window to resolve against, or a positive claim of an artefact —
+        a commit, a push, a merge — the record never observed), or
+        UNVERIFIED (a negation the record can neither confirm nor
+        contradict: it is traced and nothing else). Unknown is not
+        evidence: a finished-but-uncollected job proves no commit, and no
+        record observes a merge at all. A reply with no fate claim prints
+        nothing.
 
 The pool is the jobs ledger — every sidecar, bounded by the report's own
 keep-days prune — plus the journal's `job` entries from the window whose
@@ -86,18 +95,43 @@ NOT_JOB_RE = re.compile(
     r"|\bon the job\b|\bjob done\b",
     re.I)
 
+# A builder that executed at all: the dispatch call was made and a worker
+# ran, however it ended. queued is a brief on the shelf, blocked a run the
+# CLI refused before any work, duplicate a worker that lost the single-flight
+# race and touched nothing, superseded a queued brief dropped at the door
+# (lib/job-status's state vocabulary). None of those four RAN.
+RAN_STATES = {"dispatched", "running", "finished", "collected", "failed", "stopped", "died"}
+NEVER_RAN = {"queued", "blocked", "duplicate", "superseded"}
+# The artefact fates: judged from what collection observed, never from the
+# state alone. A None in place of a state set marks them.
+ARTEFACTS = ("committed", "pushed", "merged")
+
 FATES = [
-    # (name, pattern, states that hold it)
+    # (name, pattern, states that hold it — None for the artefact fates)
+    # "ran" and "started" are said of tests, commands and conversations as
+    # often as of builders, so this one is subject-aware: the job noun, id or
+    # back-reference must stand within two words before the verb, or the
+    # verb must take the job as its object ("I started the builder").
+    ("ran", r"\b(?:builders?|jobs?|workers?|builds?|it|that|which|this|one|20\d{6}-\d{6}(?:-\d+)?)\b(?:'s)?\s+(?:[\w']+\s+){0,2}?"
+            r"(?:ran|has run|have run|had run|did run|was run|got run|been run|"
+            r"(?:never|not|hasn't|haven't|hadn't|didn't|doesn't|wasn't|isn't)\s+(?:even\s+|yet\s+|actually\s+|really\s+)?(?:run|start(?:ed)?)|"
+            r"started|got going|got underway|got off the ground|executed)\b"
+            r"|\b(?:ran|started|executed)\s+(?:the|that|this|a|another|your|my)\s+(?:\w+\s+){0,2}?(?:builders?|jobs?|workers?)\b(?!'s)",
+     RAN_STATES),
     ("stopped", r"\b(killed|stopped|cancel+ed|halted|aborted|terminated|pulled the plug|shut (?:it|that|them|the \w+) down|stood (?:it|that) down|stopping|killing)\b",
      {"stopped", "died"}),
     ("died", r"\b(died|crashed|fell over|blew up|keeled over|dead)\b",
      {"died", "failed", "stopped"}),
     ("failed", r"\b(failed|failure)\b",
      {"failed", "died", "blocked"}),
-    ("blocked", r"\b(blocked|never (?:ran|started|began)|refused|got refused)\b",
+    ("blocked", r"\b(blocked|refused|got refused|turned away at the door)\b",
      {"blocked"}),
-    ("committed", r"\b(committed|commit landed|pushed|merged)\b",
-     {"collected", "finished"}),
+    ("committed", r"\b(committed|committing|commit landed|commits? (?:are|is|went|got) in|"
+                  r"(?:never|not|hasn't|haven't|hadn't|didn't|doesn't)\s+(?:even\s+|yet\s+|actually\s+)?commit)\b", None),
+    ("pushed", r"\b(pushed|pushing|push landed|(?:is|are|went|got) upstream|on the remote|"
+               r"(?:never|not|hasn't|haven't|hadn't|didn't|doesn't)\s+(?:even\s+|yet\s+|actually\s+)?push)\b", None),
+    ("merged", r"\b(merged|merging|merge landed|"
+               r"(?:never|not|hasn't|haven't|hadn't|didn't|doesn't)\s+(?:even\s+|yet\s+|actually\s+)?merge)\b", None),
     ("finished", r"\b(finished|completed|came back|wrapped up|is done|was done|(?<!-)landed|collected|ran (?:the )?full|ran to (?:the )?end|all the way through)\b",
      {"finished", "collected"}),
     ("running", r"\b(still running|is running|running now|running right now|mid-run|in flight|still going|still at it|underway|is on it|working on it right now|is building|still building)\b",
@@ -108,7 +142,20 @@ FATES = [
 FATE_RES = [(n, re.compile(p, re.I), s) for n, p, s in FATES]
 NEG_RE = re.compile(
     r"\b(not|never|didn'?t|did not|hasn'?t|has not|hadn'?t|had not|wasn'?t|was not|isn'?t|is not|"
-    r"no longer|without|before (?:it|that|they|anything)|nothing|nor)\b(?:\W+\w+){0,3}\W*$", re.I)
+    r"no longer|without|before (?:it|that|they|anything|committing|pushing|merging|finishing|landing)|nothing|nor)\b(?:\W+\w+){0,3}\W*$", re.I)
+# A negation carried inside a subject-aware match ("that builder never ran").
+NEG_IN_RE = re.compile(r"\b(never|not|n't|didn'?t|hasn'?t|haven'?t|hadn'?t|wasn'?t|isn'?t)\b", re.I)
+# A sentence that names no job but refers back to the one the reply last
+# established: "It was killed before committing anything."
+BACK_RE = re.compile(
+    r"\b(it|itself|that one|this one|the thing|the one|the run|the same one|which|"
+    r"(?:the|that|this) other one|another one|the (?:first|second|earlier|later|previous|older|newer|fresher|latest|last) one)\b"
+    r"|\b(that|this)(?=\s+(?:was|is|has|had|got|never|did|didn'?t|ran|finished|died|crashed|committed|failed|stopped|blocked))",
+    re.I)
+# A word that says the sentence has moved to a DIFFERENT job than the one
+# before it: the carried reference stops here and the words resolve afresh.
+SWITCH_RE = re.compile(
+    r"\b(other|another|different|second|first|earlier|later|previous|next|older|newer|fresher|latest|last)\b", re.I)
 ENDED = ("finished", "collected", "failed", "died", "stopped", "blocked",
          "duplicate", "superseded")
 
@@ -236,12 +283,21 @@ def record_line(job):
     commits = job.get("commits")
     if isinstance(commits, list):
         if commits:
-            bits.append("%d commit%s%s" % (len(commits), "" if len(commits) == 1 else "s",
-                                            (" on " + job["branch"]) if job.get("branch") else ""))
+            pushed = ""
+            unpushed = job.get("unpushed")
+            if isinstance(unpushed, int) or (isinstance(unpushed, str) and unpushed.isdigit()):
+                unpushed = int(unpushed)
+                pushed = " (all pushed)" if unpushed == 0 else " (%d unpushed)" % unpushed
+            bits.append("%d commit%s%s%s" % (len(commits), "" if len(commits) == 1 else "s",
+                                              (" on " + job["branch"]) if job.get("branch") else "",
+                                              pushed))
         elif state in ENDED and job.get("collected_at"):
             bits.append("no commits")
-    elif state == "collected":
-        bits.append("commits unknown")
+    elif state in ENDED and state not in NEVER_RAN:
+        # Collection never observed this one (a stopped or died run, or a
+        # finish the collector has not reached): the record holds no commit
+        # fact either way, and says so rather than letting the state imply one.
+        bits.append("commits unobserved (not collected)")
     verdict = str(job.get("collection") or "").strip()
     if verdict:
         verdict = " ".join(verdict.split())
@@ -366,23 +422,55 @@ def cmd_refs(argv):
 
 
 def sentences(text):
-    text = (text or "").replace("---DISPLAY---", "\n")
+    text = (text or "").replace("\u2019", "'").replace("---DISPLAY---", "\n")
     parts = re.split(r"(?<=[.!?])\s+(?=[A-Z\"'(*`\-])|\n+", text)
     return [p.strip() for p in parts if p and p.strip()]
 
 
-def extract_claims(sentence):
-    """-> [(fate, negated, matched-words)] for one sentence about a job."""
-    if not (NOUN_RE.search(NOT_JOB_RE.sub(" ", sentence)) or JOB_ID_RE.search(sentence)):
+def names_job(sentence):
+    """Does the sentence carry a job noun or id of its own?"""
+    return bool(NOUN_RE.search(NOT_JOB_RE.sub(" ", sentence)) or JOB_ID_RE.search(sentence))
+
+
+def refers_back(sentence):
+    """Does the sentence, naming no job, refer back to one ("It was killed")?
+    The back-reference must stand beside a fate word — within a few words
+    before it, or just after it as its object ("I killed it") — so an "it"
+    elsewhere in a long sentence that happens to quote a fate word ("the
+    wake the journal called failed while the moment it wrote is on disk")
+    does not turn the sentence into a claim."""
+    if names_job(sentence):
+        return False
+    plain = NOT_JOB_RE.sub(" ", sentence)
+    for _, rx, _ in FATE_RES:
+        for m in rx.finditer(plain):
+            if BACK_RE.search(plain[max(0, m.start() - 30):m.end() + 12]):
+                return True
+    return False
+
+
+def extract_claims(sentence, about_job=None):
+    """-> [(fate, negated, matched-words)] for one sentence about a job.
+    about_job says the caller has already established the sentence is about
+    one; left None, the sentence must name a job itself."""
+    if about_job is None:
+        about_job = names_job(sentence)
+    if not about_job:
         return []
     out = []
     for name, rx, _ in FATE_RES:
         for m in rx.finditer(sentence):
             before = sentence[max(0, m.start() - 40):m.start()]
-            negated = bool(NEG_RE.search(before))
-            if name == "committed" and re.search(
+            negated = bool(NEG_RE.search(before)) or bool(NEG_IN_RE.search(m.group(0)))
+            if not negated and name in ARTEFACTS + ("finished",) \
+                    and re.search(r"\bbefore\s*$", before, re.I):
+                # "killed before committing anything", "died before finishing":
+                # what follows "before" is what did not happen. Not so for the
+                # endings — "ran a minute before dying" — which stay positive.
+                negated = True
+            if name in ARTEFACTS and re.search(
                     r"\b(nothing|anything)\b", sentence[m.end():m.end() + 20], re.I) \
-                    and re.search(r"\b(committed|pushed)\s+nothing\b", sentence, re.I):
+                    and re.search(r"\b(committed|pushed|merged)\s+nothing\b", sentence, re.I):
                 negated = True
             out.append((name, negated, m.group(0)))
     # "killed ... before it committed anything": the stopped claim stands and
@@ -397,19 +485,57 @@ def extract_claims(sentence):
     return uniq
 
 
-def fate_holds(name, negated, job):
+def observe(name, job):
+    """What the record says about one fate: (holds, note), holds being True,
+    False, or None when the record holds no observation of it at all. The
+    artefact fates read what collection saw — the commits list, the unpushed
+    count — and never let a state stand in for an artefact: finished is not
+    committed, committed is not pushed, and nothing here observes a merge."""
     state = job.get("state", "?")
     states = next(s for n, _, s in FATES if n == name)
-    holds = state in states
-    if name == "committed":
-        commits = job.get("commits")
-        if state == "collected":
-            holds = isinstance(commits, list) and len(commits) > 0
-        elif state == "finished":
-            holds = True          # uncollected: the commits are not yet known
+    if states is not None:
+        return state in states, ""
+    if state in NEVER_RAN:
+        return False, "the record says no builder ran (%s), so nothing was %s" % (state, name)
+    commits = job.get("commits")
+    if not isinstance(commits, list):
+        if job.get("collected_at") or state == "collected":
+            # Collection clears the list and appends each commit it saw;
+            # a collected record with no list is an observation of none.
+            commits = []
         else:
-            holds = False
-    return holds != negated
+            return None, "the record holds no commit observation (not collected)"
+    if name == "committed":
+        return len(commits) > 0, ("%d commit%s observed" % (len(commits), "" if len(commits) == 1 else "s")
+                                  if commits else "collection observed no commits")
+    if name == "pushed":
+        if not commits:
+            return False, "collection observed no commits, so none was pushed"
+        unpushed = job.get("unpushed")
+        try:
+            unpushed = int(unpushed)
+        except (TypeError, ValueError):
+            return None, "the record holds no push observation"
+        if unpushed == 0:
+            return True, "every commit since dispatch is on a remote"
+        if unpushed >= len(commits):
+            return False, "%d of %d commits since dispatch sit on no remote" % (unpushed, len(commits))
+        return None, "%d of %d commits since dispatch sit on no remote — the record cannot say whose" % (unpushed, len(commits))
+    return None, "the record holds no merge observation (collection records commits and pushes only)"
+
+
+def judge(name, negated, job):
+    """-> (verdict, note) for one claim against one record."""
+    holds, note = observe(name, job)
+    if holds is None:
+        # A positive claim of an artefact nobody observed is unbacked; a
+        # negation the record cannot contradict is merely unverified.
+        return ("UNVERIFIED" if negated else "UNBACKED"), note
+    return ("SUPPORTED" if holds != negated else "MISMATCH"), note
+
+
+def fate_holds(name, negated, job):
+    return judge(name, negated, job)[0] == "SUPPORTED"
 
 
 def cmd_claims(argv):
@@ -420,38 +546,106 @@ def cmd_claims(argv):
     pool = None
     user_words = tokens(NOT_JOB_RE.sub(" ", message))
     reply_words = tokens(NOT_JOB_RE.sub(" ", reply))
+    # The job the reply has established and is still talking about: set by
+    # every sentence that names one, read by the sentences after it that
+    # only refer back ("It was killed before committing anything"). A fate
+    # is never carried — only the reference; each sentence's fate is judged
+    # against that one record afresh.
+    carried = None
     for sent in sentences(reply):
-        claims = extract_claims(sent)
-        if not claims:
+        plain = NOT_JOB_RE.sub(" ", sent)
+        named = names_job(sent)
+        # A back-reference needs an antecedent: with no job named before
+        # it in the reply, "it finished" is nobody's claim, whatever its
+        # other words happen to match.
+        back = (not named) and carried is not None and refers_back(sent)
+        if not named and not back:
+            continue
+        claims = extract_claims(sent, True)
+        if not claims and not named:
             continue
         if pool is None:
             pool = load_pool(jobs_dir, journal_dir, window)
         ids = JOB_ID_RE.findall(sent)
-        words = tokens(NOT_JOB_RE.sub(" ", sent)) | user_words
-        kind, jobs, note = resolve(pool, words, ids, window)
-        if kind == "recent" and reply_words - words:
-            # The sentence and his message name nothing; the rest of the
-            # reply may ("The similar-game lookup. I killed that builder.").
-            kind2, jobs2, note2 = resolve(pool, words | reply_words, ids, window)
-            if kind2 in ("clear", "ambiguous"):
-                kind, jobs, note = kind2, jobs2, note2 + " (from the rest of the reply)"
+        own = tokens(plain)
+        switched = bool(SWITCH_RE.search(plain))
+        if switched:
+            # "The other builder", "the earlier one": a DIFFERENT job from
+            # the one the reply had named. Its own words alone resolve it —
+            # his message and the rest of the reply name the one it is
+            # contrasted with — and the named job leaves the candidates.
+            kind, jobs, note = resolve(pool, own, ids, window)
+            if kind in ("recent", "ambiguous") and carried and carried[0] in ("exact", "clear"):
+                others = [j for j in jobs if j not in carried[1]]
+                if others:
+                    jobs, note = others, note + " (the other one: the job the reply had named is not it)"
+            carried = (kind, jobs, note)
+        elif named:
+            words = own | user_words
+            kind, jobs, note = resolve(pool, words, ids, window)
+            if kind == "recent" and carried and carried[0] in ("exact", "clear", "ambiguous"):
+                # "That builder", after a sentence that named which: the
+                # established reference, not the window's newest.
+                kind, jobs, note = carried[0], carried[1], carried[2] + " (the job the reply had already named)"
+            elif kind == "recent" and reply_words - words:
+                # The sentence and his message name nothing; the rest of the
+                # reply may ("The similar-game lookup. I killed that builder.").
+                kind2, jobs2, note2 = resolve(pool, words | reply_words, ids, window)
+                if kind2 in ("clear", "ambiguous"):
+                    kind, jobs, note = kind2, jobs2, note2 + " (from the rest of the reply)"
+            carried = (kind, jobs, note)
+        else:
+            # A back-reference. Its own words first — "the errand one, I
+            # killed it" names a job by description — then the reference
+            # the reply established; with neither, it is nobody's claim. A
+            # weak word that points AT the named job ("before the repair
+            # was committed") agrees with the thread and the thread's clear
+            # line stands; one that points elsewhere ("the errand one")
+            # overrides it, the window riding beside it as any weak match
+            # does (rule 47b).
+            own_kind, own_jobs, own_note = ("none", [], "")
+            if ids or own:
+                own_kind, own_jobs, own_note = resolve(pool, own, ids, window)
+            own_note += " (named by this sentence's own words)"
+            if own_kind in ("exact", "clear"):
+                kind, jobs, note = own_kind, own_jobs, own_note
+                carried = (kind, jobs, note)
+            elif own_kind == "ambiguous" and carried:
+                matched = {j.get("id") for _, j, _ in rank(pool, own)}
+                if carried[0] in ("exact", "clear") and carried[1][0].get("id") in matched:
+                    kind, jobs, note = carried[0], carried[1], carried[2] + " (the job the reply had already named)"
+                else:
+                    kind, jobs, note = own_kind, own_jobs, own_note
+                    carried = (kind, jobs, note)
+            elif carried:
+                kind, jobs, note = carried[0], carried[1], carried[2] + " (the job the reply had already named)"
+            else:
+                continue
+        if not claims:
+            continue
         flat = " ".join(sent.split())
         for name, negated, matched in claims:
             fate = ("not " if negated else "") + name
             if not jobs:
-                print("\t".join(["UNBACKED", fate, "-", note, flat]))
+                print("\t".join(["UNVERIFIED" if negated else "UNBACKED", fate, "-", note, flat]))
                 continue
             if kind in ("exact", "clear"):
                 job = jobs[0]
-                verdict = "SUPPORTED" if fate_holds(name, negated, job) else "MISMATCH"
+                verdict, why = judge(name, negated, job)
                 print("\t".join([verdict, fate, str(job.get("id")),
-                                 record_line(job) + " [" + note + "]", flat]))
+                                 record_line(job) + " [" + note + ("; " + why if why else "") + "]", flat]))
             else:
-                fitting = [j for j in jobs if fate_holds(name, negated, j)]
+                verdicts = [(judge(name, negated, j), j) for j in jobs]
+                fitting = [(v, j) for v, j in verdicts if v[0] == "SUPPORTED"]
+                unseen = [(v, j) for v, j in verdicts if v[0] in ("UNBACKED", "UNVERIFIED")]
                 if fitting:
-                    job = fitting[0]
+                    (verdict, why), job = fitting[0]
                     print("\t".join(["SUPPORTED", fate, str(job.get("id")),
-                                     record_line(job) + " [reference " + kind + "; a candidate holds it]", flat]))
+                                     record_line(job) + " [reference " + kind + "; a candidate holds it" + ("; " + why if why else "") + "]", flat]))
+                elif unseen:
+                    (verdict, why), job = unseen[0]
+                    print("\t".join([verdict, fate, str(job.get("id")),
+                                     record_line(job) + " [reference " + kind + "; no candidate holds it and this one's record never observed it: " + why + "]", flat]))
                 else:
                     lines = "; ".join(record_line(j) for j in jobs[:4])
                     print("\t".join(["MISMATCH", fate, ",".join(str(j.get("id")) for j in jobs[:4]),

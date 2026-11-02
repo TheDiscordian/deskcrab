@@ -1,5 +1,5 @@
 #!/bin/bash
-# Which job he means, and what its record says — specs/jobs.md rules 46-47b,
+# Which job he means, and what its record says — specs/jobs.md rules 46-47c,
 # prompt-assembly.md rule 36d, turn-pipeline.md rule 32g, wake-queue.md rule
 # 43c. Run: bash tests/test_job_reference.sh
 #
@@ -20,6 +20,15 @@
 # supported finish book nothing; no record in the window is UNBACKED, never a
 # fate; an ambiguous reference accuses only when no candidate holds the fate;
 # and the gate fires from the actual delivery path. No model is ever spent.
+#
+# The review of the first landing (2026-11-02) kept a fixture that proved three
+# gaps, rebuilt here as a scratch ledger: a telescope-calibration builder
+# finished with exit 0 and NO commits field, on which "committed the repair"
+# was certified SUPPORTED (finished is not committed, and unknown is not
+# evidence); "the builder ran" claimed nothing at all, and the pre-check grep
+# never admitted the shape; and "finished. It was killed before committing
+# anything." judged the finish and dropped the false kill for want of a noun
+# in its own sentence.
 . "$(dirname "$(readlink -f "$0")")/lib/sandbox.sh"
 set -u
 
@@ -170,11 +179,14 @@ echo
 echo "the 18:02 kill is SUPPORTED — a bare reference, and a fate the stopped builder holds:"
 OUT="$(claims "$MSG_1802" "$REPLY_1802")"
 check "verdicts were reached" test -n "$OUT"
-check_eq "every one of them SUPPORTED" "$(printf '%s\n' "$OUT" | cut -f1 | sort -u)" "SUPPORTED"
+check "none of them accuses — no MISMATCH, no UNBACKED" \
+    bash -c '! printf "%s\n" "$1" | grep -q "^MISMATCH\|^UNBACKED"' _ "$OUT"
 check "the kill resolved to the errand builder" \
     bash -c 'printf "%s\n" "$1" | grep "^SUPPORTED	stopped	$2" | grep -q .' _ "$OUT" "$ERR"
-check "'before it committed anything' is read as a negated commit claim, and holds" \
-    bash -c 'printf "%s\n" "$1" | grep "^SUPPORTED	not committed	" | grep -q .' _ "$OUT"
+check "'before it committed anything' is a negated commit claim the stopped run's record never observed: UNVERIFIED, not certified" \
+    bash -c 'printf "%s\n" "$1" | grep "^UNVERIFIED	not committed	" | grep -q "no commit observation"' _ "$OUT"
+check "and its record line says the commits are unobserved, not absent" \
+    bash -c 'printf "%s\n" "$1" | grep "^UNVERIFIED	not committed	" | grep -q "commits unobserved (not collected)"' _ "$OUT"
 check "'nothing half-landed in the tree' is not a finish claim about the job" \
     bash -c '! printf "%s\n" "$1" | grep -q "	finished	"' _ "$OUT"
 "$CHK" inspect "$J" "$JOURNAL" "$MSG_1802" "$REPLY_1802" >/dev/null 2>&1; RC=$?
@@ -236,6 +248,158 @@ check_eq "a reply with no fate claim judges nothing" \
 rm -f "$J/$RUN.json" "$J/$RUN.lock"
 
 echo
+echo "the review fixture: a finished, uncollected builder proves no commit (rule 47 — unknown is not evidence):"
+J2="$T/jobs-review"; mkdir -p "$J2"
+TEL="20261102-030000-123"
+printf '%s\n' "{\"id\": \"$TEL\", \"description\": \"Repair celestial telescope alignment calibration\", \"state\": \"finished\", \"started_epoch\": $(( NOW - 300 )), \"finished_epoch\": $(( NOW - 190 )), \"exit\": 0}" > "$J2/$TEL.json"
+BLK="20261102-031000-124"
+"$JS" new "$J2" "$BLK" "Recalibrate the observatory dome shutter timing against the sidereal clock" "" "$T/repo" dispatched >/dev/null
+"$JS" set "$J2/$BLK.json" state=blocked started_epoch="$(( NOW - 240 ))" finished_epoch="$(( NOW - 238 ))" exit=1 >/dev/null
+QUE="20261102-032000-125"
+"$JS" new "$J2" "$QUE" "Re-index the star catalogue by magnitude for the planetarium" "" "$T/repo" queued >/dev/null
+claims2() { python3 "$RES" claims "$J2" "$T/empty-journal" 72 "$2" "$1"; }
+verdict_of() { printf '%s\n' "$1" | grep "	$2	" | cut -f1 | head -1; }   # <out> <fate>
+OUT="$(claims2 "" "The telescope calibration builder committed the repair.")"
+check_eq "'committed the repair' against a record with no commits field is UNBACKED" "$(verdict_of "$OUT" committed)" "UNBACKED"
+check "never SUPPORTED" bash -c '! printf "%s\n" "$1" | grep -q "^SUPPORTED"' _ "$OUT"
+check "resolved to the telescope job all the same" bash -c 'printf "%s\n" "$1" | cut -f3 | grep -q "^$2$"' _ "$OUT" "$TEL"
+check "the verdict says why: the record holds no commit observation" contains "$OUT" "the record holds no commit observation (not collected)"
+check "and the record line says so too" contains "$OUT" "commits unobserved (not collected)"
+"$CHK" inspect "$J2" "$T/empty-journal" "" "The telescope calibration builder committed the repair." >/dev/null 2>&1; RC=$?
+check_eq "inspect exits 4 on it — unbacked, not supported" "$RC" "4"
+OUT="$(claims2 "" "The telescope calibration builder pushed its work and merged it.")"
+check_eq "pushed is UNBACKED on the same record" "$(verdict_of "$OUT" pushed)" "UNBACKED"
+check_eq "and merged" "$(verdict_of "$OUT" merged)" "UNBACKED"
+OUT="$(claims2 "" "The telescope calibration builder finished, and it didn't commit anything.")"
+check_eq "the finish is SUPPORTED — the state is observed" "$(verdict_of "$OUT" finished)" "SUPPORTED"
+check_eq "but 'didn't commit anything' is UNVERIFIED — a negation the record cannot see either way" "$(verdict_of "$OUT" "not committed")" "UNVERIFIED"
+"$CHK" inspect "$J2" "$T/empty-journal" "" "The telescope calibration builder finished, and it didn't commit anything." >/dev/null 2>&1; RC=$?
+check_eq "and inspect exits 0 on an unverified negation" "$RC" "0"
+# Collection reaches it: an empty list is an observation of no commits.
+"$JS" set "$J2/$TEL.json" state=collected collected_at=now commits= collection="collected: no commits since dispatch" >/dev/null
+OUT="$(claims2 "" "The telescope calibration builder committed the repair.")"
+check_eq "once collected with an empty commits list, 'committed' is MISMATCH" "$(verdict_of "$OUT" committed)" "MISMATCH"
+check "with the observation named" contains "$OUT" "collection observed no commits"
+OUT="$(claims2 "" "The telescope calibration builder didn't commit anything.")"
+check_eq "and its negation is SUPPORTED" "$(verdict_of "$OUT" "not committed")" "SUPPORTED"
+# A commit observed: committed holds; pushed follows the unpushed count; merged is never observed.
+"$JS" append "$J2/$TEL.json" commits "c0ffee1 Repair the telescope alignment calibration" >/dev/null
+OUT="$(claims2 "" "The telescope calibration builder committed the repair and pushed it, and the merge landed.")"
+check_eq "with one commit observed, 'committed' is SUPPORTED" "$(verdict_of "$OUT" committed)" "SUPPORTED"
+check_eq "'pushed' with no unpushed count is UNBACKED — a commit is not a push" "$(verdict_of "$OUT" pushed)" "UNBACKED"
+check "and says the record holds no push observation" contains "$OUT" "the record holds no push observation"
+check_eq "'merged' is UNBACKED — nothing on the record observes a merge" "$(verdict_of "$OUT" merged)" "UNBACKED"
+check "and says so" contains "$OUT" "the record holds no merge observation"
+"$JS" set "$J2/$TEL.json" unpushed=1 >/dev/null
+OUT="$(claims2 "" "The telescope calibration builder pushed its commit.")"
+check_eq "every commit since dispatch unpushed: 'pushed' is MISMATCH" "$(verdict_of "$OUT" pushed)" "MISMATCH"
+"$JS" set "$J2/$TEL.json" unpushed=0 >/dev/null
+OUT="$(claims2 "" "The telescope calibration builder pushed its commit.")"
+check_eq "unpushed zero: 'pushed' is SUPPORTED" "$(verdict_of "$OUT" pushed)" "SUPPORTED"
+check "and the record line reads all pushed" contains "$OUT" "1 commit (all pushed)"
+OUT="$(claims2 "" "The star catalogue job committed its index.")"
+check_eq "a commit claimed of a queued job is MISMATCH — no builder ran" "$(verdict_of "$OUT" committed)" "MISMATCH"
+check "and the verdict says why" contains "$OUT" "no builder ran (queued)"
+OUT="$(claims2 "" "The star catalogue job hasn't committed anything yet.")"
+check_eq "and its negation is SUPPORTED" "$(verdict_of "$OUT" "not committed")" "SUPPORTED"
+
+echo
+echo "a job that RAN is a claim of its own, read off the state (rule 47): finished holds it, blocked and queued contradict it:"
+OUT="$(claims2 "" "The telescope calibration builder ran.")"
+check "'The telescope calibration builder ran.' is a claim at all" test -n "$OUT"
+check_eq "and SUPPORTED on the finished builder" "$(verdict_of "$OUT" ran)" "SUPPORTED"
+check "on the telescope job" bash -c 'printf "%s\n" "$1" | grep "	ran	" | cut -f3 | grep -q "^$2$"' _ "$OUT" "$TEL"
+check_eq "'I started the telescope builder' — the job as the verb's object — is SUPPORTED" "$(verdict_of "$(claims2 "" "I started the telescope calibration builder an hour ago.")" ran)" "SUPPORTED"
+check_eq "'never ran' of the finished builder is MISMATCH" "$(verdict_of "$(claims2 "" "The telescope calibration builder never ran.")" "not ran")" "MISMATCH"
+OUT="$(claims2 "" "The dome shutter builder ran.")"
+check_eq "'ran' of the blocked builder is MISMATCH" "$(verdict_of "$OUT" ran)" "MISMATCH"
+check "on the blocked job" bash -c 'printf "%s\n" "$1" | grep "	ran	" | cut -f3 | grep -q "^$2$"' _ "$OUT" "$BLK"
+check_eq "'never ran' of the blocked builder is SUPPORTED" "$(verdict_of "$(claims2 "" "The dome shutter builder never ran — the CLI refused it.")" "not ran")" "SUPPORTED"
+check_eq "and so is 'blocked'" "$(verdict_of "$(claims2 "" "The dome shutter builder was blocked.")" blocked)" "SUPPORTED"
+OUT="$(claims2 "" "The star catalogue job ran overnight.")"
+check_eq "'ran' of the queued job is MISMATCH" "$(verdict_of "$OUT" ran)" "MISMATCH"
+check "on the queued job" bash -c 'printf "%s\n" "$1" | grep "	ran	" | cut -f3 | grep -q "^$2$"' _ "$OUT" "$QUE"
+check_eq "'hasn't run yet' of the queued job is SUPPORTED" "$(verdict_of "$(claims2 "" "The star catalogue job hasn't run yet.")" "not ran")" "SUPPORTED"
+check_eq "'hasn't started' likewise" "$(verdict_of "$(claims2 "" "That star catalogue job hasn't started.")" "not ran")" "SUPPORTED"
+check_eq "'it never ran, it is queued for tonight' — the queued claim holds too" "$(verdict_of "$(claims2 "" "The star catalogue job never ran, it is queued for tonight.")" queued)" "SUPPORTED"
+check_eq "'ran' of a stopped run is SUPPORTED — it ran until it was killed" "$(verdict_of "$(claims "" "The errand builder ran for less than a minute before I killed it.")" ran)" "SUPPORTED"
+OUT="$(claims2 "" "I ran the tests myself after the telescope calibration builder finished.")"
+check "'I ran the tests' is not a claim that the job ran" bash -c '! printf "%s\n" "$1" | grep -q "	ran	"' _ "$OUT"
+check_eq "though the finish beside it is judged" "$(verdict_of "$OUT" finished)" "SUPPORTED"
+check "the pre-check grep admits the ran shape" sandbox_bash 'job_claim_precheck "The telescope calibration builder ran."'
+check "and 'I started the builder'" sandbox_bash 'job_claim_precheck "I started the builder on it."'
+"$CHK" inspect "$J2" "$T/empty-journal" "" "The dome shutter builder ran." >/dev/null 2>&1; RC=$?
+check_eq "inspect exits 3 on a ran claim the blocked record contradicts" "$RC" "3"
+
+echo
+echo "a reference carries across the sentence break, a fate never does (rule 47c):"
+OUT="$(claims2 "" "The telescope calibration builder finished. It was killed before committing anything.")"
+check_eq "two sentences, three verdicts" "$(printf '%s\n' "$OUT" | grep -c .)" "3"
+check_eq "the finish is SUPPORTED" "$(verdict_of "$OUT" finished)" "SUPPORTED"
+check_eq "and the kill in the sentence after it — no job noun of its own — is MISMATCH" "$(verdict_of "$OUT" stopped)" "MISMATCH"
+check "on the same telescope record" bash -c 'printf "%s\n" "$1" | grep "^MISMATCH	stopped	" | cut -f3 | grep -q "^$2$"' _ "$OUT" "$TEL"
+check "the verdict says the reference was the job the reply had already named" \
+    bash -c 'printf "%s\n" "$1" | grep "^MISMATCH	stopped	" | grep -q "the job the reply had already named"' _ "$OUT"
+check "and quotes the killed sentence itself" \
+    bash -c 'printf "%s\n" "$1" | grep "^MISMATCH	stopped	" | grep -q "	It was killed before committing anything.$"' _ "$OUT"
+check_eq "'before committing anything' is the negated commit, contradicted by the collected list of one" "$(verdict_of "$OUT" "not committed")" "MISMATCH"
+"$CHK" inspect "$J2" "$T/empty-journal" "" "The telescope calibration builder finished. It was killed before committing anything." >/dev/null 2>&1; RC=$?
+check_eq "inspect exits 3 on it" "$RC" "3"
+OUT="$(claims2 "" "The telescope calibration builder finished. All two hundred tests passed. It committed the repair.")"
+check_eq "the thread survives a sentence that neither names nor refers back" "$(verdict_of "$OUT" committed)" "SUPPORTED"
+OUT="$(claims2 "" "The telescope calibration builder finished. That one ran the full two minutes.")"
+check_eq "'that one' refers back as 'it' does" "$(verdict_of "$OUT" ran)" "SUPPORTED"
+OUT="$(claims2 "" "The dome shutter builder was blocked. The star catalogue job, though — it ran fine.")"
+check_eq "a later sentence that names another job moves the thread: its 'ran' is judged on the queued job" \
+    "$(printf '%s\n' "$OUT" | grep "	ran	" | cut -f1,3)" "MISMATCH	$QUE"
+OUT="$(claims "" "The similar-game builder finished. The other builder was killed at fifty-six seconds.")"
+check_eq "a switch word — 'the other builder' — resolves afresh: the kill lands on the errand builder, SUPPORTED" \
+    "$(printf '%s\n' "$OUT" | grep "	stopped	" | cut -f1,3)" "SUPPORTED	$ERR"
+check "and is not carried onto the similar-game one" bash -c '! printf "%s\n" "$1" | grep -q "^MISMATCH"' _ "$OUT"
+OUT="$(claims "" "The similar-game builder finished. The errand one, I killed it.")"
+check_eq "a back-reference with its own description resolves by its words: the kill is SUPPORTED on the errand builder" \
+    "$(printf '%s\n' "$OUT" | grep "	stopped	" | cut -f1,3)" "SUPPORTED	$ERR"
+check_eq "a back-reference with nothing before it is nobody's claim" "$(claims2 "" "It was killed two minutes in.")" ""
+check_eq "even when its other words match a brief clearly" "$(claims2 "" "It was killed before the telescope calibration repair was committed.")" ""
+OUT="$(claims2 "" "The telescope calibration builder finished. The wake the journal called failed while the moment it wrote is on disk.")"
+check "an 'it' far from a quoted fate word is no back-reference — the live tidy's 2026-11-02 sentence claims nothing" \
+    bash -c '! printf "%s\n" "$1" | grep -q "	failed	"' _ "$OUT"
+check_eq "and a bare 'it finished' with no job named anywhere judges nothing" "$(claims2 "" "It finished a minute ago, so the clocks are in.")" ""
+
+echo
+echo "the checker ledgers and corrects the cross-sentence kill, and traces the unverified negation (rule 47a):"
+LEDGER2="$T/job-claims-review.jsonl"
+TRACE="$DESKCRAB_STATE_PREFIX-job-claims.log"
+rm -f "$W"/*.wake "$W/ledger.log" "$LEDGER2" "$TRACE"
+"$JS" set "$J2/$TEL.json" state=finished commits= >/dev/null   # back to the fixture as reviewed: finished, nothing collected
+python3 - "$J2/$TEL.json" <<'PY'
+import json, sys
+p = sys.argv[1]; d = json.load(open(p))
+for k in ("commits", "collected_at", "collection", "unpushed"):
+    d.pop(k, None)
+json.dump(d, open(p, "w"))
+PY
+export JOB_CLAIM_WAKE_CAP=5 JOB_CLAIM_REBOOK_MAX=2
+"$CHK" turn phone "$NOW" "$$" "$J2" "$T/empty-journal" "$LEDGER2" "" "The telescope calibration builder finished. It was killed before committing anything." </dev/null >/dev/null 2>&1
+check_eq "one ledger row — the kill" "$(sandbox_count_in . "$LEDGER2")" "1"
+check "it is the MISMATCH on the telescope job" \
+    bash -c 'grep -q "\"verdict\": \"MISMATCH\"" "$1" && grep -q "\"fate\": \"stopped\"" "$1" && grep -q "\"job\": \"$2\"" "$1"' _ "$LEDGER2" "$TEL"
+check "quoting the killed sentence" grep -q '"claim": "It was killed before committing anything."' "$LEDGER2"
+check_eq "and one correction wake" "$(ls "$W"/*.wake 2>/dev/null | wc -l)" "1"
+check "which quotes the claim and the record's finished line" \
+    bash -c 'cat "$1"/*.wake | grep -q "It was killed before committing anything" && cat "$1"/*.wake | grep -q "job $2 — finished"' _ "$W" "$TEL"
+check "the trace carries the supported finish" grep -q "SUPPORTED (finished, job $TEL)" "$TRACE"
+check "and the unverified negated commit, nothing booked for it" grep -q "UNVERIFIED (not committed, job $TEL).*nothing booked" "$TRACE"
+check "and the tally names all three" grep -q "verdict: 1 supported, 1 unverified, 1 mismatched or unbacked" "$TRACE"
+rm -f "$W"/*.wake "$W/ledger.log" "$LEDGER2" "$TRACE"
+"$CHK" turn phone "$NOW" "$$" "$J2" "$T/empty-journal" "$LEDGER2" "" "The telescope calibration builder committed the repair." </dev/null >/dev/null 2>&1
+check "the uncollected commit claim is ledgered UNBACKED" grep -q '"verdict": "UNBACKED"' "$LEDGER2"
+check "and its wake says no record backs it, with the unobserved commits in the line" \
+    bash -c 'cat "$1"/*.wake | grep -q "no record backs it" && cat "$1"/*.wake | grep -q "commits unobserved"' _ "$W"
+rm -f "$W"/*.wake "$W/ledger.log" "$LEDGER2" "$TRACE"
+unset JOB_CLAIM_WAKE_CAP JOB_CLAIM_REBOOK_MAX
+
+echo
 echo "the checker end to end: a mismatch is ledgered and corrected by a wake quoting the record (rule 47a, wake-queue 43c):"
 LEDGER="$T/job-claims.jsonl"
 TRACE="$DESKCRAB_STATE_PREFIX-job-claims.log"
@@ -266,6 +430,7 @@ reset_wakes; rm -f "$LEDGER"
 check_eq "no ledger row" "$(sandbox_count_in . "$LEDGER")" "0"
 check_eq "no wake" "$(wakes)" "0"
 check "but the trace says it was judged and supported" grep -q "SUPPORTED (stopped, job $ERR)" "$TRACE"
+check "and the unverified negation was traced, never booked" grep -q "UNVERIFIED (not committed, job .*nothing booked" "$TRACE"
 
 echo
 echo "an unbacked claim is ledgered and the wake says no record backs it:"
@@ -328,3 +493,16 @@ sleep 1
 check_eq "no checker was dispatched" "$(sandbox_count_in "deskcrab-job-claim-check-" "$SANDBOX_SYSTEMD_LOG")" "0"
 check "the trace says the pre-check declined" grep -q "pre-check: no job-fate shape" "$TRACE"
 check_eq "no wake" "$(wakes)" "0"
+
+echo
+echo "and the ran shape rides the real delivery path: a stubbed desk turn saying the stopped builder never ran:"
+reset_wakes; rm -f "$TRACE" "$SANDBOX_SYSTEMD_LOG" "$LEDGER_DEFAULT"
+printf '%s' "The errand builder never ran — it was pulled before it started." > "$T/stub-reply.txt"
+"$REPO/crab" "did the errand builder ever run?" </dev/null >/dev/null 2>&1 || true
+for _ in $(seq 1 60); do [ -s "$LEDGER_DEFAULT" ] && break; sleep 0.25; done
+check "the pre-check admitted it and the delivery path dispatched the checker" grep -q "deskcrab-job-claim-check-" "$SANDBOX_SYSTEMD_LOG"
+check "the checker ledgered the MISMATCH" bash -c 'grep -q "\"verdict\": \"MISMATCH\"" "$1"' _ "$LEDGER_DEFAULT"
+check "on the fate 'not ran' — the errand builder ran fifty-six seconds" bash -c 'grep -q "\"fate\": \"not ran\"" "$1"' _ "$LEDGER_DEFAULT"
+for _ in $(seq 1 40); do [ "$(wakes)" -ge 1 ] && break; sleep 0.25; done
+check_eq "and the correction wake stands booked" "$(wakes)" "1"
+check "quoting the record's stopped line" bash -c 'cat "$1"/*.wake | grep -q "job $2 — stopped"' _ "$W" "$ERR"

@@ -777,7 +777,7 @@ for reduction here — every rule below makes the queue **visible and bounded**,
     ([nightly.md](nightly.md) rules 51-53) books through the same door under the same identity:
     one morning event wake naming the day's genuine misses, none on a clean day.
 43c. The job-claim checker (`lib/job-claim-check`, [turn-pipeline.md](turn-pipeline.md) rule 32g,
-    [jobs.md](jobs.md) rules 47–47b) books a fourth class: the **job-fate correction** wake — her
+    [jobs.md](jobs.md) rules 47–47c) books a fourth class: the **job-fate correction** wake — her
     reply stated what became of a specific job and the jobs ledger says otherwise (a MISMATCH:
     "I killed that builder two minutes in" against a record reading collected with one commit,
     2026-08-21 18:09), or holds no record of it at all (UNBACKED). Its reason MUST open with the

@@ -17,8 +17,12 @@
 # record in the window to back it) lands on the durable ledger and books an
 # immediate correction wake on the queue's urgent lane, quoting the claim and
 # the record's own line, so the next thing he hears is what the record says.
-# SUPPORTED claims are traced and nothing else. specs/jobs.md rules 46-47,
-# specs/turn-pipeline.md rule 32g, specs/wake-queue.md rule 43c.
+# SUPPORTED claims are traced and nothing else; so is UNVERIFIED, the verdict
+# on a negation the record can neither confirm nor contradict ("killed before
+# it committed anything", on a stopped run collection never observed) — a
+# negation is not an invented past, and the record cannot accuse it.
+# specs/jobs.md rules 46-47c, specs/turn-pipeline.md rule 32g,
+# specs/wake-queue.md rule 43c.
 #
 # Usage:
 #   job-claim-check turn <kind> <epoch> <pid> <jobs-dir> <journal-dir> <ledger> <user-text> <reply>
@@ -26,7 +30,8 @@
 #
 # turn is the detached form: every failure path exits 0 with a trace line.
 # inspect prints the verdict lines and exits 3 on a mismatch, 4 on an
-# unbacked claim, 0 when every claim is supported or there is none.
+# unbacked claim, 0 when every claim is supported or unverified, or there
+# is none.
 set -uo pipefail
 
 # readlink -f before dirname, or the deployed symlink's logical `..` walks
@@ -108,7 +113,7 @@ cmd_turn() {
         check_log "no job-fate claim once resolved — nothing judged"
         exit 0
     fi
-    local VERDICT FATE JOB RECORD CLAIM N_OK=0 N_BAD=0
+    local VERDICT FATE JOB RECORD CLAIM N_OK=0 N_BAD=0 N_UNSEEN=0
     local DELAY="${JOB_CLAIM_WAKE_DELAY:-1s}" CAP="${JOB_CLAIM_WAKE_CAP:-2}"
     local REBOOK_MAX="${JOB_CLAIM_REBOOK_MAX:-2}"
     while IFS=$'\t' read -r VERDICT FATE JOB RECORD CLAIM; do
@@ -117,6 +122,12 @@ cmd_turn() {
             SUPPORTED)
                 N_OK=$((N_OK + 1))
                 check_log "SUPPORTED ($FATE, job $JOB): $CLAIM"
+                continue ;;
+            UNVERIFIED)
+                # A negation nothing on the record observed either way:
+                # traced so the trail shows it was read, never booked.
+                N_UNSEEN=$((N_UNSEEN + 1))
+                check_log "UNVERIFIED ($FATE, job $JOB): $CLAIM — the record holds no observation either way; nothing booked"
                 continue ;;
         esac
         N_BAD=$((N_BAD + 1))
@@ -148,7 +159,7 @@ cmd_turn() {
             "fate=$FATE" "job=$KEY" "claim=$CLAIM" "record=$RECORD" "wake=$WAKE_NOTE"
         check_log "$VERDICT ($FATE, job $KEY): $CLAIM — $WAKE_NOTE"
     done <<< "$OUT"
-    check_log "verdict: $N_OK supported, $N_BAD mismatched or unbacked"
+    check_log "verdict: $N_OK supported, $N_UNSEEN unverified, $N_BAD mismatched or unbacked"
     exit 0
 }
 

@@ -632,20 +632,35 @@ every one of those jobs had a record the whole time, on its sidecar and on the d
     and a fate of theirs is not a fate of the above. And when no record reaches at all, the block
     says to say so rather than invent one.
 47. An assertion that a specific job ran, was killed, stopped, died, failed, was blocked, finished,
-    committed, is still running or is queued — and each one's negation — is a factual claim about
-    an artefact, and it is CHECKED the way the promise checker checks artefacts
-    ([turn-pipeline.md](turn-pipeline.md) rule 32g): after delivery, on every channel, detached,
-    mechanically. The checker (`lib/job-claim-check`, verdicts from `lib/job-resolve claims`)
-    reads every sentence of the reply that carries a job noun or id beside a fate word, resolves
-    which job it is about from the sentence's words and his message — by id when one is named,
-    by the same word ranking otherwise, with the rest of the reply as a fallback — and compares
-    the claimed fate with the record's state: killed or stopped against `stopped`/`died`, died
-    against `died`/`failed`/`stopped`, failed against `failed`/`died`/`blocked`, finished against
-    `finished`/`collected`, committed against a collected record with commits on it, running
-    against `running`/`dispatched`, queued against `queued`; a negated claim holds when the
-    record does NOT. Verdicts: SUPPORTED when the resolved job's record holds the fate, or — for
-    an ambiguous reference — when any candidate's does; MISMATCH when the record contradicts it,
-    or no candidate holds it; UNBACKED when no record in the window exists to resolve against.
+    committed, pushed, merged, is still running or is queued — and each one's negation — is a
+    factual claim about an artefact, and it is CHECKED the way the promise checker checks
+    artefacts ([turn-pipeline.md](turn-pipeline.md) rule 32g): after delivery, on every channel,
+    detached, mechanically. The checker (`lib/job-claim-check`, verdicts from
+    `lib/job-resolve claims`) reads every sentence of the reply that carries a job noun or id
+    beside a fate word — or that refers back to a job the reply already named (rule 47c) —
+    resolves which job it is about from the sentence's words and his message — by id when one is
+    named, by the same word ranking otherwise, with the rest of the reply as a fallback — and
+    compares the claimed fate with the record's state: ran (subject-aware: the job noun, id or
+    back-reference within two words of ran/started/never ran, or the job as the verb's object,
+    "I started the builder" — "I ran the tests" is no job claim) against every state in which a
+    worker executed, `dispatched`/`running`/`finished`/`collected`/`failed`/`stopped`/`died`,
+    and contradicted by the four in which none did, `queued`/`blocked`/`duplicate`/`superseded`;
+    killed or stopped against `stopped`/`died`, died against `died`/`failed`/`stopped`, failed
+    against `failed`/`died`/`blocked`, finished against `finished`/`collected`, running against
+    `running`/`dispatched`, queued against `queued`; a negated claim holds when the record does
+    NOT. The artefact fates — committed, pushed, merged — are judged from what collection
+    OBSERVED and never from a state, because these are distinct facts: committed holds on a
+    non-empty `commits` list and is contradicted by an empty one; pushed holds when commits exist
+    and `unpushed` is zero, is contradicted when every commit since dispatch sits on no remote,
+    and is neither when only some do; merged is observed by nothing on the record. A job in one
+    of the never-ran states contradicts all three. Unknown is not evidence: a `finished` record
+    the collector has not reached proves no commit, and a `stopped` one never carries a commits
+    list at all. Verdicts: SUPPORTED when the resolved job's record holds the fate, or — for an
+    ambiguous reference — when any candidate's does; MISMATCH when the record contradicts it, or
+    no candidate holds it; UNBACKED when no record in the window exists to resolve against, or
+    when a POSITIVE claim of an artefact meets a record that never observed it; UNVERIFIED when a
+    NEGATION meets such a record — the record can neither confirm nor contradict it, so it is
+    traced and nothing else (rule 47b).
 47a. A MISMATCH and an UNBACKED claim each land on the durable job-claims ledger and book one
     immediate event wake on the queue's urgent lane ([wake-queue.md](wake-queue.md) rule 43c),
     the reason opening with the job-claim prefix, quoting the claim verbatim and the record's own
@@ -653,16 +668,32 @@ every one of those jobs had a record the whole time, on its sidecar and on the d
     what it was for, saying which was which if two were confused — never to restate the claim,
     and never to invent a fate for a job whose record it has not read. The claimed fate is thus
     corrected by the record within seconds of being spoken; a SUPPORTED claim is traced and
-    nothing else happens. The class is bounded like the promise checker's: at most
+    nothing else happens, and so is an UNVERIFIED one. The class is bounded like the promise checker's: at most
     `JOB_CLAIM_REBOOK_MAX` (default 2) correction wakes per job per day, counted from the
     ledger's own booking lines, and its own scoped cap `JOB_CLAIM_WAKE_CAP` (default 2).
 47b. The asymmetry is deliberate: a false accusation is the same failure pointed the other way. A
     reference that resolves on one weak shared word is never CLEAR — the window's recent jobs
     ride beside it as candidates — and a fate any candidate holds is SUPPORTED; "half-landed" is
     about files, not a job; a negation anywhere in the four words before the fate word flips it;
-    and the checker never holds, rewrites or vetoes the reply (rule 32a's standing prohibition).
-    Neither hand calls a model: the resolver and the checker are a grep, a python process and
-    the ledger, so the ordinary reply pays the grep and one trace line.
+    a negation the record cannot observe — "killed before it committed anything" on a stopped
+    run collection never reached — is UNVERIFIED and books nothing, because a negation is not an
+    invented past and the record cannot accuse what it never saw; and the checker never holds,
+    rewrites or vetoes the reply (rule 32a's standing prohibition). Neither hand calls a model:
+    the resolver and the checker are a grep, a python process and the ledger, so the ordinary
+    reply pays the grep and one trace line.
+47c. A reference, once established, carries across the reply's sentences; a fate never does. A
+    sentence that names no job but refers back to one — "It was killed before committing
+    anything", "that one never ran", "which committed two files" — is about the job the reply
+    last named, resolved exactly as that sentence resolved it (by id, by its words, or the
+    window's candidates when it was bare), unless the back-referring sentence's own words name a
+    job themselves (then those words resolve it, the window riding beside a weak match as
+    always) or a switch word — other, another, second, earlier, later, previous, fresher — says
+    the reply has moved on, in which case its words resolve afresh and nothing is carried. "The
+    telescope builder finished. It was killed before committing anything." is therefore two
+    judged claims on one record, finished SUPPORTED and killed MISMATCH, where the second was once
+    dropped for want of a noun. A back-reference with nothing established before it is nobody's
+    claim and is not judged; a sentence with neither a job noun nor a back-reference neither
+    claims nor breaks the thread.
 
 ## DATA
 
@@ -866,7 +897,7 @@ an over-ceiling `running` orphan claims no new byte, and nothing calls a non-run
 through the busy and in-flight gates: delayed, delivered exactly once after the gate clears, and
 re-booked whole under the runner's own identity when the moment outlasts the wait; the cases live
 with the other delivery gates in [wake-queue.md](wake-queue.md) rule 27d);
-`tests/test_job_reference.sh` (rules 46–47b, against the 2026-08-21 evening rebuilt as sidecars:
+`tests/test_job_reference.sh` (rules 46–47c, against the 2026-08-21 evening rebuilt as sidecars:
 the similar-game builder collected with a commit and the errand builder stopped at fifty-six
 seconds and MORE RECENT — his 18:09 message resolves the layer to the finished builder, names it
 clear, and names the killed one as not the referent; a bare "the builder" lists both newest
@@ -879,7 +910,17 @@ finished a minute ago" SUPPORTED, rules a fate claim with no record in the windo
 a wake saying so, rules an ambiguous reference SUPPORTED when any candidate holds the fate and
 MISMATCH when none does, books at most the rebook bound per job per day, and fires from the
 delivery path — a stubbed desk turn's pre-check trace and detached dispatch are witnessed, and a
-fate-free reply spawns nothing).
+fate-free reply spawns nothing. Against a telescope-calibration sidecar finished with exit 0 and
+no commits field, a blocked one and a queued one: "committed the repair" is UNBACKED, never
+SUPPORTED, until collection records a commit, an empty collected list makes it MISMATCH, pushed
+follows the unpushed count and merged is never observed; "the builder ran" is SUPPORTED on the
+finished one and MISMATCH on the blocked and the queued, their negations the reverse, and "I ran
+the tests" claims nothing; "finished. It was killed before committing anything." judges the
+finish SUPPORTED and the kill MISMATCH on the one record, a switch word resolves the other
+builder afresh, a back-reference with no antecedent is nobody's claim, and the 18:02 "before it
+committed anything" on the stopped run is UNVERIFIED and books nothing; the pre-check admits
+the ran shape, inspect exits 3 and 4 on the new cases, and a stubbed desk turn saying a stopped
+builder never ran is ledgered and corrected from the real delivery path).
 
 **To be written:**
 

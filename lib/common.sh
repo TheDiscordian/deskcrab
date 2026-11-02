@@ -4948,7 +4948,7 @@ _jobref_context() {  # <message>
 # test and the resolution live in lib/job-resolve, and a false hit here costs
 # one small python process after delivery, never a model call.
 JOB_CLAIM_NOUN_RE="\b(builders?|jobs?|workers?)\b|\b(the|that|this) build\b|\b20[0-9]{6}-[0-9]{6}\b"
-JOB_CLAIM_FATE_RE="\b(killed|stopped|cancell?ed|halted|aborted|terminated|died|crashed|dead|failed|failure|blocked|never ran|never started|refused|committed|pushed|merged|finished|completed|landed|collected|wrapped up|came back|is done|was done|running|in flight|underway|mid-run|still going|queued|shelved|on the shelf)\b"
+JOB_CLAIM_FATE_RE="\b(ran|run|started|start|executed|got going|got underway|killed|stopped|cancell?ed|halted|aborted|terminated|died|crashed|dead|failed|failure|blocked|never ran|never started|refused|committed|committing|pushed|pushing|merged|merging|finished|completed|landed|collected|wrapped up|came back|is done|was done|running|in flight|underway|mid-run|still going|queued|shelved|on the shelf)\b"
 
 job_claim_precheck() {  # <reply>
     printf '%s' "${1:-}" | LC_ALL=C grep -qiE "$JOB_CLAIM_NOUN_RE" \
