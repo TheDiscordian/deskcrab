@@ -5528,42 +5528,85 @@ fire_memory_judge() {  # <user-text> <response> [actions]  |  --wake <agenda> <r
 # fabricated assistant message ("model":"<synthetic>", is_api_error_message)
 # whose text is the error, plus a result event flagged is_error carrying the
 # same text in its "result" field. extract_response cannot tell it from a real
-# reply. Exit 0 = the stream holds an error and no genuine reply text. Tool
-# work alone cannot turn a provider error into something safe to deliver.
-wake_stream_failed() {
-    command -v python3 >/dev/null 2>&1 || return 1
-    python3 - "$DEBUGLOG" <<'PY'
+# reply. Tool work alone cannot turn a provider error into something safe to
+# deliver.
+#
+# One attempt at a time (specs/wake-queue.md rule 23b, account-fallback.md
+# rule 14): the optional byte offset is where the attempt under judgement
+# began, and nothing before it is read. Every attempt of a walk appends to
+# the same log — a codex capacity retry, the next account after a refusal —
+# so judged from byte 0 the first attempt's error result stands over a final
+# attempt that ran clean without a text block. On 2026-11-02 at 01:24 a wake
+# retried past server capacity, wrote its moment through tool calls alone,
+# ended on an empty non-error result, and was journalled "failed before the
+# model ran" off the error its first attempt had left 39 kB earlier.
+#
+# Prints ONE word for the slice: `failed` (an error result and no genuine
+# text), `spoke` (genuine text — an assistant text block, a text delta, or a
+# non-error result carrying text, the three shapes extract_response reads as
+# a reply), `silent` (neither: tool work alone, or nothing at all), or
+# `unjudged` when the log cannot be read or python is missing — which every
+# caller treats as "leave things as they are".
+wake_stream_judge() {  # [byte offset]
+    command -v python3 >/dev/null 2>&1 || { echo unjudged; return 0; }
+    python3 - "$DEBUGLOG" "${1:-0}" <<'PY'
 import json, sys
-err = real_text = False
-for line in open(sys.argv[1]):
-    line = line.strip()
-    if not line:
-        continue
+err = real_text = result_text = False
+try:
+    fh = open(sys.argv[1], "rb")
+except OSError:
+    print("unjudged")
+    sys.exit(0)
+with fh:
     try:
-        d = json.loads(line)
-    except json.JSONDecodeError:
-        continue
-    # An error result with or without its type field: the CLI has been seen
-    # (2.1.219) ending a limit-cut stream with a result line carrying is_error
-    # and no "type" at all (specs/account-fallback.md rule 12d).
-    if d.get("is_error") and d.get("type") in ("result", None):
-        err = True
-    elif d.get("type") == "assistant":
-        if d.get("is_api_error_message") or d.get("message", {}).get("model") == "<synthetic>":
+        fh.seek(int(sys.argv[2] or 0))
+    except (OSError, ValueError):
+        pass
+    for raw in fh:
+        line = raw.decode("utf-8", "replace").strip()
+        if not line:
             continue
-        for block in d.get("message", {}).get("content") or []:
-            if isinstance(block, dict) and block.get("type") == "text" \
-                    and str(block.get("text") or "").strip():
+        try:
+            d = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(d, dict):
+            continue
+        msg = d.get("message") if isinstance(d.get("message"), dict) else {}
+        # An error result with or without its type field: the CLI has been seen
+        # (2.1.219) ending a limit-cut stream with a result line carrying is_error
+        # and no "type" at all (specs/account-fallback.md rule 12d).
+        if d.get("is_error") and d.get("type") in ("result", None):
+            err = True
+        elif d.get("type") == "result":
+            if str(d.get("result") or "").strip():
+                result_text = True
+        elif d.get("type") == "assistant":
+            if d.get("is_api_error_message") or msg.get("model") == "<synthetic>":
+                continue
+            for block in msg.get("content") or []:
+                if isinstance(block, dict) and block.get("type") == "text" \
+                        and str(block.get("text") or "").strip():
+                    real_text = True
+        elif d.get("type") == "stream_event":
+            event = d.get("event") or {}
+            delta = event.get("delta") or {}
+            if event.get("type") == "content_block_delta" \
+                    and delta.get("type") == "text_delta" \
+                    and str(delta.get("text") or "").strip():
                 real_text = True
-    elif d.get("type") == "stream_event":
-        event = d.get("event") or {}
-        delta = event.get("delta") or {}
-        if event.get("type") == "content_block_delta" \
-                and delta.get("type") == "text_delta" \
-                and str(delta.get("text") or "").strip():
-            real_text = True
-sys.exit(0 if err and not real_text else 1)
+if err and not real_text:
+    print("failed")
+elif real_text or result_text:
+    print("spoke")
+else:
+    print("silent")
 PY
+}
+
+# Exit 0 = the attempt's slice holds an error and no genuine reply text.
+wake_stream_failed() {  # [byte offset]
+    [ "$(wake_stream_judge "${1:-0}")" = failed ]
 }
 
 # The launcher's own last words, for a stream the model never reached
@@ -6892,8 +6935,9 @@ _wake_claude_run() {
 # account, still under the watchdog, until one answers or everything offered
 # is spent; each refusal cools that account so the next wake starts past it
 # instead of paying a doomed CLI boot for nothing. Every run APPENDS to the same
-# stream log; a combined log reads correctly everywhere downstream
-# (wake_stream_failed sees genuine output and stops calling the wake failed,
+# stream log; a combined log reads correctly everywhere downstream (the
+# wake's verdict is drawn from the LAST attempt's slice, at the mark this walk
+# leaves in WAKE_CHAIN_LAST_OFFSET — specs/wake-queue.md rule 23b — and
 # extract-response drops the refusals whenever a real reply follows them).
 # Factored out of run_claude_wake so the walk itself is testable and exists
 # exactly once. Leaves the last run's exit status in WAKE_CLAUDE_STATUS, like
@@ -6916,6 +6960,11 @@ wake_claude_run_chain() {
     # decides a stream with no swap markers — exactly the walk whose last
     # account is its only one.
     WAKE_CHAIN_ACCT=""
+    # Where the LAST attempt's output begins in the stream (specs/wake-queue.md
+    # rule 23b): the same byte mark every attempt is judged by in here, left
+    # standing for the final one so the caller judges the wake on that slice
+    # alone. Zero when the walk made no attempt, so the whole log is read.
+    WAKE_CHAIN_LAST_OFFSET=0
     # The engine follows the model name (specs/model-backends.md rule 12):
     # a codex wake tries the one codex login first. Server capacity retries
     # that same model and login here; only refused-or-cooling sends the
@@ -6930,6 +6979,7 @@ wake_claude_run_chain() {
             while :; do
                 ATT="$(wc -c < "$DEBUGLOG" 2>/dev/null || echo 0)"
                 case "$ATT" in ''|*[!0-9]*) ATT=0 ;; esac
+                WAKE_CHAIN_LAST_OFFSET="$ATT"
                 WAKE_CHAIN_ATTEMPTS=$(( WAKE_CHAIN_ATTEMPTS + 1 ))
                 _codex_stream_run wake "$WAKE_MODEL" "$WAKE_EFFORT" "$PROMPT_TEXT"
                 WAKE_CLAUDE_STATUS=$CODEX_RUN_STATUS
@@ -6975,6 +7025,7 @@ wake_claude_run_chain() {
         # account that never refused anything is cooled.
         ATT="$(wc -c < "$DEBUGLOG" 2>/dev/null || echo 0)"
         case "$ATT" in ''|*[!0-9]*) ATT=0 ;; esac
+        WAKE_CHAIN_LAST_OFFSET="$ATT"
         WAKE_CHAIN_ATTEMPTS=$(( WAKE_CHAIN_ATTEMPTS + 1 ))
         _wake_claude_run "$CONFDIR"
         # Two shapes move the walk: the refusal (the run never began) and the
@@ -7011,6 +7062,8 @@ wake_claude_run_chain() {
         # thing that just came back empty, and the current is read straight
         # off the state file, which cannot go blank.
         WAKE_CHAIN_ACCT="$(claude_account_current)"
+        WAKE_CHAIN_LAST_OFFSET="$(wc -c < "$DEBUGLOG" 2>/dev/null || echo 0)"
+        case "$WAKE_CHAIN_LAST_OFFSET" in ''|*[!0-9]*) WAKE_CHAIN_LAST_OFFSET=0 ;; esac
         _wake_claude_run "$(claude_account_dir "$WAKE_CHAIN_ACCT")"
         WAKE_CHAIN_ATTEMPTS=1
     fi
@@ -7464,14 +7517,21 @@ run_claude_wake() {
     # Journal the failure instead, and re-book a wake that had a purpose so
     # its agenda survives to a retry after the outage clears.
     #
-    # The cut is the same failure wearing work clothes (specs/account-fallback
-    # rule 12a, wake-queue rule 23): the walk above already rode any cut to
-    # the next login, so a cut still standing on the WHOLE log means every
-    # account was tried and the limit had the last word. Judged at offset 0 on
-    # purpose — a genuine text block from any later account clears it.
-    local LIMIT_CUT
-    LIMIT_CUT="$(claude_stream_limit_cut "$DEBUGLOG")" || LIMIT_CUT=""
-    if wake_stream_failed || [ -n "$LIMIT_CUT" ]; then
+    # Judged on the FINAL attempt's slice (specs/wake-queue.md rule 23b), from
+    # the byte mark the walk left for it — never on the whole accumulated
+    # log. Every attempt appends to one stream, so read whole, the error
+    # result a capacity retry or an earlier account left stands over a last
+    # attempt that ran clean with no text block: the 2026-11-02 01:24 wake
+    # wrote its moment on the retry and was journalled "failed before the
+    # model ran". The cut is the same failure wearing work clothes
+    # (specs/account-fallback rule 12a, wake-queue rule 23), and a cut can
+    # stand in the last slice only because the list ran out behind it — the
+    # walk rides every other cut to the next login — so a cut there means
+    # every account was tried and the limit had the last word.
+    local WAKE_OFF="${WAKE_CHAIN_LAST_OFFSET:-0}" WAKE_VERDICT LIMIT_CUT
+    WAKE_VERDICT="$(wake_stream_judge "$WAKE_OFF")"
+    LIMIT_CUT="$(claude_stream_limit_cut "$DEBUGLOG" "$WAKE_OFF")" || LIMIT_CUT=""
+    if [ "$WAKE_VERDICT" = failed ] || [ -n "$LIMIT_CUT" ]; then
         if [ -n "$LIMIT_CUT" ]; then
             session_outcome "(wake failed — session-limit cut it off mid-run, every account tried — claude exit $CLAUDE_STATUS: $(utf8_trim "$LIMIT_CUT" 160))"
         else
@@ -7508,6 +7568,16 @@ run_claude_wake() {
         rm -f "${STATE_PREFIX}-memory-injected-$$.json"
         return 0
     fi
+
+    # The last attempt said nothing, so there is nothing to deliver — whatever
+    # the extractor found. extract_response reads the whole log and, with no
+    # genuine text anywhere in it, hands back the CLI's own error text from an
+    # EARLIER attempt as the reply (its error-only shape, account-fallback.md
+    # rule 16); past the gate above, that text would be spoken as hers — the
+    # 2026-08-11 incident in a mixed walk. A silent final slice is rule 24's
+    # silence, and the work record below still reads every attempt's tool
+    # calls, because every one of them ran.
+    [ "$WAKE_VERDICT" = silent ] && RESPONSE=""
 
     if [ -z "$RESPONSE" ]; then
         # No text at all. On a clean exit that is the shape of silence — the

@@ -157,7 +157,10 @@ watchdog expects a trickle, so the translator carries a heartbeat.
     NOT write the limit cooldown, describe the event as exhausted credits, or allow the provider's
     message into speech, display, conversation, or assistant reply text. Exhausting those retries
     produces no assistant reply; a wake follows its ordinary outage/re-book path. The next
-    independent run therefore tries Codex normally. When genuine
+    independent run therefore tries Codex normally. A retry that runs to a non-error result is the
+    attempt the wake is judged on (wake-queue.md rule 23b): with tool work and no text block it is
+    a silent wake journalled with its work, never a failure inherited from the capacity error
+    before it. When genuine
     reply text preceded the failure, no second model runs: the genuine text stands and the
     provider error is discarded, so already-streamed speech is never duplicated.
 13. A refusal records a cooldown in `codex-state` (in the deskcrab data dir). When the refusal
@@ -266,6 +269,11 @@ walk, write no Codex limit cooldown, and extract only the successful retry's ans
 moved to the environment, other types are left out, and no file still yields the empty table.
 `tests/test_prompt_profiles.sh` covers rule 6b's Claude half: turn, wake and job name
 `MCP_CONFIG` under `--strict-mcp-config`, and classify keeps the empty config.
+
+`tests/test_wake_capacity_retry.sh` — rule 12a's last clause with wake-queue.md rule 23b: a wake
+at capacity once whose retry works in silence is journalled as the silent wake it was, with its
+write list, and never as the capacity failure before it; persistent capacity and a retry dying on
+an ordinary error stay failed and re-book.
 
 `tests/test_limit_expiry.sh` — rule 13's expiry, both recorders (`lib/common.sh` and
 `lib/memory.py`): the wild refusal sentence parses to the provider's own epoch and records it

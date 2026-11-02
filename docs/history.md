@@ -385,6 +385,25 @@ A wake that produced no output at all is journaled too — an empty reply on a c
 not a crash (only a non-zero exit journals `(wake produced no output)`), so "(no summary recorded)"
 no longer hides a death.
 
+### 2026-11-02 — a silent wake that survived a capacity retry was journalled as failed
+
+The 01:24 own-time wake (codex) hit "Selected model is at capacity" five tool calls in. The chain
+judged that attempt's own slice, as account-fallback rule 14 asks, and retried the same model; the
+retry ran five more tool calls, wrote its moment, and ended on an empty non-error result — a silent
+wake, no text block. The journal row read "(wake failed before the model ran — claude exit 0: )".
+`wake_stream_failed` was the one judgement still reading the WHOLE stream from byte 0, where the
+first attempt's `is_error` result stood; only genuine text clears it, and a silent retry never
+writes any. The outcome field is what the day digest and the want reflection read, so the moment
+was on disk and invisible to both. The repair is wake-queue.md rule 23b: every verdict on a wake —
+failed, cut, spoke, silent — is drawn from the final attempt's slice, from the byte mark the walk
+already kept per attempt (now left in `WAKE_CHAIN_LAST_OFFSET`), through one classifier
+(`wake_stream_judge`). Moving the cut judgement onto the slice exposed why the whole log had been
+read there: `extract_response` reads the whole log too and, with nothing genuine anywhere in it,
+hands back an earlier attempt's synthetic limit text as the reply — which past the failure gate
+would have been spoken. So a silent final slice also discards the extraction. A mixed walk whose
+last login dies on the network now journals rule 24a's death with the launcher's last words, not
+a cut it never suffered.
+
 ### 2026-08-06 — the silence marker was spoken aloud
 
 The old `(quiet)` prefix convention was retired because `extract_response` joins every assistant text
