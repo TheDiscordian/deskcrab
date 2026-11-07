@@ -1593,3 +1593,22 @@ record of the peak flag — and the line is the meter, never the monitor or the 
 recorder taking the desktop's audio and a muted microphone in a meeting both still count.
 Per-stream so that ignoring the meters hides nothing beside them. The window itself was not
 touched; it is the user's to close, and the fix is what makes closing it unnecessary.
+
+### 2026-11-07 — the shared viewing landed with the user operating the pause button for it
+
+The first production path for shared viewing (98235cf) carried the session, the packets, the
+receipts and the layer, and its layer told the voice that the machine read no player and that
+the user should be asked to have every pause, resume and seek filed by command, while the record
+that opened the work had named automatic anchor, pause and seek observation as a remaining
+requirement and the design note had said in as many words that the user was not to operate the
+machinery. The spec of that landing narrowed the requirement away in a named limit, and the
+completion review rejected the thread for it: a narrower spec written beside the ask does not
+supersede the ask. The repair is watchalong.md rules 8a–8h: the player he already watches on
+speaks MPRIS on the session bus like every desktop player, the observer polls it read-only and
+files what it sees as anchors with basis `player-telemetry`, each a new epoch, readings between
+anchors refine the estimate without opening one, a player that leaves is `lost` with the last
+reading kept as the basis and named so in the layer, a return that agrees keeps the epoch, a
+different file is a `mismatch` that is not followed, and the observer rides inside the reader
+unit so one `systemd-run` starts both. The live suite now makes its pause and both seeks on a
+headless fixture player and never through a command, and the launch path was verified against a
+real user manager rather than the sandbox's recording stub, which had been the only witness.

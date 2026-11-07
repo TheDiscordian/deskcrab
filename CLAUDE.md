@@ -70,8 +70,8 @@ A push-to-talk desktop assistant for Linux, powered by the Claude Code CLI. The 
 | `lib/day-journal` | the durable per-day record of every finished turn |
 | `lib/empty-mcp.json` | the empty MCP config her sessions run against when `MCP_CONFIG` names no servers of her own |
 | `lib/codex-mcp-args` | her `MCP_CONFIG` servers as codex takes them: one `-c` table, header values in the environment |
-| `lib/watchalong` | shared viewing: the session, immutable packets with decoder timestamps, review receipts, the reader loop, and the viewing layer renderer |
-| `lib/watchalong_fixture.py` | the private synthetic viewing fixture (painted counters, known speech to a file, tones) and the deterministic decoder the test reader uses |
+| `lib/watchalong` | shared viewing: the session, immutable packets with decoder timestamps, review receipts, the player observer (his player's own MPRIS telemetry filed as anchors), the reader loop, and the viewing layer renderer |
+| `lib/watchalong_fixture.py` | the private synthetic viewing fixture (painted counters, known speech to a file, tones), the deterministic decoder the test reader uses, and the headless MPRIS fixture player the observer is proven against |
 | `systemd/` | user units: wake, restore, sleep, canary, watchers, server |
 | `specs/` | the contract |
 | `docs/` | engineering history |

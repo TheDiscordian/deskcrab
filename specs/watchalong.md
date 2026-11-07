@@ -18,10 +18,13 @@ layer that puts the latest receipts, the estimated position, the lag and the cov
 speaking prompt while a session is active, inside an envelope that names them as untrusted reader
 notes.
 
-The estimate of where he is is always an estimate. This machine reads no player; it knows his
-position from what he says and from elapsed time, and the layer says so in as many words. A
-monotonic clock proves nothing was watched; only a receipt proves a look, and a receipt proves a
-look and not a viewing.
+Where he is comes from his player when there is one to read. An **observer** reads the
+authorised player's own telemetry off the session bus — status, position, rate, what it is
+playing — and files the pauses, resumes and seeks it sees as anchors itself, so nobody operates
+this by hand; the layer names the player and the reading. Without a player, or while the player
+is gone, on the wrong file or not found yet, the position is an estimate from his word plus
+elapsed time, and the layer says exactly that. A monotonic clock proves nothing was watched; only
+a receipt proves a look, and a receipt proves a look and not a viewing.
 
 ## CONTRACT
 
@@ -48,18 +51,79 @@ look and not a viewing.
 
 6. A session holds one **anchor**: a source position in seconds, whether playback is believed to
    be running, when the anchor was set (monotonic and wall clock), its **basis** (`user-stated`
-   or `player-telemetry`; nothing else is accepted) and, for a user-stated anchor, his quoted
-   words. The estimated position is the anchor position plus elapsed monotonic time while
-   playing, and exactly the anchor position while paused.
+   or `player-telemetry`; nothing else is accepted) and a quote — his words for a user-stated
+   anchor, the observer's note of what it saw for a player-telemetry one. The estimated position
+   is the anchor position plus elapsed monotonic time while playing, and exactly the anchor
+   position while paused; with a player reading in the current epoch it is the reading plus
+   elapsed time at the player's rate (rule 8d).
 7. Every anchor change — `anchor`, `pause`, `resume` — MUST increment the session **epoch**. The
    epoch is the invalidation token: a packet cut under an earlier epoch is `superseded` and MUST
    NOT be reviewed; a receipt filed under an earlier epoch is history and MUST NOT count as
    coverage for the current one. A seek, forward or backward, is a new anchor like any other.
-8. The estimate MUST be rendered as an estimate wherever it appears — status and the layer — with
-   its basis and the anchor's wall time, and the layer MUST say that the machine has no player
-   telemetry and cannot see a pause or a seek he has not stated. When he states where he is, his
-   word outranks the estimate, and the layer MUST name the command that files it so the reader
-   follows him. Automatic pause or seek recognition MUST NOT be claimed anywhere.
+8. The position MUST be rendered by what the machine actually knows, in status and in the layer.
+   With a connected player it is "read from his player", naming the player, the last reading and
+   its age, and saying that a pause or a seek on that player files itself. Without a player the
+   layer MUST say that this machine reads no player and cannot see a pause or a seek he has not
+   stated; with a player that is lost, on the wrong file or not yet found the layer MUST say so,
+   label the number an ESTIMATE, and name what it rests on (the last reading plus elapsed time,
+   or his own anchor). In every case his word outranks the number: the layer MUST name the
+   command that files it so the reader follows him. Automatic recognition MUST be claimed only
+   where it exists — for the connected player, and never for the no-player case.
+
+### The player and the observer
+
+8a. A session MAY name a **player** at `start` (`--player mpris` or `--player mpris:<bus name or
+    suffix>`); it is the player he already authorised by watching on it, and the session's
+    authorisation statement covers reading it. The player is read through MPRIS on the session
+    bus (`org.mpris.MediaPlayer2.*`: `PlaybackStatus`, `Position`, `Rate`, `Metadata`), the
+    interface every desktop player exposes — VLC, the browsers, mpv with its plugin, Kodi,
+    Celluloid. The observer MUST only read: no `Play`, `Pause`, `Seek` or any other method on the
+    player, ever. A player that does not speak MPRIS is invisible, and the session then runs as
+    one without a player.
+8b. The **observer** polls the player (`WATCHALONG_POLL`, default one second; `--poll`) and files
+    what it sees as anchors with basis `player-telemetry`, each a new epoch under rule 7: a
+    status change from playing to paused is a `pause` at the read position; paused to playing a
+    `resume`; a position that differs from the one expected from the previous reading by more
+    than the seek threshold (`WATCHALONG_SEEK_THRESHOLD`, default two seconds; `--seek-threshold`)
+    is a `seek`, forward or back, at the read position. `start` MUST take one look before
+    anything else runs, so a session opens on the player's real position when the player is
+    already there. Nobody has to say "I paused": the reader and the next prompt follow the
+    player.
+8c. The observer MUST check what the player says it is playing against the session's source:
+    the same file (`same file`), a file of the same name elsewhere (`by name` — the local copy
+    the reader decodes was staged from where he plays it), a stream or URL naming no file
+    (`unverified`), or a different file. A different file is a **mismatch**: no anchor is filed,
+    the telemetry state is `mismatch`, the estimate falls back to the anchor, the layer says the
+    player is on something else, and the observer keeps checking — he may open the source
+    elsewhere. An unnamed player (`--player mpris`) resolves to the player whose URL names the
+    source, else the only player on the bus, else none.
+8d. A reading that agrees with the expectation (same status, within the threshold) opens no
+    epoch; it is recorded as the session's **telemetry** (position, status, rate, the reading's
+    monotonic and wall time, the epoch it belongs to) and the estimate for that epoch is the
+    reading plus elapsed time at the player's rate. Readings refine; anchors open epochs.
+8e. Telemetry has four states, derived in the observer and written to the session: `waiting`
+    (no player found yet), `connected`, `lost` (the player was there and is not), `mismatch`. A
+    player that goes away MUST turn the state `lost` on the next poll with the reason, keep the
+    last reading as the estimate's basis (plus elapsed time if it was playing) and back off its
+    polling (to at most five seconds) while retrying; the layer MUST say the player went away,
+    when, and that a pause or a seek since cannot be seen. A player that comes back is read
+    against the current estimate: agreeing within the threshold with the same status, it keeps
+    the epoch (a bus hiccup is not a seek); otherwise the reading is a `connected`/`resync`
+    anchor. This is the whole of reconnect: no state outside the session file, nothing to reset
+    by hand.
+8f. The observer runs inside the reader's process as a thread when the session names a player
+    (`reader --loop`; `--no-observe` leaves it out), so one detached unit does both, the player
+    is polled while a review is under way, and `stop` ends both; `lib/watchalong observe` runs it
+    alone. The observer MUST exit on stop or expiry like the reader. A failure inside one poll is
+    logged and the next poll starts from nothing — the player is resolved again — which is the
+    reconnect.
+8g. Every read-modify-write of the session file MUST happen under the session lock (`flock` on a
+    file beside it): the observer files anchors from one process while a hand may `stop` from
+    another, and a stop that landed a moment ago MUST be seen by the writer that follows rather
+    than written over.
+8h. The observer MUST NOT autolaunch a bus. With no `DBUS_SESSION_BUS_ADDRESS` and no runtime
+    bus it reports `waiting` with that reason; the sandbox has no bus by construction, and a
+    session started there without one simply has no player.
 
 ### Packets — immutable, source-bound, with the decoder's own timestamps
 
@@ -163,10 +227,13 @@ look and not a viewing.
 
 ### Named limits
 
-27. Without player telemetry the estimate can be wrong in either direction and the system cannot
-    know. The seconds it reviews may be ahead of what he has seen if he paused silently, or
-    behind if he skipped. This is stated in the layer, not solved. A `player-telemetry` basis is
-    accepted by the data model and nothing on this machine supplies it yet.
+27. Without a player the estimate can be wrong in either direction and the system cannot know:
+    the seconds it reviews may be ahead of what he has seen if he paused silently, or behind if
+    he skipped. This is stated in the layer, not solved. With a player the same is true from the
+    moment it is lost, mismatched or not found, and the layer says from when. A player that does
+    not speak MPRIS (mpv without `mpv-mpris`, a television, a phone) supplies nothing, and
+    `Position` on a browser is only as fine as the browser reports it. The observer reads a
+    position; whether his eyes were on the screen is not in it.
 28. The fixture decoder proves carriage — that the actual frame files and audio of a packet
     reached a reviewer, were decoded, and that its words then reached a real speaking prompt. It
     proves nothing about a model's perception. A model receipt proves a model was asked with the
@@ -179,14 +246,18 @@ look and not a viewing.
 | Path | Writer | Reader |
 |---|---|---|
 | `$DESKCRAB_WATCHALONG_DIR/current` | `start`, `stop` | every command, the renderer |
-| `…/sessions/<id>/session.json` | `start`, `anchor`, `pause`, `resume`, `stop` | every command |
+| `…/sessions/<id>/session.json` | `start`, `anchor`, `pause`, `resume`, `stop`, the observer (anchors and the `telemetry` record, under `…/.lock`) | every command |
+| `…/sessions/<id>/session.json` → `player` | `start` | the observer, the renderer |
 | `…/sessions/<id>/packets/<packet-id>.json` (+ `<packet-id>/` frames, sheet, audio, transcript) | `extract`, once | `review`, `status`, the renderer |
 | `…/sessions/<id>/receipts/<packet-id>.json` | `review`, once | `status`, the renderer |
 
 `DESKCRAB_WATCHALONG_DIR` defaults to `${XDG_DATA_HOME:-~/.local/share}/deskcrab/watchalong`.
 Tools: `DESKCRAB_FFMPEG`, `DESKCRAB_FFPROBE`, `DESKCRAB_WHISPER_CLI`, `WATCHALONG_WHISPER_MODEL`,
-`CLAUDE_BIN` and `WATCHALONG_REVIEW_MODEL`. `WATCHALONG_CLOCK_FILE`, when set, replaces the
-monotonic clock with the number in that file — the test harness's clock, never set in production.
+`CLAUDE_BIN` and `WATCHALONG_REVIEW_MODEL`; the observer: `WATCHALONG_POLL`,
+`WATCHALONG_SEEK_THRESHOLD` and the session bus at `DBUS_SESSION_BUS_ADDRESS` (forwarded into the
+reader unit by `start --launch-reader`). `WATCHALONG_CLOCK_FILE`, when set, replaces the monotonic
+clock with the number in that file — the test harness's clock, never set in production, and never
+with an observer (the player's clock is real).
 
 ## INTERACTIONS
 
@@ -194,7 +265,8 @@ monotonic clock with the number in that file — the test harness's clock, never
 `anchor`, `pause`, `resume`, `stop`, `status`); a detached reader loop.
 
 **Calls:** ffmpeg and ffprobe (decode to files), whisper-cli (transcribe to a file), the model CLI
-for a `model` review, ImageMagick `montage` for the contact sheet.
+for a `model` review, ImageMagick `montage` for the contact sheet, the session bus (MPRIS property
+reads only, through GDBus), `systemd-run --user` for the reader unit.
 
 **Must never:** speak, notify, open a window, play media, control a player, book a wake, or write
 the conversation.
@@ -210,13 +282,20 @@ the conversation.
   pause keep its pending packets, since the content is the same seconds. It is not the same
   look: the reviewer's lag and the estimate it was judged against belong to the old anchor.
   Re-cut; extraction is cheap and the invalidation stays simple enough to trust.
+- **Readings refine, anchors open epochs.** A player read every second drifts against the
+  session's own clock by buffering and rate; if every reading were an anchor, no packet would
+  survive to be reviewed, and if none were, the drift would eventually trip the seek threshold
+  as a phantom seek. The reading of the current epoch is the estimate's basis; only a status
+  change or a jump past the threshold is an anchor.
+- **A reconnect that agrees keeps the epoch.** A bus hiccup or a restarted observer is not a
+  seek. The returning reading is held against the estimate it would replace, and only a
+  disagreement opens an epoch.
 
 ## KNOWN DEFECTS
 
 | Id | What implementation must fix |
 |---|---|
 | — | No `crab watch` subcommand yet: the entry is `lib/watchalong` directly, because the entry script is in another hand's working tree at the time of this landing. |
-| — | No player telemetry source exists (rule 27). |
 
 ## TESTS
 
@@ -226,11 +305,30 @@ painted counters, the transcript record (9–12), every `review` refusal (13–1
 lag, stale and ahead (16–18), the layer's presence, position and envelope through the real
 assembler (19–23), and the model reviewer's wiring against the stub CLI (24).
 
+`tests/test_watchalong_player.sh` — the observer on the real clock against the headless MPRIS
+fixture player of `lib/watchalong_fixture.py` on a private bus (rules 8a–8h): waiting, the first
+look at `start`, a pause, a seek while paused, a resume, a forward and a backward seek, each an
+anchor with basis `player-telemetry` and a new epoch that supersedes the pending packet; readings
+that refine without opening an epoch; a player that quits (`lost`, the estimate from its last
+reading), returns agreeing (the epoch kept) and returns elsewhere (a resync anchor); a wrong file
+(`mismatch`, not followed, then followed again); a session with no bus (`waiting`, nothing
+launched); the observer as the reader's thread; a `stop` under the lock that the observer honours;
+the layer's words for every state. About two minutes.
+
 `tests/test_watchalong_live.sh` — the real clock, a multi-minute private synthetic source, the
-reader loop advancing in the background while real `crab` turns (desk and phone doors) run
-through the stub CLI: the first turn before any look, successive looks reaching successive
-prompts newest first, a pause, a backward seek, a forward seek, a stop, and the prompts persisted
-with their packet and receipt lineage (rules 24–26 and the whole path). About four minutes.
+reader loop (with the observer inside it) advancing in the background while real `crab` turns
+(desk and phone doors) run through the stub CLI: the first turn before any look, successive looks
+reaching successive prompts newest first, then a pause, a backward seek and a forward seek made
+ON THE FIXTURE PLAYER and never through an anchor command, each reaching the next real prompt as
+an observed change; the player going away and coming back; a stop; and the prompts persisted with
+their packet and receipt lineage (rules 8a–8h, 24–26 and the whole path). About five minutes.
+
+`tests/test_watchalong_systemd.sh` — the production launch path against a REAL user manager, a
+private one started for the test (the `tests/test_wake_reload_drift.sh` recipe): `start
+--launch-reader fixture --player mpris` puts the reader unit into the manager through the real
+`systemd-run`, the unit's reader cuts and reviews, its observer thread follows a pause made on
+the fixture player, `stop` stops the unit through the real `systemctl` and the collected unit is
+gone. Skips where a private manager cannot start (under `unshare -rC`).
 `--export <dir>` copies the prompts, the session's packets and receipts, the reader log, the
 CLI argv witness, the spoken witness and a lineage index to a directory outside the sandbox;
 the evidence folders under `~/.local/share/deskcrab/watchalong/evidence/` were made that way:

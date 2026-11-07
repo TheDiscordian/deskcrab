@@ -11,11 +11,21 @@ decode    reads those pixels and that audio back. It is a decoder: it proves
           that the actual frame files and audio of a packet reached a reviewer
           and were read, and that what it read then reached the prompt. It
           proves nothing about perception, and its observation says so.
+player    a headless MPRIS player on the session bus (specs/watchalong.md rules
+          8a-8h): it owns org.mpris.MediaPlayer2.<name>, reports a position
+          that advances on its own clock while "Playing", names the source in
+          its metadata, and is driven by lines appended to a control file —
+          pause, resume, seek S, rate R, status S, url U, quit. It opens no
+          window and decodes nothing; it is the shape of a real player's
+          telemetry so the observer can be proven against scripted pauses,
+          seeks, a wrong file, and a player that goes away and comes back.
 
     lib/watchalong_fixture.py generate --out DIR [--seconds 240] [--scene-seconds 10]
                                        [--voice PATH] [--piper PATH] [--no-speech]
     lib/watchalong_fixture.py decode-frame PNG
     lib/watchalong_fixture.py decode-packet PACKET_DIR PACKET_JSON
+    lib/watchalong_fixture.py player --source PATH --control FILE [--name watchalong_fixture]
+                                     [--position S] [--paused] [--rate R] [--url URL] [--log FILE]
 """
 import argparse
 import io
@@ -318,6 +328,230 @@ def decode_packet(pdir, packet):
                                "machine transcript of decoded audio; not heard"], obs
 
 
+# ---------------------------------------------------------------- the headless player
+
+MPRIS_XML = """
+<node>
+  <interface name="org.mpris.MediaPlayer2">
+    <property name="Identity" type="s" access="read"/>
+    <property name="CanQuit" type="b" access="read"/>
+    <property name="CanRaise" type="b" access="read"/>
+    <property name="HasTrackList" type="b" access="read"/>
+    <property name="SupportedUriSchemes" type="as" access="read"/>
+    <property name="SupportedMimeTypes" type="as" access="read"/>
+  </interface>
+  <interface name="org.mpris.MediaPlayer2.Player">
+    <property name="PlaybackStatus" type="s" access="read"/>
+    <property name="Position" type="x" access="read"/>
+    <property name="Rate" type="d" access="read"/>
+    <property name="MinimumRate" type="d" access="read"/>
+    <property name="MaximumRate" type="d" access="read"/>
+    <property name="Metadata" type="a{sv}" access="read"/>
+    <property name="CanSeek" type="b" access="read"/>
+    <property name="CanControl" type="b" access="read"/>
+    <property name="CanPlay" type="b" access="read"/>
+    <property name="CanPause" type="b" access="read"/>
+    <property name="CanGoNext" type="b" access="read"/>
+    <property name="CanGoPrevious" type="b" access="read"/>
+    <signal name="Seeked"><arg name="Position" type="x"/></signal>
+  </interface>
+</node>"""
+
+
+class FixturePlayer:
+    """A player that plays nothing: a position on a clock, a status, a source
+    URL, and a control file. CanControl is false — nothing on the bus may drive
+    it; only the control file does, which is the test's hand."""
+
+    def __init__(self, source, name, position, paused, rate, url, control, log, length):
+        import time
+        self.time = time
+        self.source = os.path.abspath(source)
+        self.name = name
+        self.status = "Paused" if paused else "Playing"
+        self.rate = float(rate)
+        self.url = url or ("file://" + self.source)
+        self.control = control
+        self.applied = 0
+        self.logf = open(log, "a", encoding="utf-8", buffering=1) if log else None
+        self.length = float(length) if length else None
+        self.base = float(position)
+        self.base_t = time.monotonic()
+        self.conn = None
+        self.loop = None
+
+    def log(self, msg):
+        import datetime
+        line = "%s mono=%.3f %s" % (datetime.datetime.now().astimezone().isoformat(timespec="milliseconds"),
+                                     self.time.monotonic(), msg)
+        print(line, flush=True)
+        if self.logf:
+            self.logf.write(line + "\n")
+
+    def position(self):
+        if self.status == "Playing":
+            p = self.base + self.rate * (self.time.monotonic() - self.base_t)
+        else:
+            p = self.base
+        if self.length is not None and p >= self.length:
+            # the end of the media: a real player stops there
+            p = self.length
+            if self.status == "Playing":
+                self.base = p
+                self.base_t = self.time.monotonic()
+                self.status = "Stopped"
+                self.log("reached the end at %.3f: Stopped" % p)
+        return max(0.0, p)
+
+    def set_position(self, p):
+        self.base = max(0.0, float(p))
+        self.base_t = self.time.monotonic()
+
+    def get_prop(self, conn, sender, path, iface, name):
+        from gi.repository import GLib
+        v = None
+        if iface == "org.mpris.MediaPlayer2":
+            v = {"Identity": ("s", "watchalong fixture (plays nothing)"), "CanQuit": ("b", False),
+                 "CanRaise": ("b", False), "HasTrackList": ("b", False),
+                 "SupportedUriSchemes": ("as", ["file"]), "SupportedMimeTypes": ("as", ["video/mp4"])}.get(name)
+        else:
+            if name == "PlaybackStatus":
+                v = ("s", self.status)
+            elif name == "Position":
+                v = ("x", int(round(self.position() * 1e6)))
+            elif name == "Rate":
+                v = ("d", self.rate)
+            elif name in ("MinimumRate", "MaximumRate"):
+                v = ("d", self.rate)
+            elif name == "Metadata":
+                md = {"xesam:url": GLib.Variant("s", self.url),
+                      "xesam:title": GLib.Variant("s", os.path.basename(self.source)),
+                      "mpris:trackid": GLib.Variant("o", "/org/mpris/MediaPlayer2/Track/1")}
+                if self.length is not None:
+                    md["mpris:length"] = GLib.Variant("x", int(round(self.length * 1e6)))
+                return GLib.Variant("a{sv}", md)
+            elif name in ("CanSeek", "CanPlay", "CanPause"):
+                v = ("b", True)
+            elif name in ("CanControl", "CanGoNext", "CanGoPrevious"):
+                v = ("b", False)
+        if v is None:
+            return None
+        return GLib.Variant(v[0], v[1])
+
+    def emit_changed(self, props):
+        from gi.repository import GLib
+        body = GLib.Variant("(sa{sv}as)", ("org.mpris.MediaPlayer2.Player",
+                                           {k: self.get_prop(None, None, None, "org.mpris.MediaPlayer2.Player", k)
+                                            for k in props}, []))
+        try:
+            self.conn.emit_signal(None, "/org/mpris/MediaPlayer2", "org.freedesktop.DBus.Properties",
+                                  "PropertiesChanged", body)
+        except Exception as e:  # a signal nobody hears is not the fixture's concern
+            self.log("signal failed: %s" % e)
+
+    def apply(self, line):
+        from gi.repository import GLib
+        words = line.split()
+        if not words:
+            return
+        cmd, arg = words[0].lower(), (words[1] if len(words) > 1 else "")
+        before = self.position()
+        if cmd == "pause":
+            self.set_position(before)
+            self.status = "Paused"
+            self.emit_changed(["PlaybackStatus"])
+        elif cmd in ("resume", "play"):
+            self.set_position(before)
+            self.status = "Playing"
+            self.emit_changed(["PlaybackStatus"])
+        elif cmd == "seek":
+            self.set_position(float(arg))
+            try:
+                self.conn.emit_signal(None, "/org/mpris/MediaPlayer2", "org.mpris.MediaPlayer2.Player",
+                                      "Seeked", GLib.Variant("(x)", (int(round(self.position() * 1e6)),)))
+            except Exception as e:
+                self.log("signal failed: %s" % e)
+        elif cmd == "rate":
+            self.set_position(before)
+            self.rate = float(arg)
+            self.emit_changed(["Rate"])
+        elif cmd == "status":
+            self.set_position(before)
+            self.status = arg
+            self.emit_changed(["PlaybackStatus"])
+        elif cmd == "url":
+            self.url = arg
+            self.emit_changed(["Metadata"])
+        elif cmd == "quit":
+            self.log("applied: quit at %.3f" % before)
+            self.loop.quit()
+            return
+        else:
+            self.log("ignored: %r" % line)
+            return
+        self.log("applied: %s at %.3f -> %s %.3f rate %.2f url %s" % (
+            line.strip(), before, self.status, self.position(), self.rate, self.url))
+
+    def poll_control(self):
+        try:
+            with open(self.control, encoding="utf-8") as fh:
+                lines = fh.read().splitlines()
+        except OSError:
+            return True
+        if len(lines) < self.applied:  # truncated: the test started a new script
+            self.applied = 0
+        while self.applied < len(lines):
+            line = lines[self.applied]
+            self.applied += 1
+            if line.strip() and not line.startswith("#"):
+                self.apply(line)
+        return True
+
+    def serve(self):
+        import warnings
+        warnings.filterwarnings("ignore", category=DeprecationWarning)
+        import gi
+        gi.require_version("Gio", "2.0")
+        gi.require_version("GLib", "2.0")
+        from gi.repository import Gio, GLib
+        info = Gio.DBusNodeInfo.new_for_xml(MPRIS_XML)
+        self.conn = Gio.bus_get_sync(Gio.BusType.SESSION, None)
+        for iface in info.interfaces:
+            self.conn.register_object("/org/mpris/MediaPlayer2", iface, None, self.get_prop, None)
+        bus_name = "org.mpris.MediaPlayer2." + self.name
+        self.loop = GLib.MainLoop()
+        lost = {"n": 0}
+
+        def on_lost(conn, name):
+            lost["n"] += 1
+            self.log("bus name %s lost" % name)
+            self.loop.quit()
+
+        Gio.bus_own_name_on_connection(self.conn, bus_name, Gio.BusNameOwnerFlags.NONE, None, on_lost)
+        self.base_t = self.time.monotonic()  # the clock starts when the player is on the bus
+        self.log("player up as %s: %s at %.3f, url %s%s" % (
+            bus_name, self.status, self.position(), self.url,
+            (", length %.1f" % self.length) if self.length is not None else ""))
+        GLib.timeout_add(100, self.poll_control)
+        self.loop.run()
+        self.log("player down")
+
+
+def run_player(a):
+    length = None
+    try:
+        out = subprocess.run([os.environ.get("DESKCRAB_FFPROBE") or "ffprobe", "-v", "error", "-show_entries",
+                              "format=duration", "-of", "csv=p=0", a.source],
+                             capture_output=True, text=True, timeout=60, stdin=subprocess.DEVNULL)
+        if out.returncode == 0 and out.stdout.strip():
+            length = float(out.stdout.strip().splitlines()[0])
+    except (OSError, ValueError, subprocess.TimeoutExpired):
+        length = None
+    if a.length is not None:
+        length = a.length
+    FixturePlayer(a.source, a.name, a.position, a.paused, a.rate, a.url, a.control, a.log, length).serve()
+
+
 def main(argv):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -333,7 +567,20 @@ def main(argv):
     p = sub.add_parser("decode-packet")
     p.add_argument("pdir")
     p.add_argument("packet_json")
+    pl = sub.add_parser("player")
+    pl.add_argument("--source", required=True)
+    pl.add_argument("--control", required=True)
+    pl.add_argument("--name", default="watchalong_fixture")
+    pl.add_argument("--position", type=float, default=0.0)
+    pl.add_argument("--paused", action="store_true")
+    pl.add_argument("--rate", type=float, default=1.0)
+    pl.add_argument("--url", default="")
+    pl.add_argument("--length", type=float, default=None)
+    pl.add_argument("--log", default="")
     a = ap.parse_args(argv)
+    if a.cmd == "player":
+        run_player(a)
+        return
     if a.cmd == "generate":
         speech = (not a.no_speech) and bool(a.voice) and os.path.isfile(a.voice) and os.path.isfile(a.piper)
         meta = generate(a.out, a.seconds, a.scene_seconds, a.voice, a.piper, speech)

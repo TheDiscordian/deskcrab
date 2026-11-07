@@ -66,7 +66,7 @@ The specs cite the defect dossier with these identifiers:
 | [nightly.md](nightly.md) | Sleep (memory ingest), tidy (shelf maintenance), the self-change watcher and its canary |
 | [wants.md](wants.md) | The wants drawer: want records with state over the record spine, the shelf, `crab want`, migration |
 | [face.md](face.md) | The living portrait: the authored asset family and manifest, the face-state broker and `crab face`, mouth cues from real speech, the portrait window, and the chess/spectator mirrors |
-| [watchalong.md](watchalong.md) | Shared viewing: the permission-bound session, immutable packets with the decoder's own timestamps, review receipts separate from extraction, lag, gaps and stale state, and the conditional viewing layer that puts what she has actually seen into every speaking prompt |
+| [watchalong.md](watchalong.md) | Shared viewing: the permission-bound session, the observer that reads his player's own telemetry and files its pauses and seeks as anchors, immutable packets with the decoder's own timestamps, review receipts separate from extraction, lag, gaps and stale state, and the conditional viewing layer that puts what she has actually seen into every speaking prompt |
 | [test-harness.md](test-harness.md) | The sandbox every test runs in, the four isolation gates, and the coverage the suite owes |
 
 ### System data flow
