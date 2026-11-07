@@ -2850,6 +2850,12 @@ _prompt_budget() {  # <L1..L8|regroup> <profile>
         # regroup reconciliation, and prompt-assembly.md §11 carries the
         # measured size and the reasoning.
         dispute:turn) v=3200 ;;
+        # The viewing layer (rule 36e, specs/watchalong.md rule 19): the
+        # standing text measures about 1,400 bytes; the newest receipt rides
+        # up to 900 bytes of observation plus its header, the one before it
+        # 300, and the interval list a line. A busy session reads `over` and
+        # rides whole (rule 4).
+        viewing:turn|viewing:wake) v=3500 ;;
         *) v=0 ;;
     esac
     printf '%s' "$v"
@@ -3317,6 +3323,22 @@ $SHELVES}"
         turn|wake) CONVO_CONTEXT="$(build_convo_context "$(_prompt_budget L6 "$PROMPT_PROFILE")")" ;;
     esac
     _prompt_layer L6 "crab journal" "$CONVO_CONTEXT"
+
+    # ---- shared viewing ---------------------------------------------------
+    # Conditional (prompt-assembly rule 36e, specs/watchalong.md rules 19-23):
+    # rendered only while a viewing session is active and unexpired, by
+    # lib/watchalong itself, so the receipts, the estimate, the lag and the
+    # coverage in the prompt are the session's files at this moment and never
+    # a paraphrase. Inactive by default: no session, no layer. A broken
+    # renderer costs the layer and never the prompt (the command's own
+    # fail-safe prints nothing and exits 0; the guard here is the belt).
+    local VIEWING=""
+    if [ "$PROMPT_PROFILE" = turn ] || [ "$PROMPT_PROFILE" = wake ]; then
+        if [ -x "$LIB_DIR/watchalong" ]; then
+            VIEWING="$(python3 "$LIB_DIR/watchalong" prompt-block 2>/dev/null)" || VIEWING=""
+        fi
+    fi
+    _prompt_layer viewing "lib/watchalong status" "$VIEWING"
 
     # ---- regroup ----------------------------------------------------------
     # ONE block, never two. There were two that said the same thing in the same
