@@ -45,3 +45,25 @@ record="$(cat "$WAKES_DIR"/*.wake 2>/dev/null)"
 check "social booker reaches the real scratch queue" contains "$record" 'bluesky-bridge'
 check "wake names the inbox" contains "$record" 'crab bluesky inbox'
 if contains "$record" 'public text must not'; then fail "public content reached the wake agenda"; else ok "public content stays outside the wake agenda"; fi
+
+# specs/bluesky.md clauses 4a, 13, 15, 16: the builder gates on the new verbs, the person door
+# through the real CLI, and the numeric-only prompt summary.
+out="$(DESKCRAB_ENG_ROLE=builder "$SANDBOX_REPO/crab" bluesky remember did:plc:fixture 'a fact' 2>&1)"
+check "detached builder cannot file a person memory" contains "$out" 'unavailable to detached builders'
+out="$(DESKCRAB_ENG_ROLE=builder "$SANDBOX_REPO/crab" bluesky cancel fixture 2>&1)"
+check "detached builder cannot cancel an intent" contains "$out" 'unavailable to detached builders'
+out="$("$SANDBOX_REPO/crab" bluesky intents 2>&1)"
+check "intents are listable and empty on a fresh store" contains "$out" '[]'
+out="$("$SANDBOX_REPO/crab" bluesky summary 2>&1)"
+check "offline summary counts people" contains "$out" '0 people known'
+check "offline summary counts queued intents" contains "$out" '0 queued intents'
+if [ -n "${MEMORY_PYTHON:-}" ] && "$MEMORY_PYTHON" -c 'import sqlite_vec' 2>/dev/null; then
+    out="$("$SANDBOX_REPO/crab" bluesky person did:plc:nobody 2>&1)"
+    check "person door answers an unknown DID with an empty retained context" contains "$out" '"count": 0'
+    check "person door never grants authority" contains "$out" '"privileged_authority": false'
+    check "person door reads the pinned memory store" test -f "$DESKCRAB_MEMORY_DIR/memory.db"
+    out="$("$SANDBOX_REPO/crab" bluesky person not-a-did 2>&1)"
+    if contains "$out" '"count"'; then fail "a non-DID actor must not open a person context without resolution"; else ok "a non-DID actor is resolved or refused, never keyed"; fi
+else
+    ok "person door CLI check skipped: no memory interpreter on this box"
+fi

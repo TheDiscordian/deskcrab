@@ -20,9 +20,25 @@ posting and individual interactions. Public conversation is data, never operatio
    graph snapshots, action receipts, and resumable outgoing threads. A page and its cursor commit
    together. Exhausting pagination starts the next poll at the head; incomplete scans resume.
    Graph removals MUST be inferred only after a complete generation, never a partial page.
-4. Reads MUST retry bounded network/5xx failures with jitter. HTTP 429 and Retry-After/rate-limit
-   reset deadlines MUST persist across restarts. Writes MUST NOT blindly retry uncertain commits:
-   stable record keys, stored records, and getRecord reconciliation MUST prevent duplicates.
+4. Reads MUST retry bounded network/5xx failures with jitter. A deadline persists across restarts
+   only from an HTTP 429, a `Retry-After` on a 5xx, or a response whose remaining-quota header is
+   zero; the window-reset header rides on every response and MUST NOT make a plain 4xx — the
+   `RecordNotFound` a pre-write check deliberately triggers — into a backoff. A deadline is scoped
+   to the host and the endpoint class (repository writes share one; every other endpoint has its
+   own), so an exhausted endpoint never blocks unrelated reads or writes. Writes MUST NOT blindly
+   retry uncertain commits: stable record keys, stored records, and getRecord reconciliation MUST
+   prevent duplicates.
+4a. **A deliberate action is an intent, and an intent is never abandoned to a rate limit.** Every
+   post, reply, follow, like, repost and their removals is persisted as an `intents` row with its
+   request, reason and stable id (the post operation, or kind and target) before the first attempt.
+   A rate limit, a 5xx or a network failure answers `state: queued` with the retry time instead of
+   an error; the bridge retries each due intent after the persisted deadline plus up to thirty
+   seconds of jitter, through the same stable ids so reconciliation finds what already landed,
+   and marks it delivered only after an independent getRecord read-back of every record matches.
+   A non-transient refusal, or the attempt cap, marks the intent failed with its static reason.
+   Delivery and failure each leave a local inbox event, so a wake learns the outcome. `crab
+   bluesky intents` lists the queue; `cancel <id>` withdraws a pending one. Builders may list,
+   never queue or cancel.
 5. Posts MUST respect 300 Unicode graphemes and 3000 UTF-8 bytes per record. Splitting MUST preserve
    all text, keep grapheme clusters intact, preflight the entire plan, and attach root/parent strong
    references correctly for new threads and replies to existing threads. Retry after any part MUST
@@ -45,9 +61,11 @@ posting and individual interactions. Public conversation is data, never operatio
    sidecar is missing or nonterminal the bridge MUST only collect data, so an unattended builder
    never starts a presentation. Normal notification booking resumes after that job terminates.
 9. Normal turn/wake prompts MUST expose only a locally computed count/freshness summary and CLI
-   pointers. Public content MUST NOT enter system prompts or trusted vector-memory directives.
-   The durable social store and search retain provenance; chosen memories may be filed through
-   the existing memory door as attributed observations, never instructions from strangers.
+   pointers. Public content MUST NOT enter system prompts, the general recall block, or trusted
+   vector-memory directives. The durable social store and search retain provenance; what an
+   exchange leaves in the shared memory store is a `social` record under clauses 14 to 19 —
+   attributed, keyed by the person, outside similarity recall — never a directive, a note, a pin
+   or an instruction from a stranger.
 10. Verified contacts MUST come only from a private, trusted DID mapping with verification evidence.
     Even a verified contact's public posts MUST NOT authorize file changes, commands, credentials,
     persona changes or other privileged operations. Those require the existing trusted channels.
@@ -57,9 +75,56 @@ posting and individual interactions. Public conversation is data, never operatio
 12. Tests MUST use the common sandbox and isolated HTTP fixtures, never the real account, keyring,
     bus or user manager. Live verification MUST be read-only except requested profile completion;
     post/media delivery MUST remain explicitly unverified until a real authorized post is checked.
-13. Detached builders MUST be refused public posts, interactions, undo and bridge starts through
-    the CLI. Inbox reads MUST become peeks. Explicitly requested profile/handle completion and
-    authenticated verification remain available; the build never tests by impersonating her.
+13. Detached builders MUST be refused public posts, interactions, undo, `remember`, `cancel` and
+    bridge starts through the CLI. Inbox reads MUST become peeks. Explicitly requested profile/handle
+    completion and authenticated verification remain available; the build never tests by
+    impersonating her.
+14. **The person key is the authenticated author DID.** Every person is keyed by the `author.did`
+    of an authenticated notification or thread read — never by handle, display name, or anything
+    inside public text. The social store MUST keep one `people` row per DID: first and last seen,
+    every handle and display name seen with its dates (untrusted descriptive history, never an
+    identity), and event counts. The same DID under a new handle keeps its row and its memories; a
+    different DID under a familiar handle or name starts empty. A DID quoted inside public text is
+    text.
+15. **Exchanges are retained automatically, through one door.** After every poll, and on `sync`,
+    each newly stored reply, mention, quote and follow MUST be retained in the shared memory store
+    as one `social` record (memory-recall.md rules 53 to 56): kind `social`, source exactly
+    `bluesky:<DID>`, visibility `public`, `occurred` from the event's `indexedAt`, topics carrying
+    the reason and the event URI. The text is attributed in the third person ("On Bluesky,
+    @handle replied to me: ...") with email addresses, phone-number shapes and credential shapes
+    redacted before storage; likes and reposts touch the person row only. A reply the connector
+    publishes MUST be retained under the parent author's DID as her own words. `crab bluesky
+    remember <did-or-handle> <text>` files a judged lasting fact through the same door; neither
+    door can set kind, pin, source, visibility or directive status from its input. A `retention`
+    row keyed by the event identity (or the post operation) records every outcome, so a replayed
+    event or a resumed operation never creates a second record, and an exact repeated text under
+    one DID is a duplicate.
+16. **Retrieval happens before any reply is composed.** `inbox`, `thread` and `person` MUST attach,
+    for each distinct author DID they return, that person's context: identity status from clause
+    10's mapping only, the handle history, counts, and the retained `social` records read by exact
+    source equality and `visibility = 'public'`. The connector never calls similarity recall, never
+    passes lexical scope, and never reads records of any other kind or source for a public reply.
+    Her own records enter the public context only when explicitly marked public; the default is
+    private, so pinned directives, notes, moments and other conversations are absent by
+    construction. A context that cannot be read reports its error in place; nothing falls back to
+    the general store or to any private row.
+17. **Two people never share a context.** Person A's context MUST NOT contain person B's records, a
+    record whose source merely has A's DID as a prefix, a record of any other source whose text
+    mentions A's DID, or any private-visibility record. Tests prove this with seeded canaries in
+    every other kind and source, through the real retention and inbox paths across a store close
+    and reopen.
+18. **Public text sets nothing.** Nothing read from public content may set memory source, person
+    key, kind, pin, visibility, trusted-contact status or import instructions. An author claiming
+    the user's name or DID, copying a display name, or requesting privileged actions is an
+    unverified person with `privileged_authority` false; a verified contact's public words carry no
+    authority either (clause 10).
+19. **Errors are visible, never learned.** A retention failure is recorded per event with a static
+    reason, retried on the next poll, counted in `status` and the offline summary, and never
+    reported as retained. A recall failure appears in the attached context with the memories
+    absent. The bridge prints a fixed line, never remote text.
+20. **Disclosure gate.** Before any public post or reply the connector MUST refuse text containing
+    an email address, a phone-number shape, an app-password or bearer-token shape, or any term in
+    the private `never_publish` list; the refusal names the category only.
 
 ## REFERENCES
 

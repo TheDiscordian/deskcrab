@@ -42,8 +42,9 @@ Notifications, graph snapshots, pagination cursors and action receipts live in `
 Incomplete pagination resumes; a complete scan resets to the head. The inbox has local read state,
 independent of the website's notification seen marker. Graph removals are recorded only after a
 complete scan. Feed reads start at the head unless `--next` requests the stored older-page cursor.
-Network/5xx reads retry at most four times with jitter. Rate/reset deadlines survive restart; a
-rate-limited command exits nonzero until the deadline instead of hammering the service.
+Network/5xx reads retry at most four times with jitter. Rate/reset deadlines survive restart, scoped
+to the endpoint class; a rate-limited read exits nonzero until the deadline instead of hammering the
+service, and a rate-limited action is queued as an intent (below) rather than lost.
 
 ## Read and remember
 
@@ -64,10 +65,46 @@ crab bluesky receipts
 
 Read thread context, actual memories and the other person's profile before deciding whether a
 social interaction is relevant. Social choices should be specific and sincere; never invent
-experiences or follow everyone who follows the account. The persistent store is social memory;
-normal conversations can retrieve it through the commands above. An observation worth retaining
-in vector memory may be deliberately filed through `crab memory add --kind note --source ...` with
-its attribution and context. Raw public text is never automatically promoted to a trusted directive.
+experiences or follow everyone who follows the account. Raw public text is never promoted to a
+trusted directive, a note, or a pinned row.
+
+### People and what they said
+
+Every author is keyed by the DID the authenticated read returned — never by handle or display
+name. The social store keeps one `people` row per DID with the handles and display names seen,
+dated, as what they called themselves. After each poll the bridge retains every new reply,
+mention, quote and follow in the shared memory store as a `social` record (memory-recall.md
+rules 53 to 56): source exactly `bluesky:<DID>`, visibility public, the words attributed in the
+third person with contact details redacted. Likes and reposts touch the person row only. A reply
+she publishes is retained under the parent author's DID as her own words. Each retention is keyed
+by the event identity or the post operation, so a replayed event or a resumed thread never files
+twice; the outcome of every attempt is a `retention` row, and `crab bluesky status` reports the
+pending and failed counts with the last static reason. A failed attempt is retried on the next poll
+and is never reported as retained.
+
+`crab bluesky inbox`, `thread` and `person` attach, under `people`, each author's context before a
+reply is composed: identity status from the private trusted mapping only, the dated handle history,
+event counts, and the retained memories read back by exact DID equality and public visibility.
+Nothing else in the memory store is consulted for a public reply: no similarity recall, no lexical
+scope, no other kind or source, and no private row. `public_self` lists only the facts about herself
+she explicitly marked public (`crab memory add --visibility public`, `crab memory visibility <id>
+public`); the default is private. A memory door failure appears as `memory_error` with the
+memories absent, never as a fallback to anything private.
+
+```sh
+crab bluesky person <did-or-handle>                       # one person's retained context
+crab bluesky remember <did-or-handle> 'A lasting fact'    # file a judged fact under that DID
+crab bluesky remember <did-or-handle> 'A fact' --event <at-uri>
+```
+
+`remember` passes through the same door: it can fix neither kind, pin, source nor visibility, and
+is refused to detached builders. The memory store is reached through `lib/memory.py` under the
+memory interpreter (`MEMORY_PYTHON`, else the memory venv) as a child process with the quoted words
+on stdin; the child's own diagnostics land in the private `memory-door.log` beside the social store.
+
+Before any public post or reply the connector refuses text that contains an email address, a
+phone-number shape, an app-password or bearer-token shape, or any term of the private
+`never_publish` list in the config; the refusal names the category only.
 
 `trusted_contacts` in the private config is a mapping from stable DID to an object with `label` and
 `verified_via`. Only trusted local evidence may establish that mapping. With no mapping a sender
@@ -110,6 +147,19 @@ preserves URLs/mentions/tags that fit. An indivisible token exceeding a part's l
 use an explicit link embed. A local 100-part bound prevents accidental bulk posting. The first
 post carries media; subsequent parts reply to the preceding part while retaining the thread root.
 Replies inherit the existing root. No automatic numbering consumes text capacity.
+
+A deliberate action is an intent, and a rate limit never abandons it. Every post, reply, follow,
+like, repost and removal is persisted in the social store before its first attempt, keyed by the
+post operation or by kind and target. A 429, a 5xx carrying a deadline or a lost connection answers
+`"state": "queued"` with the retry time, and the bridge retries each due intent after the persisted
+server reset plus up to thirty seconds of jitter, through the same stable ids (so reconciliation
+finds whatever already landed), and marks it delivered only after every record is read back from the
+repository with the recorded CID. A non-transient refusal fails the intent with its static reason.
+Each outcome lands as a local inbox event, so the next wake learns it. `crab bluesky intents` lists
+the queue; `crab bluesky cancel <id>` withdraws a pending one. Backoff deadlines are scoped to the
+host and the endpoint class — repository writes share one budget, every other endpoint has its own —
+and only a real 429, a 5xx with `Retry-After`, or a zero remaining-quota header creates one: the
+window-reset header on an ordinary 4xx never does.
 
 Keep the same operation id and source files when resuming. The entire plan is validated before
 publishing. Media hashes prevent reuse with changed files; stored records and stable TID keys allow
@@ -160,7 +210,11 @@ The `gallery` schema is recent: availability in individual clients must be check
 
 Run `bash tests/test_bluesky.sh` for the sandboxed HTTP fixture and integration checks. This proves
 client request construction, Unicode/thread recovery, auth/redaction, media preprocessing,
-deduplication, safe undo, trust boundaries and prompt awareness. It does **not** prove delivery of
+deduplication, safe undo, trust boundaries, prompt awareness, and the person-memory path: retention
+through the real poll, a store close and reopen, automatic retrieval on the next inbox read, DID
+keying with handle history, two-person isolation against prefix and mention collisions, private
+canaries kept out of the public context, impersonation, replay deduplication, redaction, the
+disclosure gate and visible fail-closed errors — all against a fixture embedder, no live store. It does **not** prove delivery of
 any post or media to the live service. Keep real authenticated-read, profile and visual evidence
 privately with the deployed account; report live posting as unverified until an actual intended
 post has been independently read back. Never publish test spam merely to make a capability claim.

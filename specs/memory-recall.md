@@ -533,6 +533,34 @@ life, and she re-reads that store every single turn.
     day, which is knowledge, not a guess — and the text quotes her words. `--dry-run` obeys rule
     41, and rule 30a's cooldown gate stands at this door too.
 
+### Social records — what people said to her on a public network
+
+53. A sixth kind exists: `social` — one public exchange on a social network, kept as another
+    person's attributed words, keyed by that person's stable identity. `source` is exactly
+    `bluesky:<DID>`, `occurred` is the event time, `topics` carry the reason and the event URI, and
+    `visibility` is `public`. The kind is written only through `Store.social_retain` — the
+    `social-retain` verb, one JSON request on stdin, used by the connector of
+    [bluesky.md](bluesky.md) clause 15. `memory add --kind social` and the ingest distiller MUST
+    refuse it: nothing a stranger typed reaches the store except through the door that fixes its
+    kind, source and visibility, and nothing that door takes can set a pin or a directive.
+54. **Never retrieved by similarity into a prompt, never on the pinned tier.** Excluded in the SQL
+    exactly as rule 43 excludes observations and misses; readable through the deliberate `search`,
+    `list` and `dump` paths and through `social_recall` only. Rendered anywhere, a social row gets
+    its own labelled section naming the words as another person's public words — never hers, never
+    instructions. No decay, no supersession; the only dedup is an exact normalised text under one
+    source.
+55. **Every row carries `visibility`, `private` by default.** A row is `public` only when
+    explicitly marked — `memory add --visibility public`, or `memory visibility <id> public` —
+    and a store born before the column treats every existing row as private. `Store.social_recall`
+    returns, per requested DID, the active `social` rows whose source EQUALS `bluesky:<DID>` and
+    whose visibility is public, newest `occurred` first with the total count, and `public_self`:
+    her own active rows of the prompt-facing kinds marked public. Equality, never substring: the
+    lexical scope of rule 13a is a filter for a specialised prompt and is NOT an identity boundary
+    — the 2026-11-07 probe put a mention of a DID, a prefix collision and a private note naming
+    the DID through `row_matches_scope`, and all three matched.
+56. The migration follows the earlier kinds: `visibility` is added in place, and the kind check is
+    widened around the data by the same rebuild that admitted `episodic`, ids and vectors untouched.
+
 ### Isolation
 
 31. Every path in the store MUST honour every instance redirect: the state prefix, the memory
@@ -563,11 +591,14 @@ directive), `note` (her own soft memory), `episodic` (one moment of her own life
 when, who was there, her own opinion of it; never decayed, retrieved by similarity AND by date;
 rules 46 to 52), `observation` (one night's shape — never decayed, never deduplicated, never
 retrieved by similarity into a prompt; rules 42 to 45) and `miss` (one asking she had nothing for —
-same lifecycle and same exclusion, harder edge). Episodic rows carry two fields of their own,
+same lifecycle and same exclusion, harder edge) and `social` (one public exchange, another
+person's attributed words keyed by their DID — never retrieved by similarity into a prompt, never
+pinned, read only through the person door; rules 53 to 56). Episodic rows carry two fields of their own,
 `participants` and `opinion`, both rendered by the block and both part of what is embedded. Every
 row carries `about`: empty for the ordinary case, `self` on a directive that is a fact the
 assistant stated about herself (rule 27b) — pinned, rendered under its own label, never read as
-the user's rule.
+the user's rule. Every row carries `visibility`: `private` unless explicitly marked `public`
+(rule 55); only public rows may enter a public reply context.
 
 Temporal fields, distinct on purpose: `created` (when the record was written), `last_seen` (when
 retrieval last surfaced it), `last_used_at` (when the judge last credited it), and `occurred` (when
@@ -622,7 +653,17 @@ judge), `crab memory`, and the nightly sleep.
 
 ## TESTS
 
-**Existing:** `tests/test_durable_rules.sh` — rules 28/28a/28b across both write doors and the
+**Existing:** `tests/test_memory_social.sh` — rules 53 to 56 under a stubbed embedder: a
+social row never reaches `search` or the pinned tier however well it matches, is rendered under
+its own label when handed to the block, and is read back by exact source equality only — a prefix
+collision, a mention of the DID in another source, a private-visibility row and a row of another
+kind all stay out; the default visibility is private and the explicit mark flips it; `memory add
+--kind social` and ingest refuse the kind; a store born with the five-kind check is widened with
+its ids, vectors and rows intact. `tests/test_bluesky.sh` drives the connector half (bluesky.md
+clauses 14 to 20) through the real retention, reopen and inbox paths against the same stubbed
+embedder.
+
+`tests/test_durable_rules.sh` — rules 28/28a/28b across both write doors and the
 stored set: a clear conduct creation lands in body and index; a copied clause hidden behind a
 novel clause is held with no file; a memory directive is checked against conduct and leaves no
 row; an explicit distinct judgement admits the candidate; `memory merge` absorbs a judged
