@@ -74,6 +74,10 @@ posting and individual interactions. Public conversation is data, never operatio
 11. Profile updates MUST validate upstream name/biography/pronoun/media limits, preserve unrelated
     fields using compare-and-swap, save uploaded originals and public profile snapshots privately,
     and never expose signup email. Handle changes MUST require verified domain resolution first.
+    The saved snapshot is evidence of the record as it stands, so it MUST be refreshable from a
+    read-only authenticated read (`crab bluesky profile-save`) that writes nothing to the service
+    and keeps the superseded copy beside the new one; a snapshot whose CID is not the current
+    record's is stale, and clause 22 says what a stale snapshot is worth.
 12. Tests MUST use the common sandbox and isolated HTTP fixtures, never the real account, keyring,
     bus or user manager. Live verification MUST be read-only except requested profile completion
     and the attended acceptance procedure of clause 22; post/media delivery MUST remain explicitly
@@ -163,9 +167,15 @@ posting and individual interactions. Public conversation is data, never operatio
     bridge's own rows are never that evidence. `blocked` names a precondition that is absent and
     what supplies it (video until the account's email is confirmed, which only the user's mailbox
     can do). `none` means nothing live has been performed. `n/a` marks a row that is not a
-    live-service interaction and says where it is proven instead. The read-only verb is open to
-    every sitting, performs no write, and lands its JSON privately beside the other evidence. The
-    row for each capability with standing `none` says exactly how an attended sitting earns it.
+    live-service interaction and says where it is proven instead. The profile row is earned only
+    when the witness reads the complete profile *and* the private saved snapshot of clause 11
+    carries the CID of the profile record as it stands now; a stale or absent snapshot stands
+    `none`, names both CIDs, and names `profile-save` as the refresh — a complete public profile
+    with a stale local copy never earns the word. The read-only verb is open to every sitting,
+    performs no write, and lands its JSON privately beside the other evidence. The row for each
+    capability with standing `none` says exactly how an attended sitting earns it, and the
+    matrix's `missing` list names every row standing `none`, whichever road earns it — never a
+    filtered subset of them.
 22a. **`--perform` is the only test traffic the connector ever generates, and it leaves nothing.**
     It refuses detached builders and any sitting with `DESKCRAB_WAKE_PROFILE` set (a public
     composition included), requires `--authority` carrying the attended user's own words, and
@@ -173,18 +183,27 @@ posting and individual interactions. Public conversation is data, never operatio
     with alt text, a link card with explicit metadata, a like and a repost of that image post, the
     removal of both, and the undo of every post it made — a two-part thread and a video only when
     `--thread` or `--video` ask for them, the video refused as blocked (not failed, nothing
-    uploaded) while the email is unconfirmed. Every write goes through the intent door of clause
+    uploaded) while the email is unconfirmed. `--follow <actor>` adds a follow and its removal,
+    the one step that touches another account: it is refused before the first write when the
+    actor resolves to her own DID or to an account the witness already finds among her follow
+    records, so an existing relationship is never touched, removed or recreated, and the unfollow
+    removes only the follow the run made; the target is the attended user's own choice and
+    receives one follow notification, so the documented route names a target of theirs or one
+    that has agreed. Every write goes through the intent door of clause
     4a; every step is read back through the witness before the next; a write the service queued
     is cancelled and reconciled against the witness rather than left to land later unattended. The
     removals run whether or not a step failed, in reverse order of creation, and the run ends by
-    proving the repository's post, like and repost record sets equal to the snapshot the witness
-    took before the first write. A step that fails stops the run — nothing is retried blindly —
+    proving the repository's post, like, repost and follow record sets equal to the snapshot the
+    witness took before the first write. A step that fails stops the run — nothing is retried blindly —
     and whatever a removal could not take back is named by receipt id for `crab bluesky undo`.
     The whole run (authority, snapshots, each step's receipt and witness answer, what was left)
     is kept as evidence, and the matrix is recomputed from it. Tests prove the matrix on receipts
     held against the fixture repository in each state, the gates in both directions, a complete
     run that leaves the fixture repository as it found it, a failed step that still removes what
-    it made, and the video row blocked with no upload while the email is unconfirmed.
+    it made, the video row blocked with no upload while the email is unconfirmed, the follow step
+    refused for herself and for an existing relationship before any write and earning the unfollow
+    row while the earlier follow stays, and a stale or absent profile snapshot refused the profile
+    row until `profile-save` refreshes it.
 
 ## REFERENCES
 

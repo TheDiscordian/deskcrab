@@ -36,8 +36,19 @@ check "the acceptance matrix answers an unconfigured store" contains "$out" '"ca
 check "every live standing on an unconfigured store is none, blocked or n/a" test "$(printf '%s' "$out" | grep -c '"live": "verified"')" = 0
 check "the matrix says how the missing rows are earned" contains "$out" 'acceptance --perform'
 check "the matrix lands privately beside the evidence" test -f "$DESKCRAB_BLUESKY_DIR/verification/acceptance-matrix.json"
+check "the missing list names every row standing none, unfollow and profile among them" python3 - "$DESKCRAB_BLUESKY_DIR/verification/acceptance-matrix.json" <<'PY'
+import json, sys
+m = json.load(open(sys.argv[1]))
+none = [c["id"] for c in m["capabilities"] if c["live"] == "none"]
+sys.exit(0 if m["missing"] == none and "unfollow" in none and "profile" in none else 1)
+PY
+check "the procedure names the follow step and the snapshot refresh" contains "$out" '--follow'
 out="$("$SANDBOX_REPO/crab" bluesky acceptance --markdown 2>&1)"
 check "the matrix renders as a table" contains "$out" '| Capability | Fixture tests | Live | Evidence |'
+# specs/bluesky.md clause 11: the snapshot refresh is a read-only verb, open to a builder (the
+# refusal below is the connector's own, for an unconfigured store, not the door's).
+out="$(DESKCRAB_ENG_ROLE=builder "$SANDBOX_REPO/crab" bluesky profile-save 2>&1)"
+check "profile-save reaches the connector from a builder and needs a configured account" contains "$out" 'configure the verified account DID before saving the profile snapshot'
 out="$(DESKCRAB_ENG_ROLE=builder "$SANDBOX_REPO/crab" bluesky acceptance 2>&1)"
 check "a builder may read the matrix" contains "$out" '"capabilities"'
 out="$(DESKCRAB_ENG_ROLE=builder "$SANDBOX_REPO/crab" bluesky acceptance --perform --authority 'fixture' 2>&1)"

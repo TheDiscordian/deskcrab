@@ -25,6 +25,7 @@ import bluesky as b
 
 DID = "did:plc:fixtureaccount"
 OTHER = "did:plc:fixturefriend"
+THIRD = "did:plc:fixturethird"
 POST = f"at://{OTHER}/app.bsky.feed.post/fixture"
 MEMORY_PY = os.environ.get("MEMORY_PYTHON") or ""
 MEMORY_OK = bool(MEMORY_PY) and os.path.exists(MEMORY_PY) and subprocess.run(
@@ -1174,7 +1175,9 @@ class Acceptance(Doors):
         self.assertEqual(rows["post_images"]["receipts"][0]["embed"], "app.bsky.embed.images")
         self.assertEqual(rows["post_link"]["receipts"][0]["embed"], "app.bsky.embed.external")
         self.assertFalse(value["email_confirmed"])
-        self.assertEqual(value["missing"], ["thread_split", "unlike", "repost", "unrepost"])
+        self.assertEqual(value["missing"], [row["id"] for row in value["capabilities"] if row["live"] == "none"])
+        self.assertIn("unfollow", value["missing"])
+        self.assertNotIn("follow", value["missing"])
         # The witness never carries the session: its DID-document read rode without a bearer.
         docs = [auth for ns, auth in self.remote.auth if ns.startswith("did:")]
         self.assertTrue(docs and not any(docs))
@@ -1302,6 +1305,102 @@ class Acceptance(Doors):
         _, rows = self.matrix()
         self.assertEqual(rows["post_video"]["live"], "verified")
 
+    def test_the_missing_list_names_every_row_standing_none(self):
+        value, rows = self.matrix()
+        self.assertEqual(value["missing"], [row["id"] for row in value["capabilities"] if row["live"] == "none"])
+        self.assertIn("unfollow", value["missing"])
+        self.assertIn("profile", value["missing"])
+        self.client.attempt_intent("follow:" + OTHER, "follow", {"target": OTHER}, "A shared interest")
+        value, rows = self.matrix()
+        self.assertEqual((rows["follow"]["live"], rows["unfollow"]["live"]), ("verified", "none"))
+        self.assertIn("unfollow", value["missing"])
+        self.assertNotIn("follow", value["missing"])
+        self.assertEqual(value["missing"], [row["id"] for row in value["capabilities"] if row["live"] == "none"])
+
+    def test_a_stale_or_absent_profile_snapshot_cannot_earn_the_profile_row_until_profile_save_refreshes_it(self):
+        self.client.update_profile({"displayName": "The reader", "description": "Books.", "pronouns": "she/her",
+                                    "avatar": str(self.image), "banner": str(self.image)})
+        _, rows = self.matrix()
+        self.assertEqual(rows["profile"]["live"], "verified", rows["profile"]["evidence"])
+        self.assertEqual((rows["profile"]["snapshot"], rows["profile"]["public_complete"]), ("current", True))
+        uri = f"at://{DID}/app.bsky.actor.profile/self"
+        saved = b.private_json(self.store.path / "profile-record.json")
+        self.assertIn(saved["cid"], rows["profile"]["evidence"])
+        # The record changes behind the snapshot: a self-label added by another hand.
+        record = self.remote.records[uri]
+        record["value"] = {**record["value"], "labels": {"$type": "com.atproto.label.defs#selfLabels", "values": [{"val": "bot"}]}}
+        record["cid"] = "cid-labelled"
+        _, rows = self.matrix()
+        self.assertEqual(rows["profile"]["live"], "none", rows["profile"]["evidence"])
+        self.assertEqual((rows["profile"]["snapshot"], rows["profile"]["public_complete"]), ("stale", True))
+        for word in (saved["cid"], "cid-labelled", "profile-save"):
+            self.assertIn(word, rows["profile"]["evidence"])
+        # The refresh is a read-only authenticated read: nothing is written to the service, and
+        # the superseded copy is kept beside the new one.
+        puts, deletes = self.count("com.atproto.repo.putRecord"), self.count("com.atproto.repo.deleteRecord")
+        result = self.cli("profile-save")
+        self.assertEqual((self.count("com.atproto.repo.putRecord"), self.count("com.atproto.repo.deleteRecord")), (puts, deletes))
+        self.assertEqual((result["cid"], result["changed"], result["superseded"]), ("cid-labelled", True, saved["cid"]))
+        fresh = b.private_json(self.store.path / "profile-record.json")
+        self.assertEqual(fresh["cid"], "cid-labelled")
+        self.assertEqual(fresh["value"]["labels"]["values"], [{"val": "bot"}])
+        kept_path = self.store.path / ("profile-record-superseded-" + saved["cid"] + ".json")
+        self.assertEqual(b.private_json(kept_path), saved)
+        for path in (kept_path, self.store.path / "profile-record.json", self.store.path / "profile-public.json"):
+            self.assertEqual(path.stat().st_mode & 0o777, 0o600, path)
+        _, rows = self.matrix()
+        self.assertEqual((rows["profile"]["live"], rows["profile"]["snapshot"]), ("verified", "current"))
+        # An absent snapshot earns nothing either; saving it anew supersedes nothing.
+        (self.store.path / "profile-record.json").unlink()
+        _, rows = self.matrix()
+        self.assertEqual((rows["profile"]["live"], rows["profile"]["snapshot"]), ("none", "absent"))
+        self.assertIn("saved CID none", rows["profile"]["evidence"])
+        result = self.cli("profile-save")
+        self.assertEqual((result["changed"], result["superseded"]), (True, None))
+        self.assertEqual(self.cli("profile-save")["changed"], False)
+        _, rows = self.matrix()
+        self.assertEqual(rows["profile"]["live"], "verified")
+        # An unconfigured store cannot save a snapshot of nothing.
+        with self.assertRaises(b.Error):
+            with patch.dict(self.settings, {"did": ""}):
+                self.cli("profile-save")
+
+    def test_the_follow_step_follows_only_a_new_target_and_removes_only_its_own_follow(self):
+        kept = self.client.attempt_intent("follow:" + OTHER, "follow", {"target": OTHER}, "A shared interest")
+        before = dict(self.remote.records)
+        puts = self.count("com.atproto.repo.putRecord")
+        # Refused before any write: herself (by DID and by handle), and an account she already follows.
+        for target, words in ((DID, "her own account"), ("fixture.invalid", "her own account"), (OTHER, "already follows")):
+            with self.attended(), self.assertRaises(b.Error) as caught:
+                b.acceptance_perform(self.store, self.settings, self.client, self.witness, "the user asked", follow=target)
+            self.assertIn(words, str(caught.exception))
+        self.assertEqual(self.count("com.atproto.repo.putRecord"), puts)
+        self.assertEqual(self.count("com.atproto.repo.deleteRecord"), 0)
+        self.assertEqual(dict(self.remote.records), before)
+        self.assertFalse(list(self.store.path.glob("verification/acceptance-*")))
+        # A target she does not follow: followed, read back, unfollowed, read back absent — and
+        # the follow she already had is still there.
+        with self.attended():
+            run = b.acceptance_perform(self.store, self.settings, self.client, self.witness, "the user asked", follow=THIRD)
+        self.assertEqual(run["verdict"], "passed", run)
+        self.assertEqual(run["follow"], THIRD)
+        self.assertEqual([s["step"] for s in run["steps"]],
+                         ["image post", "link card", "like", "repost", "follow",
+                          "remove follow", "remove repost", "remove like", "remove post", "remove post"])
+        self.assertEqual(run["steps"][4]["subject"], THIRD)
+        self.assertEqual(set(run["before"]["follow"]), {kept["uri"]})
+        self.assertTrue(run["unchanged"])
+        self.assertEqual(set(self.remote.records), set(before))
+        self.assertEqual(self.remote.records[kept["uri"]]["cid"], kept["cid"])
+        self.assertEqual(self.count("com.atproto.repo.deleteRecord"), 5)
+        value, rows = self.matrix()
+        self.assertEqual(rows["unfollow"]["live"], "verified", rows["unfollow"]["evidence"])
+        self.assertEqual(rows["unfollow"]["receipts"][0]["witness"], "absent")
+        self.assertEqual(rows["follow"]["live"], "verified")
+        self.assertEqual([r["uri"] for r in rows["follow"]["receipts"]], [kept["uri"]])
+        self.assertNotIn("unfollow", value["missing"])
+        self.assertEqual(rows["no_spam"]["live"], "verified")
+
     def test_the_cli_computes_the_matrix_and_performs_only_under_authority(self):
         value = self.cli("acceptance")
         self.assertIn("capabilities", value)
@@ -1309,12 +1408,15 @@ class Acceptance(Doors):
         with self.attended(), self.assertRaises(b.Error):
             self.cli("acceptance", "--perform")
         with self.attended():
-            value = self.cli("acceptance", "--perform", "--authority", "the user asked", "--link", "https://fixture.invalid/page")
+            value = self.cli("acceptance", "--perform", "--authority", "the user asked", "--link", "https://fixture.invalid/page",
+                             "--follow", THIRD)
         self.assertEqual(value["last_run"]["verdict"], "passed", value["last_run"])
         rows = {row["id"]: row for row in value["capabilities"]}
         self.assertEqual(rows["post_images"]["live"], "verified")
         self.assertEqual(rows["post_link"]["live"], "verified")
+        self.assertEqual(rows["unfollow"]["live"], "verified")
         self.assertEqual(self.remote.records, {})
+        self.assertNotIn("unfollow", value["missing"])
 
 
 if __name__ == "__main__":

@@ -1349,6 +1349,29 @@ class Client:
         atomic(self.store.path / "profile-public.json", self.profile())
         return {"uri": result["uri"], "cid": result["cid"], "verified": True}
 
+    def profile_save(self):
+        """Clause 11: refresh the private snapshot of the profile record from a read-only
+        authenticated read — getRecord and getProfile, nothing written to the service — and
+        keep the superseded copy beside the new one."""
+        uri = f"at://{self.did}/app.bsky.actor.profile/self"
+        record = self.record(uri)
+        if not isinstance(record, dict) or not record.get("cid") or not isinstance(record.get("value"), dict):
+            raise Error("the profile record is unreadable")
+        path = self.store.path / "profile-record.json"
+        try:
+            old = private_json(path)
+        except (OSError, ValueError, Error):
+            old = None
+        if not isinstance(old, dict):
+            old = None
+        superseded = old["cid"] if old and old.get("cid") and old["cid"] != record["cid"] else None
+        if superseded:
+            atomic(self.store.path / ("profile-record-superseded-" + superseded + ".json"), old)
+        atomic(path, record)
+        atomic(self.store.path / "profile-public.json", self.profile())
+        return {"uri": uri, "cid": record["cid"], "saved": True, "superseded": superseded,
+                "changed": old is None or old.get("cid") != record["cid"]}
+
     def update_handle(self, handle):
         if not re.fullmatch(r"[a-z0-9](?:[a-z0-9.-]*[a-z0-9])?\.[a-z]{2,}", handle):
             raise Error("invalid domain handle")
@@ -1697,14 +1720,19 @@ CAPABILITIES = (
 # undone and the witness has seen them absent.
 RUN_STEPS = {"post_images": "image post", "post_link": "link card", "like": "like", "repost": "repost",
              "unlike": "remove like", "unrepost": "remove repost", "undo_post": "remove post",
-             "thread_split": "two-part thread", "post_video": "video post"}
-PERFORM_EARNS = ("post_images", "post_link", "like", "repost", "unlike", "unrepost", "undo_post")
+             "thread_split": "two-part thread", "post_video": "video post",
+             "follow": "follow", "unfollow": "remove follow"}
+PERFORM_EARNS = ("post_images", "post_link", "like", "repost", "unlike", "unrepost", "undo_post", "follow", "unfollow")
 PROCEDURE = ("The rows standing `none` that a live write would earn are earned only by the attended "
              "user: `crab bluesky acceptance --perform --authority '<their own words>'` (clause 22a) "
              "posts an image with alt text and a link card to this account alone, likes and reposts "
              "the image post, removes both, undoes every post it made, reads each step back through "
              "the witness and proves the repository unchanged; `--thread` adds a two-part thread; "
-             "`--video <mp4>` adds a video once the email is confirmed. Never a builder, never a wake.")
+             "`--video <mp4>` adds a video once the email is confirmed; `--follow <actor>` follows an "
+             "account she does not already follow (never herself, never an existing relationship, "
+             "refused before any write) and removes that one follow, earning the unfollow row. "
+             "Never a builder, never a wake. A profile row standing `none` for a stale snapshot is "
+             "refreshed read-only by `crab bluesky profile-save`.")
 
 
 class Witness:
@@ -1743,7 +1771,7 @@ class Witness:
             raise
         return data if isinstance(data, dict) and data.get("cid") else None
 
-    def records(self, repo, collection):
+    def _list(self, repo, collection, pick):
         found, cursor = {}, None
         for _ in range(100):
             params = {"repo": repo, "collection": collection, "limit": 100}
@@ -1753,11 +1781,21 @@ class Witness:
             rows = data.get("records", []) if isinstance(data, dict) else []
             for r in rows:
                 if isinstance(r, dict) and r.get("uri"):
-                    found[r["uri"]] = r.get("cid")
+                    found[r["uri"]] = pick(r)
             cursor = data.get("cursor") if isinstance(data, dict) else None
             if not cursor or not rows:
                 break
         return found
+
+    def records(self, repo, collection):
+        """Every record of the collection: {uri: cid}."""
+        return self._list(repo, collection, lambda r: r.get("cid"))
+
+    def follows(self, repo):
+        """Every follow record of the repository with the account it names: {uri: subject DID}.
+        Clause 22a reads this before the follow step so an existing relationship is never touched."""
+        return self._list(repo, COLLECTIONS["follow"],
+                          lambda r: (r.get("value") or {}).get("subject") if isinstance(r.get("value"), dict) else None)
 
     def profile(self, actor):
         data, _ = self.http.call(self.appview, "app.bsky.actor.getProfile", {"actor": actor})
@@ -1938,15 +1976,25 @@ def acceptance_matrix(store, settings, client=None, witness=None):
             put("profile", "none", "the witness could not read the profile: " + err)
         else:
             missing = [k for k in ("displayName", "description", "pronouns", "avatar", "banner") if not public.get(k)]
-            record, _ = witnessed(lambda: witness.record(f"at://{did}/app.bsky.actor.profile/self"))
+            record, rerr = witnessed(lambda: witness.record(f"at://{did}/app.bsky.actor.profile/self"))
             saved = read(store.path / "profile-record.json")
-            same = bool(record and saved and record.get("cid") == saved.get("cid"))
+            saved_cid = saved.get("cid") if isinstance(saved, dict) else None
+            current_cid = record.get("cid") if isinstance(record, dict) else None
+            snapshot = "current" if current_cid and saved_cid == current_cid else ("absent" if not saved_cid else "stale")
+            complete = "the witness reads name, biography, pronouns, avatar and banner"
             if missing:
-                put("profile", "none", "the public profile lacks " + ", ".join(missing))
+                put("profile", "none", "the public profile lacks " + ", ".join(missing), public_complete=False, snapshot=snapshot)
+            elif not current_cid:
+                put("profile", "none", complete + ", but the profile record could not be read" + ("; " + rerr if rerr else ""),
+                    public_complete=True, snapshot=snapshot)
+            elif snapshot != "current":
+                # Clause 22: a complete public profile with a stale local copy never earns the word.
+                put("profile", "none", complete + ", but the saved snapshot is %s (saved CID %s, current CID %s); "
+                    "refresh it read-only with `crab bluesky profile-save`" % (snapshot, saved_cid or "none", current_cid),
+                    public_complete=True, snapshot=snapshot)
             else:
-                put("profile", "verified", "the witness reads name, biography, pronouns, avatar and banner"
-                    + ("; the profile record's CID matches the saved snapshot" if same else
-                       "; no saved snapshot matches the profile record's CID"))
+                put("profile", "verified", complete + "; the saved snapshot carries the profile record's CID " + current_cid,
+                    public_complete=True, snapshot="current")
         desired = settings.get("desired_handle")
         if not desired:
             put("handle", "none", "no custom handle configured")
@@ -2130,7 +2178,8 @@ def acceptance_matrix(store, settings, client=None, witness=None):
     capabilities = [{"id": cid, "title": title, "fixture": list(fixture), **rows.get(cid, {"live": "none", "evidence": "not evaluated"})}
                     for cid, title, fixture in CAPABILITIES]
     tally = {state: sum(c["live"] == state for c in capabilities) for state in LIVE_STATES}
-    missing = [c["id"] for c in capabilities if c["live"] == "none" and c["id"] in PERFORM_EARNS + ("thread_split", "post_video")]
+    # Clause 22: every row standing none, whichever road earns it — never a filtered subset.
+    missing = [c["id"] for c in capabilities if c["live"] == "none"]
     return {"generated": now(), "configured": configured, "did": did,
             "witness": {"plc_directory": witness.plc, "appview": witness.appview} if witness else None,
             "email_confirmed": bool(session.get("emailConfirmed")) if session else None,
@@ -2163,7 +2212,7 @@ def attended_sitting():
         raise Error("the live acceptance procedure is unavailable to detached builders (clause 22a)")
 
 
-def acceptance_perform(store, settings, client, witness, authority, link=None, video=None, thread=False):
+def acceptance_perform(store, settings, client, witness, authority, link=None, video=None, thread=False, follow=None):
     """Clause 22a: the one piece of test traffic the connector generates. Her own account, her
     own records, every step read back through the witness, everything removed before it
     returns, the repository proven unchanged, the whole run kept."""
@@ -2171,14 +2220,28 @@ def acceptance_perform(store, settings, client, witness, authority, link=None, v
     if not authority or not authority.strip():
         raise Error("the live acceptance procedure needs --authority: the attended user's own words")
     did = client.did
+    follow_did = None
+    if follow:
+        # The one step that touches another account, gated before the first write: never
+        # herself, never an account she already follows — an existing relationship is never
+        # touched, removed or recreated, so the unfollow removes only what this run makes.
+        follow_did = client.resolve(follow)
+        if not isinstance(follow_did, str) or not DID_RE.fullmatch(follow_did):
+            raise Error("the follow target did not resolve to a DID")
+        if follow_did == did:
+            raise Error("the follow step is refused: the target is her own account")
+        existing = [u for u, subject in witness.follows(did).items() if subject == follow_did]
+        if existing:
+            raise Error("the follow step is refused: this account already follows %s (%s); an existing "
+                        "relationship is never touched" % (follow_did, existing[0]))
     # The stamp names the evidence directory and every operation id of the run: unique per
     # run, so two runs in one second never share an intent (a delivered intent answers from
     # its row and would skip the write).
     stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + secrets.token_hex(3)
     evidence = private_dir(private_dir(store.path / "verification") / ("acceptance-" + stamp))
-    collections = {k: COLLECTIONS[k] for k in ("post", "like", "repost")}
+    collections = {k: COLLECTIONS[k] for k in ("post", "like", "repost", "follow")}
     run = {"stamp": stamp, "started": now(), "authority": authority.strip(), "did": did,
-           "steps": [], "left": [], "verdict": "failed"}
+           "follow": follow_did, "steps": [], "left": [], "verdict": "failed"}
     run["before"] = {k: witness.records(did, c) for k, c in collections.items()}
     created = []  # (kind, receipt id(s), uri(s)) in creation order; removed in reverse
 
@@ -2247,6 +2310,22 @@ def acceptance_perform(store, settings, client, witness, authority, link=None, v
             return {"uri": result["uri"], "cid": result["cid"], "subject": target, "appview_count": view.get(kind + "Count")}
         return go
 
+    def follow_step(subject):
+        def go():
+            result = deliver("follow", "follow:" + subject + ":acceptance-" + stamp, {"target": subject})
+            if result.get("already_present"):
+                # The gate above read the repository; the AppView disagreed. Nothing of this
+                # run's is on the shelf, so nothing is removed: the relationship stays.
+                raise Error("the follow was already present; the run made nothing and removes nothing")
+            created.append(("follow", [result["id"]], [result["uri"]]))
+            record = witness.record(result["uri"])
+            if not record or record.get("cid") != result["cid"]:
+                raise Error("the witness did not find the follow as the receipt recorded it")
+            if record.get("value", {}).get("subject") != subject:
+                raise Error("the follow names a different subject")
+            return {"uri": result["uri"], "cid": result["cid"], "subject": subject}
+        return go
+
     def expect_image(found):
         embed = found[0].get("value", {}).get("embed", {})
         images = embed.get("images") or embed.get("items") or []
@@ -2288,6 +2367,8 @@ def acceptance_perform(store, settings, client, witness, authority, link=None, v
     target = created[0][2][0] if created else None
     ok = ok and step("like", react_step("like", target))
     ok = ok and step("repost", react_step("repost", target))
+    if follow_did:
+        ok = ok and step("follow", follow_step(follow_did))
     if thread:
         ok = ok and step("two-part thread", post_step("thread", {"text": ACCEPTANCE_TEXT["thread"].strip(), "langs": ["en"]},
                                                      "acceptance-thread-" + stamp, expect_thread))
@@ -2308,11 +2389,14 @@ def acceptance_perform(store, settings, client, witness, authority, link=None, v
                 for aid in reversed(ids):
                     client.undo(aid)
             else:
-                # The receipt's request is the subject the reaction named; the removal is the
-                # intent of the opposite kind on that same post (clause 4a ids).
+                # The receipt's request is the subject the reaction named — a post for a like or
+                # repost, a DID for a follow; the removal is the intent of the opposite kind on
+                # that same subject (clause 4a ids), stamped for a follow so no earlier intent
+                # on the same account can answer in its place.
                 subject = json.loads(store.db.execute("SELECT request FROM actions WHERE id=?", (ids[0],)).fetchone()["request"])
-                iid = "un" + kind + ":" + subject["uri"]
-                result = client.attempt_intent(iid, "un" + kind, {"target": subject["uri"]}, ACCEPTANCE_WHY)
+                target = subject if isinstance(subject, str) else subject["uri"]
+                iid = "un" + kind + ":" + target + (":acceptance-" + stamp if kind == "follow" else "")
+                result = client.attempt_intent(iid, "un" + kind, {"target": target}, ACCEPTANCE_WHY)
                 if not settled(iid):
                     store.intent_update(iid, "cancelled", attempted=False)
                     raise Error("the removal was queued (%s); the intent is cancelled" % (result.get("error") or "rate limit"))
@@ -2341,6 +2425,7 @@ def main(argv=None):
     p = sub.add_parser("inbox"); p.add_argument("--peek", action="store_true")
     p = sub.add_parser("profile"); p.add_argument("actor", nargs="?")
     p = sub.add_parser("profile-set"); p.add_argument("--file", required=True)
+    sub.add_parser("profile-save", help="refresh the private profile snapshot from a read-only read (clause 11)")
     p = sub.add_parser("handle-set"); p.add_argument("handle")
     for cmd in ("followers", "following"):
         p = sub.add_parser(cmd); p.add_argument("--actor")
@@ -2365,6 +2450,8 @@ def main(argv=None):
     p.add_argument("--link", default="https://atproto.com/", help="the URL the link card names")
     p.add_argument("--video", default="", help="an MP4 for the video row, once the email is confirmed")
     p.add_argument("--thread", action="store_true", help="also post and remove a two-part thread")
+    p.add_argument("--follow", default="", help="also follow this DID or handle and remove that follow: "
+                   "never herself, never an account already followed")
     args = parser.parse_args(argv)
     if args.cmd == "summary":
         print(offline_summary(home()))
@@ -2413,6 +2500,10 @@ def main(argv=None):
                 value = envelope(client.profile(args.actor), settings)
             elif args.cmd == "profile-set":
                 value = client.update_profile(json.loads(Path(args.file).read_text()))
+            elif args.cmd == "profile-save":
+                if not settings.get("did"):
+                    raise Error("configure the verified account DID before saving the profile snapshot")
+                value = client.profile_save()
             elif args.cmd == "handle-set":
                 value = client.update_handle(args.handle)
             elif args.cmd in ("followers", "following"):
@@ -2455,7 +2546,7 @@ def main(argv=None):
                     if witness is None:
                         raise Error("configure the verified account DID before performing the live acceptance")
                     run = acceptance_perform(store, settings, client, witness, args.authority,
-                                             args.link, args.video or None, args.thread)
+                                             args.link, args.video or None, args.thread, args.follow or None)
                 value = acceptance_matrix(store, settings, client, witness)
                 if run is not None:
                     value["last_run"] = run
