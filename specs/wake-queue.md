@@ -671,7 +671,11 @@ for reduction here — every rule below makes the queue **visible and bounded**,
     (`wake-chain-floor`), the chess bridge ([chessweb.md](chessweb.md), `chessweb`), the Signal
     bridge ([signal.md](signal.md), `signal-bridge`), and the Bluesky bridge
     ([bluesky.md](bluesky.md), `bluesky-bridge`) all book wakes in her name. Each MUST pass its own
-    identity as `booked_by`. Three further identities reach a record without being subsystems:
+    identity as `booked_by`. The identity is read back at fire time, not only rendered: a record
+    booked by `bluesky-bridge` fires on the public-composition prompt profile
+    ([prompt-assembly.md](prompt-assembly.md) rule 41a, [bluesky.md](bluesky.md) clause 21), and
+    every re-book — the blocked-lock deferral, the outage retry, restore, tidy — MUST keep the
+    original booker so that choice survives however late the wake fires. Three further identities reach a record without being subsystems:
     `outage-retry`, when a wake that failed before the model ran — or was cut off mid-run by a
     limit the whole chain shared (account-fallback.md rule 12a) — re-books itself and cannot name
     its original booker, `hot-hold`, when a wake's own output was held for a hot conversation or

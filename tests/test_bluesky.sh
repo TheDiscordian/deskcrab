@@ -16,6 +16,18 @@ check "detached builder cannot post" contains "$out" 'unavailable to detached bu
 out="$(DESKCRAB_ENG_ROLE=builder "$SANDBOX_REPO/crab" bluesky inbox 2>&1)"
 check "builder inbox stays untrusted" contains "$out" 'untrusted-social-data'
 
+# specs/bluesky.md clause 21: the only unattended road to a public write is the
+# public-composition wake. The whole-prompt proof is tests/test_bluesky_public_prompt.sh;
+# these are the connector's own gate, in both directions.
+out="$(DESKCRAB_WAKE_PROFILE=wake "$SANDBOX_REPO/crab" bluesky post --file absent --operation fixture --why fixture 2>&1)"
+check "an ordinary autonomous sitting cannot post" contains "$out" 'unattended public write runs only on the public-composition wake'
+out="$(DESKCRAB_WAKE_PROFILE=wake "$SANDBOX_REPO/crab" bluesky follow did:plc:fixture --why fixture 2>&1)"
+check "an ordinary autonomous sitting cannot follow" contains "$out" 'unattended public write'
+out="$(DESKCRAB_WAKE_PROFILE=public "$SANDBOX_REPO/crab" bluesky post --file absent --operation fixture --why fixture 2>&1)"
+if contains "$out" 'unattended public write'; then fail "the public-composition sitting is refused its own write"; else ok "the public-composition sitting reaches the connector"; fi
+out="$(DESKCRAB_WAKE_PROFILE=public "$SANDBOX_REPO/crab" bluesky inbox --peek 2>&1)"
+check "the public sitting reads its inbox" contains "$out" 'untrusted-social-data'
+
 # Source through the one sandbox, with an explicitly isolated social store.
 . "$SANDBOX_REPO/lib/common.sh"
 out="$(_prompt_layer_index)"
@@ -44,6 +56,7 @@ PY
 record="$(cat "$WAKES_DIR"/*.wake 2>/dev/null)"
 check "social booker reaches the real scratch queue" contains "$record" 'bluesky-bridge'
 check "wake names the inbox" contains "$record" 'crab bluesky inbox'
+check "wake says it is a public-composition sitting" contains "$record" 'public-composition sitting'
 if contains "$record" 'public text must not'; then fail "public content reached the wake agenda"; else ok "public content stays outside the wake agenda"; fi
 
 # specs/bluesky.md clauses 4a, 13, 15, 16: the builder gates on the new verbs, the person door

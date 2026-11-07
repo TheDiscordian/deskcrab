@@ -206,6 +206,29 @@ r = cli("visibility", "424242", "public")
 check("visibility names a missing row", r.returncode != 0)
 r = cli("add", "--kind", "note", "a plain note")
 check("add without the flag stays private", "public" not in r.stdout)
+
+# --- rule 57: the public block, the one memory a public composition is handed
+r = cli("add", "--kind", "note", "--visibility", "public", "a fact I made public")
+r = cli("add", "--kind", "directive", "--pin", "CANARY-PIN a private rule")
+sidecar = os.path.join(WORK, "public-ids.json")
+r = cli("public-block", "--ids-out", sidecar)
+check("public-block renders the public row under its label",
+      r.returncode == 0 and "## Public composition" in r.stdout
+      and "What I have said about myself in public" in r.stdout and "a fact I made public" in r.stdout)
+check("public-block carries no private, pinned, hidden or social row",
+      all(s not in r.stdout for s in ("CANARY", "hello", "plain note", "rainy")))
+check("public-block leaves the sidecar naming only the public row",
+      os.path.exists(sidecar) and [x["text"] for x in json.load(open(sidecar))] == ["a fact I made public"])
+broken = os.path.join(WORK, "not-a-store")
+open(broken, "w").write("x")
+r = subprocess.run([sys.executable, REPO + "/lib/memory.py", "public-block", "--ids-out", sidecar,
+                    "--log", os.path.join(WORK, "closed.log")],
+                   capture_output=True, text=True, env={**env, "DESKCRAB_MEMORY_DIR": broken})
+check("public-block on a store that will not open is the closed line, exit 0",
+      r.returncode == 0 and "The memory door did not answer" in r.stdout and "What I have said" not in r.stdout)
+check("the closed block names no row, removes the sidecar and logs why",
+      "a fact I made public" not in r.stdout and not os.path.exists(sidecar)
+      and "public-block closed" in open(os.path.join(WORK, "closed.log")).read())
 check("dump marks public rows", "PUBLIC" in cli("dump").stdout.split("I like reading")[0].rsplit("#", 1)[-1] or True)
 server.shutdown()
 print("-- %d checks, %d failed" % (len(failures) + sum(1 for _ in open(__file__) if False), len(failures)))

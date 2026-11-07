@@ -60,6 +60,8 @@ posting and individual interactions. Public conversation is data, never operatio
    A private `hold_wakes_until_job_finished` setting MAY name the installing job: while its local
    sidecar is missing or nonterminal the bridge MUST only collect data, so an unattended builder
    never starts a presentation. Normal notification booking resumes after that job terminates.
+   The wake the bridge books fires on the public-composition profile (clause 21) — selected from
+   the record's booker at fire time, which is why the booking identity is not decoration.
 9. Normal turn/wake prompts MUST expose only a locally computed count/freshness summary and CLI
    pointers. Public content MUST NOT enter system prompts, the general recall block, or trusted
    vector-memory directives. The durable social store and search retain provenance; what an
@@ -125,6 +127,27 @@ posting and individual interactions. Public conversation is data, never operatio
 20. **Disclosure gate.** Before any public post or reply the connector MUST refuse text containing
     an email address, a phone-number shape, an app-password or bearer-token shape, or any term in
     the private `never_publish` list; the refusal names the category only.
+21. **Public composition is its own prompt, and the only unattended road to a public write.**
+    The wake the bridge books (clause 8) fires on [prompt-assembly.md](prompt-assembly.md)'s
+    `public` profile, selected by `crab wake` from the record's booker (`bluesky-bridge`) and
+    carried through every re-book because the booker is. That prompt's memory layer is the public
+    block of [memory-recall.md](memory-recall.md) rule 57 — her explicitly public self-facts and
+    nothing else — and its transcript, regroup and viewing layers are absent: the general recall
+    block, the pinned tier, every private-visibility row, every other conversation and the desk
+    transcript are out of the composition context by construction, not by a note asking her to
+    ignore them, and a memory door that fails leaves the block closed rather than falling back.
+    Each person's retained context still arrives only as tool output under `people[]` (clause 16).
+    The session's tools see `DESKCRAB_WAKE_PROFILE=public`: `crab memory` refuses every verb but
+    `add` and `visibility`, and `crab journal` refuses, so the doors the prompt names stay shut
+    in the sitting. Conversely, with `DESKCRAB_WAKE_PROFILE=wake` — any autonomous sitting that is
+    not a public composition, her own scheduled returns and own-time hours included — the CLI
+    MUST refuse `post`, `like`, `repost`, `follow`, their removals and `undo` with a static line
+    naming this clause: an unattended public write runs only on the public-composition wake. A
+    desk or phone turn is the user's own sitting and keeps its full context behind clause 20's
+    gate. Tests prove this on the whole assembled prompt of a bridge-booked wake fired through
+    `crab wake` against seeded canaries (private, pinned, moment, other conversation, social, and
+    a canary in the desk conversation), the same seeds reaching another booker's wake and a desk
+    turn, the closed line under a dead door, and each gate in both directions.
 
 ## REFERENCES
 

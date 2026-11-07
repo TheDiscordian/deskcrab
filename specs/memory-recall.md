@@ -560,6 +560,21 @@ life, and she re-reads that store every single turn.
     the DID through `row_matches_scope`, and all three matched.
 56. The migration follows the earlier kinds: `visibility` is added in place, and the kind check is
     widened around the data by the same rebuild that admitted `episodic`, ids and vectors untouched.
+57. **The public block is the only memory a public composition is handed.** `memory.py
+    public-block` is the L3 of the `public` profile ([prompt-assembly.md](prompt-assembly.md)
+    rule 41): a policy paragraph naming what the sitting may draw on, then "What I have said about
+    myself in public" — her own active rows of the prompt-facing kinds (`directive`, `note`,
+    `episodic`) whose `visibility` is `public`, newest first, each with its when-ness as the
+    recall block renders it, and nothing else. No similarity search, no pinned tier, no scope, no
+    hidden kind, no social row, and no row whose visibility is private — which is every row not
+    explicitly marked (rule 55). It touches no `last_seen` and leaves the rule-19 sidecar naming
+    the rows it carried, so the turn-end judge reinforces a public fact she actually used. It is
+    fail-safe like the recall block (rule 17) in one direction only: a store that cannot be
+    opened, an embedder that is down, or any error at all prints a static closed line — the memory
+    door did not answer, her public self-facts are absent this sitting, nothing private stands in
+    for them — and exits 0. Closed means closed: the degraded path carries no row, not the
+    pinned tier the recall block degrades to, because the one thing the pinned tier holds is
+    exactly what a public composition must never see.
 
 ### Isolation
 
@@ -659,9 +674,12 @@ its own label when handed to the block, and is read back by exact source equalit
 collision, a mention of the DID in another source, a private-visibility row and a row of another
 kind all stay out; the default visibility is private and the explicit mark flips it; `memory add
 --kind social` and ingest refuse the kind; a store born with the five-kind check is widened with
-its ids, vectors and rows intact. `tests/test_bluesky.sh` drives the connector half (bluesky.md
-clauses 14 to 20) through the real retention, reopen and inbox paths against the same stubbed
-embedder.
+its ids, vectors and rows intact; and rule 57's public block renders the one public row under its
+label with the private, pinned, hidden and social canaries absent, writes its sidecar, and prints
+the closed line on a store that will not open. `tests/test_bluesky.sh` drives the connector half
+(bluesky.md clauses 14 to 20) through the real retention, reopen and inbox paths against the same
+stubbed embedder, and `tests/test_bluesky_public_prompt.sh` proves the block in its place — the
+whole system prompt of a bridge-booked wake, fired through `crab wake`, against seeded canaries.
 
 `tests/test_durable_rules.sh` — rules 28/28a/28b across both write doors and the
 stored set: a clear conduct creation lands in body and index; a copied clause hidden behind a

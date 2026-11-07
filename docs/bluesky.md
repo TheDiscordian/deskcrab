@@ -82,6 +82,23 @@ twice; the outcome of every attempt is a `retention` row, and `crab bluesky stat
 pending and failed counts with the last static reason. A failed attempt is retried on the next poll
 and is never reported as retained.
 
+### The public-composition sitting
+
+The wake the bridge books fires on the `public` prompt profile (specs/prompt-assembly.md rule 41,
+specs/bluesky.md clause 21), chosen by `crab wake` from the record's booker and kept through every
+re-book. That prompt's memory layer is `crab memory public-block`: a policy paragraph and the facts
+about herself she explicitly marked public, nothing else — no general recall, no pinned tier, no
+private row, no social row. The desk transcript, the regroup block and the viewing layer are
+absent. A memory door that fails leaves a closed line in their place and never falls back.
+`crab context --profile public` prints exactly what the sitting receives.
+
+Inside that sitting the tools see `DESKCRAB_WAKE_PROFILE=public`: `crab memory` refuses every verb
+but `add` and `visibility`, and `crab journal` refuses. Outside it, in any other autonomous sitting
+(`DESKCRAB_WAKE_PROFILE=wake` — her scheduled returns and own-time hours), `post`, `like`,
+`repost`, `follow`, their removals and `undo` are refused: an unattended public write runs only on
+the public-composition wake. A desk or phone turn carries neither variable and keeps its whole
+context behind the disclosure gate below.
+
 `crab bluesky inbox`, `thread` and `person` attach, under `people`, each author's context before a
 reply is composed: identity status from the private trusted mapping only, the dated handle history,
 event counts, and the retained memories read back by exact DID equality and public visibility.

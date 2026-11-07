@@ -2712,7 +2712,7 @@ conduct_orphans() {  # <conduct drawer dir>
 # measured byte budget per layer, and the user's own words delivered as the
 # user message — never buried in the middle of the system prompt.
 #
-#   build_system_prompt [--profile turn|wake|job|classify]
+#   build_system_prompt [--profile turn|wake|public|job|classify]
 #                       [--manifest <file>] [--layers]
 #
 # The layers, always in this order; a layer a profile does not include is
@@ -2744,6 +2744,14 @@ conduct_orphans() {  # <conduct drawer dir>
 # The budget table, specs/prompt-assembly.md §11, in bytes of assembled text.
 # Any entry can be answered from the config as PROMPT_BUDGET_<layer>_<profile>
 # (PROMPT_BUDGET_L6_TURN=12000).
+# The public block's closed line (specs/memory-recall.md rule 57), word for
+# word what lib/memory.py prints when it cannot answer — carried here too for
+# the case where the memory interpreter cannot even start. The public profile
+# never degrades to the recall block or the pinned tier: this is what rides
+# instead, and it names no row.
+PUBLIC_BLOCK_CLOSED="## Public composition — what I may draw on here
+This sitting composes words that leave the house, and my long-term memory is closed to it by policy. The memory door did not answer, so even my public self-facts are absent this sitting; nothing private stands in for them. \`crab bluesky inbox\` still attaches each person's own retained public context."
+
 _prompt_budget() {  # <L1..L8|regroup> <profile>
     local k="$1" p="$2" v ovr
     ovr="PROMPT_BUDGET_${k}_${p}"
@@ -2768,13 +2776,17 @@ _prompt_budget() {  # <L1..L8|regroup> <profile>
         # the exact failure the number was raised to end. The margin is part of
         # the budget now: the whole current identity sheet fits, and the rest
         # is room for it to grow without a section coming off the end.
-        L1:turn) v=11200 ;;  L1:wake) v=11200 ;;  L1:job) v=800 ;;
+        L1:turn) v=11200 ;;  L1:wake|L1:public) v=11200 ;;  L1:job) v=800 ;;
         # State is authoritative and never cut. The live report normally sits
         # below 5 KB; the remainder absorbs ordinary queue and status motion.
-        L2:turn|L2:wake) v=5500 ;;
+        L2:turn|L2:wake|L2:public) v=5500 ;;
         # Retrieval bounds the memory block by record count and field sizes.
         # This budget holds a full live retrieval with working room.
         L3:turn|L3:wake) v=16000 ;;
+        # The public profile's L3 is the public block (prompt-assembly rule
+        # 41, memory-recall rule 57): a policy paragraph and her explicitly
+        # public self-facts, never a retrieval, so it is small by shape.
+        L3:public) v=4000 ;;
         # Split by profile since 2026-08-15, and the engineering drawer is
         # why. 8,000 (2026-08-11) was sized for a working drawer of open
         # threads beside the shelf, conduct and the catches — but the settled
@@ -2788,12 +2800,12 @@ _prompt_budget() {  # <L1..L8|regroup> <profile>
         # full the drawer, so the layer now runs well inside these numbers
         # on both profiles. (4,000 since 2026-08-09 before all this; 2,400
         # before that.)
-        L4:turn) v=12000 ;;  L4:wake) v=16000 ;;
+        L4:turn) v=12000 ;;  L4:wake|L4:public) v=16000 ;;
         # The complete drawer index is small but grows when a durable source is
         # added. It always rides whole, including on jobs.
-        L5:turn|L5:wake|L5:job) v=2000 ;;
+        L5:turn|L5:wake|L5:public|L5:job) v=2000 ;;
         L6:turn) v=8000 ;;  L6:wake) v=3000 ;;
-        L7:turn|L7:wake) v=500 ;;
+        L7:turn|L7:wake|L7:public) v=500 ;;
         # 300 in the spec's table, and 300 was the size of the frame BEFORE it
         # carried the register rule — the standing instruction that the state
         # block is how she sees and not how she speaks (specs/self-awareness.md
@@ -2805,7 +2817,9 @@ _prompt_budget() {  # <L1..L8|regroup> <profile>
         # requests, and correct without self-abasement. These are instructions
         # about the reply and so live beside the thing being answered, same as
         # the register rule.
-        L8:turn|L8:wake) v=3500 ;;  L8:job|L8:classify) v=200 ;;
+        L8:turn|L8:wake|L8:public) v=3500 ;;  L8:job|L8:classify) v=200 ;;
+        # L6, regroup and viewing stay at the zero default on the public
+        # profile: other conversations never ride a public composition.
         # 2,000 since 2026-08-09; 1,300 before, which was set without ever
         # measuring the block's own instructions — they are 1,174 bytes, so
         # 126 remained for the words being spoken, any real reply overflowed,
@@ -2836,12 +2850,6 @@ _prompt_budget() {  # <L1..L8|regroup> <profile>
         # regroup reconciliation, and prompt-assembly.md §11 carries the
         # measured size and the reasoning.
         dispute:turn) v=3200 ;;
-        # The viewing layer (rule 36e, specs/watchalong.md rule 19): the
-        # standing text measures about 1,400 bytes; the newest receipt rides
-        # up to 900 bytes of observation plus its header, the one before it
-        # 300, and the interval list a line. A busy session reads `over` and
-        # rides whole (rule 4).
-        viewing:turn|viewing:wake) v=3500 ;;
         *) v=0 ;;
     esac
     printf '%s' "$v"
@@ -3055,7 +3063,7 @@ EOF
 _prompt_layer_frame() {
     local dev; dev="$(last_origin 2>/dev/null)"
     case "$PROMPT_PROFILE" in
-        wake)
+        wake|public)
             _prompt_layer_register
             _prompt_layer_attention
             cat <<'EOF'
@@ -3110,7 +3118,7 @@ build_system_prompt() {
         esac
     done
     [ -n "$PROMPT_PROFILE" ] || PROMPT_PROFILE="$(claude_session_profile)"
-    case "$PROMPT_PROFILE" in turn|wake|job|classify) ;; *) return 1 ;; esac
+    case "$PROMPT_PROFILE" in turn|wake|public|job|classify) ;; *) return 1 ;; esac
 
     local PROMPT_BODY="" PROMPT_MANIFEST=""
     # The de-duplication ledger, rules 40/40a: which blocks this build has
@@ -3167,7 +3175,7 @@ $CUSTOM_CONTEXT"
     # that used to travel with it — checkpoints, declaring your own writes,
     # dispatching a job — moved into L1, where they belong.
     local SELF_STATE=""
-    if [ "$PROMPT_PROFILE" = turn ] || [ "$PROMPT_PROFILE" = wake ]; then
+    case "$PROMPT_PROFILE" in turn|wake|public)
         SELF_STATE="CURRENT STATE OF YOURSELF — you are one person, but more than one of you can be running at once. Right now:
 $(self_state_report --prompt)
 THE COUNTS ABOVE ARE THE ANSWER. You may not say nothing is running, or that nothing is scheduled, unless both counts read zero. If they do not, say the number. This is arithmetic, not an errand: the numbers are already in front of you, so no command is needed and nothing has to be checked — compare, then speak.
@@ -3176,7 +3184,8 @@ Wakes are booked in your name by ten hands besides you, each leaving its name on
 Name a wake by its clock time and what it is about — 'the 5:34 one, about the job that finished'. Never say a unit identifier out loud; those are digit-timestamps and belong in the display channel or nowhere. A count and a clock time are not long numbers.
 Another live session means work IS in progress even if this conversation has not touched it; a pending wake means work is scheduled and will happen without anyone asking; the 'Recently finished' entries did work in the last half hour that this conversation may never have seen; 'Since your last reply' is what changed while you were away. Speak for the whole of yourself, not just this conversation.
 This is a snapshot taken when your turn began, and it is deliberately only the near view. Anything older is one command away and NOT missing: 'crab status' has every pending wake and the last twelve hours of sessions, 'crab jobs' has finished and failed jobs, 'crab journal' has the whole day in full, and 'crab wake-cancel <unit>' (or --all) is how a wake is called off — stopping its timer alone is not a cancellation, because the booking record brings it back."
-    fi
+        ;;
+    esac
     _prompt_layer L2 "crab status" "$SELF_STATE"
 
     # ---- L3 MEMORY --------------------------------------------------------
@@ -3188,6 +3197,21 @@ This is a snapshot taken when your turn began, and it is deliberately only the n
     # never break a prompt build.
     local MEMORY_CONTEXT=""
     if [ "${MEMORY_STORE:-0}" = "1" ] && [ -x "$LIB_DIR/memory.py" ] \
+            && [ "$PROMPT_PROFILE" = public ]; then
+        # The public composition (prompt-assembly rule 41, memory-recall rule
+        # 57): the public block and NOTHING else. Never recall-block, never
+        # the pinned tier, never a private row — the words this sitting
+        # writes leave the house. The verb fails closed on its own; this is
+        # the belt under it for the interpreter that cannot even start: a
+        # nonzero exit or an empty answer is the closed line, and no branch
+        # here reaches the general store.
+        MEMORY_CONTEXT="$("$LIB_DIR/memory.py" public-block \
+            --log "${STATE_PREFIX}-memory-recall.log" \
+            --ids-out "${STATE_PREFIX}-memory-injected-$$.json" 2>/dev/null)" \
+            || MEMORY_CONTEXT=""
+        [ -n "$(printf '%s' "$MEMORY_CONTEXT" | tr -d '[:space:]')" ] \
+            || MEMORY_CONTEXT="$PUBLIC_BLOCK_CLOSED"
+    elif [ "${MEMORY_STORE:-0}" = "1" ] && [ -x "$LIB_DIR/memory.py" ] \
             && { [ "$PROMPT_PROFILE" = turn ] || [ "$PROMPT_PROFILE" = wake ]; }; then
         local MEMORY_WAKE=()
         [ "$PROMPT_PROFILE" = wake ] && MEMORY_WAKE=(--wake)
@@ -3210,7 +3234,8 @@ This is a snapshot taken when your turn began, and it is deliberately only the n
     # contents sit in every prompt becomes a dumping ground, because it is the
     # only page guaranteed to be read next time.
     local SHELVES="" CONDUCT_BLOCK="" WANTS_TITLES=""
-    if [ "$PROMPT_PROFILE" = turn ] || [ "$PROMPT_PROFILE" = wake ]; then
+    if [ "$PROMPT_PROFILE" = turn ] || [ "$PROMPT_PROFILE" = wake ] \
+            || [ "$PROMPT_PROFILE" = public ]; then
         [ -s "${WANTS_FILE:-}" ] && WANTS_TITLES="$(wants_titles "$WANTS_FILE")"
         local CONDUCT_FILE="$H/conduct/CONDUCT.md"
         if [ -s "$CONDUCT_FILE" ]; then
@@ -3248,7 +3273,7 @@ $WANTS_TITLES"
         # A desk turn gets neither; a broken or empty drawer costs both, never
         # the prompt. Every wake profile offers the shelf after its agenda, so
         # why the wake began is not the boundary for the later choice.
-        if [ "$PROMPT_PROFILE" = wake ]; then
+        if [ "$PROMPT_PROFILE" = wake ] || [ "$PROMPT_PROFILE" = public ]; then
             local LAST_WRITTEN=""
             LAST_WRITTEN="$(wants_last_written 2>/dev/null)" || LAST_WRITTEN=""
             [ -n "$LAST_WRITTEN" ] && SHELVES="$LAST_WRITTEN
@@ -3280,31 +3305,18 @@ $SHELVES}"
 
     # ---- L5 WHERE THINGS ARE ---------------------------------------------
     local INDEX=""
-    case "$PROMPT_PROFILE" in turn|wake|job) INDEX="$(_prompt_layer_index)" ;; esac
+    case "$PROMPT_PROFILE" in turn|wake|public|job) INDEX="$(_prompt_layer_index)" ;; esac
     _prompt_layer L5 "crab status" "$INDEX"
 
     # ---- L6 TRANSCRIPT ----------------------------------------------------
+    # Not on the public profile (prompt-assembly rule 41): the desk
+    # conversation is another conversation, and no public composition reads
+    # it. The viewing and regroup layers below are absent for the same reason.
     local CONVO_CONTEXT=""
     case "$PROMPT_PROFILE" in
         turn|wake) CONVO_CONTEXT="$(build_convo_context "$(_prompt_budget L6 "$PROMPT_PROFILE")")" ;;
     esac
     _prompt_layer L6 "crab journal" "$CONVO_CONTEXT"
-
-    # ---- shared viewing ---------------------------------------------------
-    # Conditional (prompt-assembly rule 36e, specs/watchalong.md rules 19-23):
-    # rendered only while a viewing session is active and unexpired, by
-    # lib/watchalong itself, so the receipts, the estimate, the lag and the
-    # coverage in the prompt are the session's files at this moment and never
-    # a paraphrase. Inactive by default: no session, no layer. A broken
-    # renderer costs the layer and never the prompt (the command's own
-    # fail-safe prints nothing and exits 0; the guard here is the belt).
-    local VIEWING=""
-    if [ "$PROMPT_PROFILE" = turn ] || [ "$PROMPT_PROFILE" = wake ]; then
-        if [ -x "$LIB_DIR/watchalong" ]; then
-            VIEWING="$(python3 "$LIB_DIR/watchalong" prompt-block 2>/dev/null)" || VIEWING=""
-        fi
-    fi
-    _prompt_layer viewing "lib/watchalong status" "$VIEWING"
 
     # ---- regroup ----------------------------------------------------------
     # ONE block, never two. There were two that said the same thing in the same
@@ -3365,7 +3377,7 @@ $SHELVES}"
 
     # ---- L7 RANKING, L8 FRAME --------------------------------------------
     local RANKING=""
-    case "$PROMPT_PROFILE" in turn|wake) RANKING="$(_prompt_layer_ranking)" ;; esac
+    case "$PROMPT_PROFILE" in turn|wake|public) RANKING="$(_prompt_layer_ranking)" ;; esac
     _prompt_layer L7 "your conduct" "$RANKING"
     _prompt_layer L8 "the layer above" "$(_prompt_layer_frame)"
 
@@ -3378,7 +3390,8 @@ $SHELVES}"
     # speaking prompt until a build assembles inside the target. The causes
     # all live outside the prompt — a budget, a conf override, a source that
     # grew — and the fix is always one of those, never a cut.
-    if [ "$PROMPT_PROFILE" = turn ] || [ "$PROMPT_PROFILE" = wake ]; then
+    if [ "$PROMPT_PROFILE" = turn ] || [ "$PROMPT_PROFILE" = wake ] \
+            || [ "$PROMPT_PROFILE" = public ]; then
         local TOTAL_BYTES TOTAL_BUDGET BIGGEST
         TOTAL_BYTES="$(printf '%s' "$PROMPT_MANIFEST" \
             | awk -F'\t' '{ n += $2 } END { print n + 0 }')"
@@ -5805,8 +5818,13 @@ claude_profile_flags() {  # <turn|wake|job|classify>
 # session_register sets it on all three interactive paths before any prompt is
 # built — so the profile is derived from it rather than tracked separately.
 claude_session_profile() {
+    # A wake's profile follows its booking (prompt-assembly rule 41a): `crab
+    # wake` sets WAKE_PROFILE from the record's booker, and only the one
+    # value `public` means anything — anything else, or nothing, is a wake.
     case "${SESSION_KIND:-}" in
-        "autonomous wake") printf 'wake' ;;
+        "autonomous wake")
+            if [ "${WAKE_PROFILE:-}" = public ]; then printf 'public'
+            else printf 'wake'; fi ;;
         *) printf 'turn' ;;
     esac
 }
@@ -7486,15 +7504,26 @@ run_claude_wake() {
         SESSION_USER_TEXT="(own time — a quiet hour, hers to choose)"
     local PROMPT_TEXT="$1"
     local SYSTEM_PROMPT
+    # Which prompt this sitting gets (prompt-assembly rule 41a): the wake
+    # profile, or the public-composition profile when the booking was the
+    # Bluesky bridge's. Exported, so the session's own tools know which
+    # sitting they are in — `crab memory` and `crab journal` close in a
+    # public one, and the connector's public writes close outside one
+    # (rule 41b, specs/bluesky.md clause 21).
+    local WAKE_PROMPT_PROFILE
+    WAKE_PROMPT_PROFILE="$(claude_session_profile)"
+    export DESKCRAB_WAKE_PROFILE="$WAKE_PROMPT_PROFILE"
     # Regroup evidence, captured HERE rather than left to build_system_prompt,
     # because this function needs to know afterwards that it asked for a
     # regrouped reply: a reply told to fold in what another session is saying
     # will overlap it heavily by design, and the nothing-new backstop below
     # must not then read that overlap as an echo and swallow the whole thing.
-    # build_system_prompt picks this up through bash's dynamic scoping.
-    local REGROUP_CONTEXT
-    REGROUP_CONTEXT="$(regroup_context)"
-    SYSTEM_PROMPT="$(build_system_prompt --profile wake)"
+    # build_system_prompt picks this up through bash's dynamic scoping. A
+    # public composition reads no live voice (rule 41): its regroup is empty
+    # here as well as in the prompt, so the backstop below judges it plainly.
+    local REGROUP_CONTEXT=""
+    [ "$WAKE_PROMPT_PROFILE" = public ] || REGROUP_CONTEXT="$(regroup_context)"
+    SYSTEM_PROMPT="$(build_system_prompt --profile "$WAKE_PROMPT_PROFILE")"
 
     # The concurrent-turn evidence — what the user just said to another session
     # of her, and that session's reply — is no longer appended here. It is the

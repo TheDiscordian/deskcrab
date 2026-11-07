@@ -1597,16 +1597,24 @@ class Store:
                 "count": total,
                 "memories": [{"id": r[0], "text": r[1], "occurred": r[2],
                               "created": r[3], "topics": r[4]} for r in rows]}
+        out["public_self"] = self.public_self(self_limit)
+        return out
+
+    def public_self(self, limit=20):
+        """Her own public self-facts (rule 55's public_self, rule 57's whole
+        block): the active rows of the prompt-facing kinds whose visibility
+        is public, newest first. The query's own shape is the boundary —
+        no pin, no similarity, no scope, no hidden kind, no social row, and
+        no row that was not explicitly marked. Touches no last_seen."""
         marks = ",".join("?" * len(RECALL_KINDS))
-        out["public_self"] = [
+        return [
             {"id": r[0], "text": r[1], "kind": r[2], "occurred": r[3],
              "created": r[4]}
             for r in self.db.execute(
                 "SELECT id, text, kind, occurred, created FROM memories"
                 f" WHERE visibility='public' AND status='active' AND kind IN ({marks})"
                 " ORDER BY id DESC LIMIT ?",
-                (*RECALL_KINDS, max(0, int(self_limit)))).fetchall()]
-        return out
+                (*RECALL_KINDS, max(0, int(limit)))).fetchall()]
 
     def add_distinct_directive(self, text, pinned=False, source="self",
                                topics="", occurred=None, about="",
@@ -2392,6 +2400,77 @@ def build_block(rows, warning="", pending_note_ids=()):
 
 def format_block(rows, warning=""):
     return build_block(rows, warning)[0]
+
+
+# --- public-block: the L3 of a public composition (rule 57) ------------------
+#
+# The one memory block a sitting whose words leave the house is handed
+# (specs/prompt-assembly.md rule 41): a policy paragraph, then her public
+# self-facts, and nothing else. The closed line is what the degraded path
+# prints INSTEAD of a block — never the pinned tier the recall block degrades
+# to, because the pinned tier holds exactly what a public composition must
+# never see. lib/common.sh carries the same closed text for the case where
+# this interpreter cannot even start; the two must say the same thing.
+PUBLIC_BLOCK_HEADER = "## Public composition — what I may draw on here"
+PUBLIC_BLOCK_POLICY = (
+    "This sitting composes words that leave the house. My long-term memory is "
+    "closed to it by policy: no directive, note, moment, pinned rule or other "
+    "conversation is in this prompt, and none may be fetched for a public "
+    "reply — `crab memory` and `crab journal` refuse in this sitting "
+    "(specs/prompt-assembly.md rule 41). What I have is below: the facts about "
+    "myself I explicitly marked public, and each person's own retained public "
+    "context, which `crab bluesky inbox` attaches under people[].")
+PUBLIC_BLOCK_LABEL = ("What I have said about myself in public (marked public "
+                      "by me — 'crab memory visibility <id> public'):")
+PUBLIC_BLOCK_CLOSED = (
+    PUBLIC_BLOCK_HEADER + "\n"
+    "This sitting composes words that leave the house, and my long-term memory "
+    "is closed to it by policy. The memory door did not answer, so even my "
+    "public self-facts are absent this sitting; nothing private stands in for "
+    "them. `crab bluesky inbox` still attaches each person's own retained "
+    "public context.")
+
+
+def build_public_block(rows, now=None):
+    """The public block, whole, from Store.public_self's rows. Every row
+    renders with its when-ness exactly as the recall block renders it."""
+    now = now or datetime.now().astimezone()
+    out = [PUBLIC_BLOCK_HEADER, PUBLIC_BLOCK_POLICY, "", PUBLIC_BLOCK_LABEL]
+    if not rows:
+        out.append("- (nothing marked public yet)")
+    for r in rows:
+        stamp = relative_when(r.get("occurred"), now) if r.get("occurred") else ""
+        if not stamp:
+            rel = relative_when(r.get("created"), now)
+            stamp = f"recorded {rel}" if rel else ""
+        out.append(f"- {r['text']} ({stamp})" if stamp else f"- {r['text']}")
+    return "\n".join(out)
+
+
+def cmd_public_block(_store, args):
+    """Rule 57. Opens its own store so that a store that will not open is
+    the closed line and exit 0, like every other failure here: a public
+    composition never loses its prompt to a broken memory, and never gains a
+    private row from one."""
+    try:
+        store = Store()
+        rows = store.public_self(args.limit)
+        block = build_public_block(rows)
+        write_ids_out(args.ids_out,
+                      [(r["id"], r["text"], r["kind"]) for r in rows])
+    except Exception as exc:  # noqa: BLE001 — closed means closed, whatever broke
+        try:
+            if args.log:
+                with open(args.log, "a") as f:
+                    f.write(f"{now_iso()} public-block closed: "
+                            f"{type(exc).__name__}: {exc}\n")
+        except OSError:
+            pass
+        write_ids_out(args.ids_out, [])
+        print(PUBLIC_BLOCK_CLOSED)
+        return 0
+    print(block)
+    return 0
 
 
 def write_ids_out(path, rows):
@@ -4733,6 +4812,17 @@ def main():
                         "record's last_seen untouched (sleep's review)")
     p.set_defaults(fn=cmd_recall_block)
 
+    p = sub.add_parser("public-block",
+                       help="the memory layer of a public composition "
+                            "(rule 57): the policy paragraph and her public "
+                            "self-facts, nothing else; fail-closed")
+    p.add_argument("--limit", type=int, default=20)
+    p.add_argument("--ids-out", default="",
+                   help="the rule-19 sidecar: which public rows rode")
+    p.add_argument("--log", default="",
+                   help="where a closed block records why")
+    p.set_defaults(fn=cmd_public_block)
+
     p = sub.add_parser("judge-turn",
                        help="turn-end judge: reinforce only the injected "
                             "records that genuinely influenced the reply")
@@ -4750,6 +4840,10 @@ def main():
     p.set_defaults(fn=cmd_judge_turn)
 
     args = ap.parse_args()
+    if args.cmd == "public-block":
+        # Fail-closed on its own: a store that will not open is the closed
+        # line, not a traceback the assembler has to interpret.
+        sys.exit(cmd_public_block(None, args))
     store = Store()
     sys.exit(args.fn(store, args))
 

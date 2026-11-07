@@ -3,17 +3,18 @@
 ## PURPOSE
 
 This spec encodes the target design for the prompt, not the current one. It defines a single
-assembly function with four per-path profiles, a fixed layer order that puts the user's latest
+assembly function with five per-path profiles, a fixed layer order that puts the user's latest
 message last and names it as the subject of the turn, a byte budget for every layer, a strict
 separation between her context and the desktop coding agent's, and an index block that makes every
 drawer she owns openable. Its acceptance criteria are the seventeen intent cases at the end.
 
 ## CONTRACT
 
-### One assembler, four profiles
+### One assembler, five profiles
 
 1. There MUST be exactly one prompt assembler, and it MUST take a profile:
-   `--profile turn|wake|job|classify`. No caller may assemble a prompt any other way.
+   `--profile turn|wake|public|job|classify`. No caller may assemble a prompt any other way.
+   `public` is the public-composition wake of rule 41 — a wake whose words leave the house.
 2. Every layer MUST be selectable per profile. A profile is a list of layers with a byte budget for
    each, not a post-hoc trim of one shape.
 3. The assembler MUST emit the layers in the order below, always, for every profile. A layer a
@@ -55,14 +56,13 @@ flowchart TD
   L4["L4 SHELVES<br/>wants titles, conduct binding test, conduct titles, recent claudism catches"]
   L5["L5 WHERE THINGS ARE<br/>path index"]
   L6["L6 TRANSCRIPT<br/>summary + live conversation"]
-  VIEW["conditional SHARED VIEWING<br/>a viewing session is active — what she has actually seen, specs/watchalong.md"]
   INT["conditional INTERRUPT<br/>he spoke over a turn — the cut context, turn-pipeline rule 15f"]
   JOB["conditional JOB REFERENCE<br/>he named a builder or job — its record, jobs.md rule 46"]
   DSP["conditional DISPUTE<br/>he is pushing back — specs/dispute-turn.md"]
   L7["L7 RANKING RULE<br/>how to weigh what he said"]
   L8["L8 TURN FRAME<br/>names the message below as the subject"]
   MSG["THE MESSAGE<br/>delivered as the user message, never inside the system prompt"]
-  L1 --> L2 --> L3 --> L4 --> L5 --> L6 --> VIEW --> INT --> JOB --> DSP --> L7 --> L8 --> MSG
+  L1 --> L2 --> L3 --> L4 --> L5 --> L6 --> INT --> JOB --> DSP --> L7 --> L8 --> MSG
 ```
 
 6. **L8 MUST be the last thing in the system prompt, and the user's latest message MUST be the user
@@ -87,23 +87,27 @@ flowchart TD
     size of each layer for a given profile. "Measured" means bytes of the assembled text, not an
     estimate.
 
-| Layer | turn | wake | job | classify |
-|---:|---:|---:|---:|---:|
-| L1 identity | 11,200 | 11,200 | 800 | 0 |
-| L2 state | 5,500 | 5,500 | 0 | 0 |
-| L3 memory | 16,000 | 16,000 | 0 | 0 |
-| L4 shelves | 12,000 | 16,000 | 0 | 0 |
-| L5 where things are | 2,000 | 2,000 | 2,000 | 0 |
-| L6 transcript | 8,000 | 3,000 | 0 | 0 |
-| L7 ranking rule | 500 | 500 | 0 | 0 |
-| L8 turn frame | 3,500 | 3,500 | 200 | 200 |
-| conditional regroup | 2,000 | 2,000 | 0 | 0 |
-| conditional interrupt | 2,600 | 0 | 0 | 0 |
-| conditional job reference | 3,200 | 0 | 0 | 0 |
-| conditional dispute | 3,200 | 0 | 0 | 0 |
-| conditional shared viewing | 3,500 | 3,500 | 0 | 0 |
-| **system-prompt total** | **≤ 72,400** | **≤ 63,200** | **≤ 3,000** | **≤ 200** |
-| user message | the turn's text | the wake agenda, ≤ 3,600 | the task description | the question and its material |
+| Layer | turn | wake | public | job | classify |
+|---:|---:|---:|---:|---:|---:|
+| L1 identity | 11,200 | 11,200 | 11,200 | 800 | 0 |
+| L2 state | 5,500 | 5,500 | 5,500 | 0 | 0 |
+| L3 memory | 16,000 | 16,000 | 4,000 (the public block, rule 41) | 0 | 0 |
+| L4 shelves | 12,000 | 16,000 | 16,000 | 0 | 0 |
+| L5 where things are | 2,000 | 2,000 | 2,000 | 2,000 | 0 |
+| L6 transcript | 8,000 | 3,000 | 0 | 0 | 0 |
+| L7 ranking rule | 500 | 500 | 500 | 0 | 0 |
+| L8 turn frame | 3,500 | 3,500 | 3,500 | 200 | 200 |
+| conditional regroup | 2,000 | 2,000 | 0 | 0 | 0 |
+| conditional interrupt | 2,600 | 0 | 0 | 0 | 0 |
+| conditional job reference | 3,200 | 0 | 0 | 0 | 0 |
+| conditional dispute | 3,200 | 0 | 0 | 0 | 0 |
+| **system-prompt total** | **≤ 68,900** | **≤ 59,700** | **≤ 42,700** | **≤ 3,000** | **≤ 200** |
+| user message | the turn's text | the wake agenda, ≤ 3,600 | the bridge's constant agenda | the task description | the question and its material |
+
+The `public` column (2026-11-07) is the wake column with three layers at zero and one replaced:
+the transcript, the regroup block and the viewing layer are other conversations and never ride a
+public composition, and L3 is the public block, which is small by construction — a policy
+paragraph and her explicitly public self-facts, never a retrieval.
 
 L5 read 600 here until 2026-08-08, and the assembler has always set 1,000. The table is corrected to
 the shipped number rather than the other way round, because rule 22 names nine drawers the index must
@@ -428,19 +432,6 @@ roughly 800 bytes off every speaking prompt, with nothing removed that a turn ca
     what the line says and nothing the line does not, and — when the words fit more than one
     record — to say which there are and ask rather than pick the freshest.
 
-36e. **The viewing layer.** While a shared-viewing session is active and unexpired
-    ([watchalong.md](watchalong.md) rules 1–5), the `turn` and `wake` profiles carry one
-    conditional layer, key `viewing`, between L6 and the regroup layer, rendered by
-    `lib/watchalong prompt-block`: the title and his authorisation, the estimated position labelled
-    as an estimate with its basis, the status word and the lag, the reviewed intervals of the
-    current epoch and any gaps, and the latest receipts inside an envelope that names them as a
-    reader's untrusted notes (watchalong.md rules 20–23). It exists because on 2026-11-07 a reader
-    followed an episode in thirty-one chunks and not one of its looks was in the prompt of the
-    conversation that was meant to be sharing it. Inactive by default: no session, no layer, on
-    every profile; absent on `job` and `classify` always. The renderer is fail-safe and the
-    assembler guards it again — a broken renderer costs the layer and never the prompt. The
-    layer describes no scene itself; it carries receipts, and it instructs no narration.
-
 37. **In the regroup block, the quote and the instructions are both emitted whole.** The block is
     instructions wrapped around a quote of the words being spoken. Under the trim era's generic
     cut a long reply pushed the closing instructions — don't restate, don't queue, silence is
@@ -550,6 +541,54 @@ never reaches the model, and the drop is never silent.
     rule 36. A standing record is a source to fix — the same words are reaching two layers —
     never a working state.
 
+### The public-composition profile
+
+41. **A sitting whose words leave the house gets a prompt built for that, not the ordinary wake's
+    prompt with a reminder on top.** Written 2026-11-07, when the review of the Bluesky connector
+    found the bridge's wake firing on the `wake` profile: its L3 was the general recall block —
+    the pinned tier, the user's directives, her private notes, the moments of her own life, by
+    similarity to the agenda — and its L6 was the desk transcript, so the complete context a
+    public reply was composed in carried private memory and another conversation by
+    construction, with a context note under it saying everything else was private. A reminder
+    after private recall is not a boundary. The `public` profile IS the wake profile, with these
+    differences and no others:
+    - **L3 is the public block, never the recall block.** `memory.py public-block`
+      ([memory-recall.md](memory-recall.md) rule 57): a policy paragraph naming what this sitting
+      may draw on, then her own active rows of the prompt-facing kinds whose `visibility` is
+      `public` — nothing retrieved by similarity, nothing pinned, no scope, no other kind or
+      source, and no row of any kind whose visibility is private, which is every row that was not
+      explicitly marked. The store's social rows (another person's public words) are absent too:
+      public words never enter a system prompt ([bluesky.md](bluesky.md) clause 9); each person's
+      own retained context arrives under `people[]` when `crab bluesky inbox` is read.
+    - **The block fails closed.** A memory door that does not answer, answers nothing, or exits
+      nonzero leaves a static closed line in L3 — her public self-facts are absent this sitting
+      and nothing stands in for them — and the assembler MUST NOT fall back to `recall-block`,
+      to the pinned tier, or to any private row. `MEMORY_STORE=0` leaves L3 absent exactly as it
+      does on every profile.
+    - **L6, the regroup block and the viewing layer are absent** — budget zero in the table.
+      The desk transcript, a live voice beside this wake, an unanswered desk message and what she
+      has been watching with him are other conversations, and no public composition reads them.
+    - Everything else is the wake profile byte for byte: identity and the persona sheet, the state
+      block, the shelves, the index, the ranking rule and the wake frame. She is herself in public.
+41a. **Selection is by provenance, at fire time.** `crab wake` selects the profile from the fired
+    record's booker: a wake booked by `bluesky-bridge` ([wake-queue.md](wake-queue.md) rule 41)
+    runs on `public`; every other booker, and her own bookings, run on `wake`. The booker survives
+    every re-book — the blocked-lock deferral, the outage retry, restore — so a public sitting
+    stays public however late it fires. The chosen profile is exported to the session's tools as
+    `DESKCRAB_WAKE_PROFILE` (`public` or `wake`); `crab context --profile public` prints exactly
+    what the sitting receives (rule 5).
+41b. **The doors the prompt names are closed in a public sitting, and the public doors are closed
+    outside one.** With `DESKCRAB_WAKE_PROFILE=public`, `crab memory` refuses every verb but `add`
+    and `visibility` (a public fact may be written; nothing private may be read), and
+    `crab journal` refuses — each with a static line naming this rule, never a fallback. With
+    `DESKCRAB_WAKE_PROFILE=wake`, the connector's public writes — post, like, repost, follow, their
+    removals and undo — are refused ([bluesky.md](bluesky.md) clause 21): an unattended public
+    write runs only on the public-composition wake. A desk or phone turn carries neither variable
+    and keeps its whole context: the user is in the room, the sitting is his, and clause 20's
+    disclosure gate stands at the write as before. These gates are belts against accident, not
+    locks against her own hands — a sitting with Bash can read any file — and the prompt's own
+    policy line says so plainly rather than pretending otherwise.
+
 ## DATA
 
 The assembler reads; the state it owns is two records of the same shape — the over-budget record
@@ -570,7 +609,6 @@ only place either fact is known the moment it happens.
 | `~/.local/share/deskcrab/journal/`, `memory/`, library, archive | L5 | named by path in the index block |
 | `${STATE_PREFIX}-convo-summary.txt`, `-convo.txt` | L6 | summary then live transcript |
 | `${STATE_PREFIX}-convo-seam.txt` | L6 | the rotation seam: when the archived record ended, and whether it had been condensed |
-| `$DESKCRAB_WATCHALONG_DIR/current` and the session's receipts via `lib/watchalong prompt-block` | viewing | conditional, rule 36e; see watchalong.md |
 | `${STATE_PREFIX}-live-speech`, `-live-turn` | regroup | conditional |
 | `${STATE_PREFIX}-turn-order/<seq>.ticket` + the cut turn's stream log | interrupt | conditional, rule 36c: the input off the ticket, the part-written reply through the extractor's partial mode |
 | `${STATE_PREFIX}-prompt-cuts.txt` | — | rule 36: written by a build whose total ran over its target (the name is historical — nothing is cut), removed by one inside it, rendered by the state block |
@@ -580,7 +618,7 @@ only place either fact is known the moment it happens.
 
 **Prompt assembly may call:** the state block, the recall block, the shelf reader, the conduct
 reader, the recent-catches reader (`lib/claudism-feedforward`), the conversation context builder,
-the regroup context builder, the viewing renderer (`lib/watchalong prompt-block`).
+the regroup context builder.
 
 **Prompt assembly may be called by:** the turn pipeline, the wake path, the job runner, and any
 classifier. It MUST also be callable directly from a shell for inspection.
@@ -845,6 +883,14 @@ rules riding it unchanged per rule 40d, inside the same ceiling),
 separation on every invocation), `tests/test_regroup.sh` (the conditional block, and rule 37:
 a long quote arrives whole, the instructions stand whole, no clip marker anywhere),
 `tests/test_convo_seam.sh` (rules 32 to 34: the rotation seam, its marker, and its edges),
+`tests/test_bluesky_public_prompt.sh` (rules 41 to 41b, end to end: a wake booked by the Bluesky
+bridge is fired through `crab wake` against a live scratch memory store seeded with canaries — a
+phone-sourced private note, a pinned directive, a moment, another conversation's note, a social
+row — and a canary in the desk conversation, and the whole argv the stub CLI was handed carries
+none of them while the one fact marked public rides the public block; the same seeds through
+another booker's wake and a desk turn still carry the pinned directive, so ordinary recall is
+untouched; a dead memory door leaves the closed line and never the recall block; the memory,
+journal and public-write gates each refuse where they must and pass where they must),
 `tests/test_prompt_profiles.sh` (each profile's layers, order, measured sizes, the totals against
 the table above, the user's message never embedded in the system prompt — rules 4 and 36: a
 layer over its budget is carried whole and manifests `over`, never `trimmed` or `cut`; a total
@@ -860,10 +906,6 @@ present in the prompt),
 `tests/test_eng_records.sh` (rule 21a: the block is the pointer alone — counts, retrieval doors,
 and the read-the-record-first rule, with no record's title, dates, or prose in the prompt on
 either profile — and an empty drawer costs the block and nothing else),
-`tests/test_watchalong.sh` and `tests/test_watchalong_live.sh` (rule 36e: the viewing layer
-present on both speaking profiles while a session is active, between L6 and regroup, absent on
-job and classify and whenever no session is active, with its receipts inside the untrusted
-envelope; the live suite drives real `crab` turns through the stub CLI while a reader advances),
 `tests/test_prompt_dedup.sh` (rules 40 and 40a: a build carrying the same block through two
 layers emits it once, names the drop in the manifest under the layer it was dropped from, leaves
 the standing record and renders it in the next state block; a build with no duplication emits no
