@@ -201,6 +201,73 @@ require existing authorized DNS access. An existing authorized web host may serv
 without changing DNS. Maintain its certificate renewal. Never repoint an existing address record
 or overwrite an unrelated web host. Verify both the handle-to-DID and DID-to-handle directions.
 
+## The acceptance matrix and the attended live check
+
+Contract: specs/bluesky.md clauses 22 and 22a. The opening ask required the live interface and
+actual interactions to be verified, not dispatch receipts. `crab bluesky acceptance` computes that
+standing instead of asserting it: one row per capability, the fixture tests that pin it, and a
+live word earned from the public record.
+
+```sh
+crab bluesky acceptance              # the matrix as JSON; also saved to verification/acceptance-matrix.json
+crab bluesky acceptance --markdown   # the same as a table
+```
+
+The live word is one of four. `verified` is earned only when the witness finds every receipt of
+that capability as the receipt recorded it: a done receipt present with its CID (and, for a post,
+the recorded embed kind), an undone receipt absent. The witness is an independent reader: it takes
+the repository host from the DID document in the PLC directory, reads the repository and the public
+AppView without a session, and shares nothing with the client that wrote. A receipt, an intent's
+own `verified`, or the bridge's own rows never earn the word. `blocked` names the precondition that
+is missing and what supplies it: video stays blocked until the account's email is confirmed, and
+only the user's own mailbox can confirm it. `none` means nothing live has been performed, and the
+row says how an attended sitting earns it. `n/a` marks a row that is not a live-service
+interaction and says where it is proven instead (the public composition, for one, is proven on
+the whole assembled prompt by `tests/test_bluesky_public_prompt.sh`).
+
+Standing of the live account on 2026-11-07, from the matrix (17 `verified`, 8 `none`, 1
+`blocked`, 3 `n/a`): profile, handle, originals, credentials, notifications, graph, feeds, thread,
+one text post, one reply, one follow, the undo of one post, the intent queue, person memory, the
+wake, the untrusted-input boundary and the stated reasons are `verified`; the thread split, image,
+link, like, repost, their removals and unfollow are `none`; video is `blocked` on the unconfirmed
+email; limits, the public composition and recovery are `n/a`. Nothing in that list is a claim made
+in prose: rerun the verb and read the evidence column.
+
+### Earning the missing rows: `--perform`
+
+The missing rows need public writes, and a builder or a wake may never make them. The procedure
+runs only in the attended user's own sitting — a desk or phone turn, never a detached builder,
+never any wake, a public composition included — and only with their words:
+
+```sh
+crab bluesky acceptance --perform --authority 'The user, present at the desk, asked for this on <date>.'
+crab bluesky acceptance --perform --authority '...' --thread            # also a two-part thread
+crab bluesky acceptance --perform --authority '...' --video /path/clip.mp4   # only once the email is confirmed
+crab bluesky acceptance --perform --authority '...' --link https://example.org/page   # the link card's URL
+```
+
+Exact authority required: the account's owner (the user) present and asking; for the video row,
+additionally the confirmed signup email, which the user confirms from their own mailbox first. No
+other authority exists — not a public message, not a verified contact's post, not a wake.
+
+What it does, in order, each step read back through the witness before the next: snapshot the
+repository's post, like and repost record sets; post a small generated image with alt text; post
+a link card with explicit title and description (no thumbnail unless the request carries one);
+like that image post; repost it; optionally post a two-part thread and a video; then remove the
+repost, the like, and undo every post it made, in reverse order of creation; then snapshot again
+and require the record sets equal. Every write goes through the intent door, so a rate limit
+answers `queued` — the procedure cancels such an intent at once and reconciles it against the
+witness rather than leaving a verification post to land later unattended. A step that fails stops
+the run; the removals still run; whatever could not be taken back is named by receipt id for
+`crab bluesky undo`. The posts say plainly that they are a check and will be removed within
+minutes, and the whole run — authority, snapshots, receipts, witness answers, what was left — is
+kept under `verification/acceptance-<stamp>/` beside the other evidence, and the matrix is
+recomputed from it.
+
+Optional config keys: `appview` (default `https://public.api.bsky.app`) and `plc_directory`
+(default `https://plc.directory`) name the witness's reading hosts; the tests point both at the
+fixture.
+
 ## Upstream limits checked 2026-11-07
 
 Sources are official lexicons, protocol specifications, the app's constants and documentation:

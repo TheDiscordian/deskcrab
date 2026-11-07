@@ -28,6 +28,29 @@ if contains "$out" 'unattended public write'; then fail "the public-composition 
 out="$(DESKCRAB_WAKE_PROFILE=public "$SANDBOX_REPO/crab" bluesky inbox --peek 2>&1)"
 check "the public sitting reads its inbox" contains "$out" 'untrusted-social-data'
 
+# specs/bluesky.md clauses 22 and 22a: the read-only matrix answers every sitting with no
+# write and no network on an unconfigured store; the --perform road is refused to a builder
+# and to every wake before the connector is even reached.
+out="$("$SANDBOX_REPO/crab" bluesky acceptance 2>&1)"
+check "the acceptance matrix answers an unconfigured store" contains "$out" '"capabilities"'
+check "every live standing on an unconfigured store is none, blocked or n/a" test "$(printf '%s' "$out" | grep -c '"live": "verified"')" = 0
+check "the matrix says how the missing rows are earned" contains "$out" 'acceptance --perform'
+check "the matrix lands privately beside the evidence" test -f "$DESKCRAB_BLUESKY_DIR/verification/acceptance-matrix.json"
+out="$("$SANDBOX_REPO/crab" bluesky acceptance --markdown 2>&1)"
+check "the matrix renders as a table" contains "$out" '| Capability | Fixture tests | Live | Evidence |'
+out="$(DESKCRAB_ENG_ROLE=builder "$SANDBOX_REPO/crab" bluesky acceptance 2>&1)"
+check "a builder may read the matrix" contains "$out" '"capabilities"'
+out="$(DESKCRAB_ENG_ROLE=builder "$SANDBOX_REPO/crab" bluesky acceptance --perform --authority 'fixture' 2>&1)"
+check "a builder cannot perform the live acceptance" contains "$out" 'unavailable to detached builders'
+out="$(DESKCRAB_WAKE_PROFILE=public "$SANDBOX_REPO/crab" bluesky acceptance --perform --authority 'fixture' 2>&1)"
+check "a public-composition wake cannot perform the live acceptance" contains "$out" 'attended desk or phone sitting'
+out="$(DESKCRAB_WAKE_PROFILE=wake "$SANDBOX_REPO/crab" bluesky acceptance --perform --authority 'fixture' 2>&1)"
+check "an ordinary wake cannot perform the live acceptance" contains "$out" 'attended desk or phone sitting'
+out="$("$SANDBOX_REPO/crab" bluesky acceptance --perform 2>&1)"
+check "the procedure needs the attended user's authority" contains "$out" '--authority'
+out="$("$SANDBOX_REPO/crab" bluesky acceptance --perform --authority 'fixture' 2>&1)"
+check "the procedure needs a configured account before any write" contains "$out" 'configure the verified account DID'
+
 # Source through the one sandbox, with an explicitly isolated social store.
 . "$SANDBOX_REPO/lib/common.sh"
 out="$(_prompt_layer_index)"

@@ -981,6 +981,23 @@ What you did tonight is journaled from your tool activity without your help, so 
                     exit 64
                 fi
                 ;;
+            acceptance)
+                # The read-only matrix is open to every sitting. Its --perform
+                # road is the one piece of test traffic the connector ever
+                # generates (specs/bluesky.md clause 22a): the attended user's
+                # own sitting, never a builder, never any wake — a public
+                # composition included.
+                if printf '%s\n' "$@" | grep -qx -- '--perform'; then
+                    if deskcrab_is_builder_context; then
+                        echo "DeskCrab: the live acceptance procedure is unavailable to detached builders (specs/bluesky.md clause 22a); the read-only matrix is 'crab bluesky acceptance'." >&2
+                        exit 64
+                    fi
+                    if [ -n "${DESKCRAB_WAKE_PROFILE:-}" ]; then
+                        echo "DeskCrab: the live acceptance procedure runs only in an attended desk or phone sitting (specs/bluesky.md clause 22a); this is a '${DESKCRAB_WAKE_PROFILE}' wake, so 'bluesky acceptance --perform' is refused here." >&2
+                        exit 64
+                    fi
+                fi
+                ;;
         esac
         # The only unattended road to a public write is the public-composition
         # wake (specs/bluesky.md clause 21, prompt-assembly rule 41b). Any

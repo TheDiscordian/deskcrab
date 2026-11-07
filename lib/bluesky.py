@@ -239,6 +239,21 @@ class HTTP:
                                         p.hostname in ("127.0.0.1", "localhost", "::1")):
             raise Error("API transport requires HTTPS")
 
+    def get(self, url):
+        """A plain JSON GET outside the XRPC path: the PLC directory and did:web documents the
+        witness reads (clause 22). No token ever rides on it."""
+        self.check_url(url)
+        req = urllib.request.Request(url, headers={"Accept": "application/json", "User-Agent": "DeskCrab-social/1"})
+        try:
+            with self.opener.open(req, timeout=45) as response:
+                payload = response.read()
+                return json.loads(payload) if payload else {}
+        except urllib.error.HTTPError as exc:
+            exc.close()
+            raise APIError(exc.code, "RequestFailed") from None
+        except (urllib.error.URLError, TimeoutError, ConnectionError, OSError, ValueError):
+            raise NetworkError("document fetch failed") from None
+
     def call(self, base, ns, params=None, body=None, token=None, raw=None, mime=None):
         self.check_url(base)
         url = base.rstrip("/") + "/xrpc/" + ns
@@ -1568,6 +1583,756 @@ def offline_summary(path):
         return "Bluesky social memory needs inspection: `crab bluesky status`."
 
 
+# ---- The acceptance matrix (clauses 22 and 22a) ------------------------------------------
+# The opening ask required the live interface and actual interactions to be verified, never
+# dispatch receipts. The matrix below is computed from the public record: receipts are held
+# against an independent witness, and the one road to the rows nothing live has earned is an
+# attended procedure that removes everything it makes.
+
+APPVIEW = "https://public.api.bsky.app"
+PLC_DIRECTORY = "https://plc.directory"
+LIVE_STATES = ("verified", "none", "blocked", "n/a")
+ACCEPTANCE_WHY = ("An attended acceptance check of my own hands (specs/bluesky.md clause 22a); "
+                  "the same procedure removes this record.")
+ACCEPTANCE_ALT = ("A small plain purple rectangle, generated locally, used to check that an image "
+                  "of mine arrives with its alt text.")
+ACCEPTANCE_TEXT = {
+    "image": ("Checking that an image of mine arrives with its alt text. This post is a verification "
+              "and is removed by the same check within minutes."),
+    "link": ("Checking that a link card of mine arrives as described. This post is a verification "
+             "and is removed by the same check within minutes."),
+    "video": ("Checking that a short clip of mine arrives with its alt text. This post is a "
+              "verification and is removed by the same check within minutes."),
+    "thread": ("Checking that a longer thought of mine splits into two posts without losing a word, "
+               "and is removed by the same check within minutes. ") * 4,
+}
+# One row per capability of the opening ask: the id, the title, and the fixture tests that pin
+# it (a bare name is a case of tests/test_bluesky.py; a path is a whole suite). A test here
+# proves every name exists, so the table cannot drift from the suite.
+CAPABILITIES = (
+    ("profile", "Complete public profile: name, biography, pronouns, avatar and banner",
+     ("test_profile_preserves_fields_and_originals", "test_profile_validation_before_upload")),
+    ("handle", "The custom handle bound to the DID in both directions",
+     ("test_handle_wrong_did_refused_before_write",)),
+    ("originals", "Uploaded profile originals kept locally, byte-exact",
+     ("test_profile_preserves_fields_and_originals",)),
+    ("credentials", "Credentials outside the repository; the session reused, refreshed and saved "
+                    "without email or password",
+     ("test_reuse_session_and_strip_email", "test_refresh_rotation_saved", "test_401_refresh_then_read",
+      "test_did_mismatch_refused", "test_private_credentials_permissions", "test_credential_symlink_refused",
+      "test_https_required_outside_explicit_fixture", "test_no_redirect_for_bearer",
+      "test_auth_errors_redact_response_message", "test_unknown_error_names_cannot_reflect_credentials")),
+    ("notifications", "Notifications read into the durable inbox, deduplicated, cursor-tracked",
+     ("test_notification_pagination_resume_and_dedup", "test_notification_failed_page_does_not_advance",
+      "test_empty_notification_page_with_cursor_does_not_drop_tail", "test_inbox_peek_and_ack")),
+    ("graph", "Followers and following snapshots; removals inferred only after a complete scan",
+     ("test_graph_partial_scan_never_removes",)),
+    ("feeds", "Timeline, author and custom feeds with their cursors",
+     ("test_feed_cursor_reused_only_on_request",)),
+    ("thread", "Thread context read with every author's retained context attached",
+     ("test_thread_parent_and_root_chain", "test_thread_attaches_every_author")),
+    ("rate_limits", "API limits honoured: scoped backoff, bounded retries, no blind re-commit",
+     ("test_429_persists_backoff_across_clients", "test_missing_record_reset_header_does_not_block_writes",
+      "test_reads_retry_5xx", "test_503_retry_after_is_persisted", "test_backoff_is_scoped_to_the_endpoint_class",
+      "test_missing_record_pre_check_sets_no_backoff_of_any_scope")),
+    ("post_text", "A text post delivered",
+     ("test_uncertain_put_reconciles_without_duplicate", "test_dry_run_publishes_nothing", "test_facets_are_utf8_bytes")),
+    ("reply", "A reply delivered into an existing thread with its root and parent",
+     ("test_reply_inherits_existing_thread_root", "test_thread_parent_and_root_chain")),
+    ("thread_split", "A long text split losslessly into a thread within the official limits",
+     ("test_unicode_lossless_and_limits", "test_extreme_cluster_rejected", "test_long_link_not_silently_split",
+      "test_link_boundary_keeps_token", "test_resume_thread_after_partial_failure",
+      "test_all_parts_preflight_before_writes")),
+    ("post_images", "An image post with alt text delivered",
+     ("test_media_images_alt_dimensions", "test_gallery_current_soft_limit", "test_media_change_same_path_refused")),
+    ("post_link", "A link card delivered with explicit metadata",
+     ("test_external_quote_embed", "test_no_automatic_link_fetch")),
+    ("post_video", "A video post delivered after preprocessing, with alt text and captions",
+     ("test_video_email_gate_before_upload", "test_video_quota_gate", "test_video_processing_before_post_and_captions",
+      "test_video_already_exists_uses_blob", "test_failed_video_never_posts", "test_video_timeout_resume_uses_existing_job",
+      "test_processed_video_reuse_does_not_spend_quota_again", "test_real_media_parser_validates_duration_and_container")),
+    ("follow", "A follow with a stated reason, idempotent",
+     ("test_interactions_idempotent_and_undo", "test_reason_required")),
+    ("unfollow", "An unfollow that removes only what is there",
+     ("test_interactions_idempotent_and_undo",)),
+    ("like", "A like with a stated reason, idempotent",
+     ("test_interactions_idempotent_and_undo", "test_external_removal_then_new_like_is_not_a_stale_receipt")),
+    ("unlike", "An unlike that removes only what is there",
+     ("test_unlike_absent_does_not_create_notification", "test_external_recreated_interaction_is_removed_safely")),
+    ("repost", "A repost with a stated reason, idempotent",
+     ("test_interactions_idempotent_and_undo",)),
+    ("unrepost", "An unrepost that removes only what is there",
+     ("test_interactions_idempotent_and_undo",)),
+    ("undo_post", "Undo of a post: ownership, collection, content and CID checked, compare-and-swap delete",
+     ("test_undo_modified_record_refused", "test_undo_foreign_uri_refused")),
+    ("intents", "A deliberate action survives a rate limit, replays through the same ids and is delivered "
+                "only after read-back",
+     ("test_rate_limited_intent_is_persisted_and_replayed_with_verification",
+      "test_rate_limited_reply_resumes_the_same_operation_and_verifies",
+      "test_non_transient_refusal_fails_the_intent_visibly", "test_cancel_withdraws_a_pending_intent")),
+    ("person_memory", "Exchanges retained by authenticated DID and handed back before a reply; two people "
+                      "never share a context",
+     ("test_exchange_retained_reopened_and_retrieved_before_reply",
+      "test_person_key_is_the_did_and_handle_history_rides_along",
+      "test_two_people_prefix_mention_and_private_rows_stay_apart", "test_impersonation_sets_nothing",
+      "test_replay_never_files_twice", "test_reactions_touch_the_person_only_and_follows_are_facts",
+      "test_redaction_and_the_disclosure_gate", "test_outgoing_reply_retained_under_the_parent_author_once",
+      "test_errors_are_visible_and_the_public_context_fails_closed")),
+    ("wake", "The bridge books the public-composition wake through the wake queue with one constant reason",
+     ("test_wake_reason_is_constant_and_booking_retries", "test_installing_builder_collects_silently_until_finished")),
+    ("untrusted_input", "Public content is untrusted data; a claimed or verified identity grants no "
+                        "privileged authority",
+     ("test_public_claim_never_verifies_identity", "test_trusted_mapping_still_has_no_privileged_authority",
+      "test_summary_cannot_inject_public_words", "test_impersonation_sets_nothing")),
+    ("no_spam", "No blanket follows or automatic reactions; every action carries its own reason",
+     ("test_reason_required", "test_wake_reason_is_constant_and_booking_retries")),
+    ("public_composition", "A public reply is composed from her public self-facts alone, every private row "
+                           "absent by construction",
+     ("tests/test_bluesky_public_prompt.sh", "tests/test_prompt_profiles.sh")),
+    ("recovery", "Stable keys, stored records and reconciliation; a resumed operation never duplicates",
+     ("test_uncertain_put_reconciles_without_duplicate", "test_resume_thread_after_partial_failure",
+      "test_reused_operation_different_content_refused", "test_successful_procedure_with_empty_body")),
+)
+# Which step of an attended run earns which row (clause 22a), once the receipts it made are
+# undone and the witness has seen them absent.
+RUN_STEPS = {"post_images": "image post", "post_link": "link card", "like": "like", "repost": "repost",
+             "unlike": "remove like", "unrepost": "remove repost", "undo_post": "remove post",
+             "thread_split": "two-part thread", "post_video": "video post"}
+PERFORM_EARNS = ("post_images", "post_link", "like", "repost", "unlike", "unrepost", "undo_post")
+PROCEDURE = ("The rows standing `none` that a live write would earn are earned only by the attended "
+             "user: `crab bluesky acceptance --perform --authority '<their own words>'` (clause 22a) "
+             "posts an image with alt text and a link card to this account alone, likes and reposts "
+             "the image post, removes both, undoes every post it made, reads each step back through "
+             "the witness and proves the repository unchanged; `--thread` adds a two-part thread; "
+             "`--video <mp4>` adds a video once the email is confirmed. Never a builder, never a wake.")
+
+
+class Witness:
+    """The independent reader of clause 22: unauthenticated reads straight at the repository
+    the DID document names and at the public AppView, through a transport that never held the
+    session. What it finds is what the public sees; a write's own receipt is never evidence."""
+
+    def __init__(self, http, plc=PLC_DIRECTORY, appview=APPVIEW):
+        self.http, self.plc, self.appview, self._pds = http, plc, appview, {}
+
+    def pds(self, did):
+        if did not in self._pds:
+            if did.startswith("did:plc:"):
+                doc = self.http.get(self.plc.rstrip("/") + "/" + did)
+            elif did.startswith("did:web:"):
+                doc = self.http.get("https://" + did[8:] + "/.well-known/did.json")
+            else:
+                raise Error("unsupported DID method")
+            services = doc.get("service", []) if isinstance(doc, dict) else []
+            host = next((s.get("serviceEndpoint") for s in services if isinstance(s, dict)
+                         and str(s.get("id", "")).endswith("#atproto_pds")), None)
+            if not isinstance(host, str):
+                raise Error("DID document names no repository host")
+            self.http.check_url(host)
+            self._pds[did] = host
+        return self._pds[did]
+
+    def record(self, uri):
+        repo, coll, key = parse_uri(uri)
+        try:
+            data, _ = self.http.call(self.pds(repo), "com.atproto.repo.getRecord",
+                                     {"repo": repo, "collection": coll, "rkey": key})
+        except APIError as exc:
+            if exc.code in ("RecordNotFound", "RepoNotFound"):
+                return None
+            raise
+        return data if isinstance(data, dict) and data.get("cid") else None
+
+    def records(self, repo, collection):
+        found, cursor = {}, None
+        for _ in range(100):
+            params = {"repo": repo, "collection": collection, "limit": 100}
+            if cursor:
+                params["cursor"] = cursor
+            data, _ = self.http.call(self.pds(repo), "com.atproto.repo.listRecords", params)
+            rows = data.get("records", []) if isinstance(data, dict) else []
+            for r in rows:
+                if isinstance(r, dict) and r.get("uri"):
+                    found[r["uri"]] = r.get("cid")
+            cursor = data.get("cursor") if isinstance(data, dict) else None
+            if not cursor or not rows:
+                break
+        return found
+
+    def profile(self, actor):
+        data, _ = self.http.call(self.appview, "app.bsky.actor.getProfile", {"actor": actor})
+        return data if isinstance(data, dict) else {}
+
+    def posts(self, uris):
+        if not uris:
+            return {}
+        data, _ = self.http.call(self.appview, "app.bsky.feed.getPosts", {"uris": list(uris)[:25]})
+        rows = data.get("posts", []) if isinstance(data, dict) else []
+        return {p["uri"]: p for p in rows if isinstance(p, dict) and p.get("uri")}
+
+    def thread(self, uri):
+        data, _ = self.http.call(self.appview, "app.bsky.feed.getPostThread",
+                                 {"uri": uri, "depth": 1, "parentHeight": 1})
+        return data if isinstance(data, dict) else {}
+
+    def resolve(self, handle):
+        data, _ = self.http.call(self.appview, "com.atproto.identity.resolveHandle", {"handle": handle})
+        return data.get("did") if isinstance(data, dict) else None
+
+
+def witness_for(settings, http=None):
+    return Witness(http or HTTP(), settings.get("plc_directory", PLC_DIRECTORY),
+                   settings.get("appview", APPVIEW))
+
+
+def embed_kind(record):
+    embed = record.get("embed") if isinstance(record, dict) else None
+    if not isinstance(embed, dict):
+        return None
+    kind = embed.get("$type", "")
+    if kind == "app.bsky.embed.recordWithMedia" and isinstance(embed.get("media"), dict):
+        kind = embed["media"].get("$type", "")
+    return kind or None
+
+
+def receipts(store, kind, state=None, select=None):
+    rows = []
+    for r in store.db.execute("SELECT * FROM actions WHERE kind=? ORDER BY created", (kind,)):
+        r = dict(r)
+        if state and r["state"] != state:
+            continue
+        if select and not select(json.loads(r["record"]) if r["record"] else {}, r):
+            continue
+        rows.append(r)
+    return rows
+
+
+def hold_receipts(witness, rows, embed=None):
+    """Clause 22: each done receipt must be present with the recorded CID (and embed kind);
+    each undone receipt must be absent. The findings per receipt, and the ids that failed."""
+    held, failed = [], []
+    for r in rows:
+        finding = {"id": r["id"], "uri": r["uri"], "cid": r["cid"], "state": r["state"]}
+        if r["state"] not in ("done", "undone") or not r["uri"]:
+            finding["witness"] = "unreconciled receipt"
+            failed.append(r["id"])
+            held.append(finding)
+            continue
+        try:
+            found = witness.record(r["uri"])
+        except (Error, APIError, NetworkError) as exc:
+            finding["witness"] = "unreadable: " + str(exc)
+            failed.append(r["id"])
+            held.append(finding)
+            continue
+        if r["state"] == "done":
+            ok = bool(found) and found.get("cid") == r["cid"]
+            finding["witness"] = ("present" if ok else "present with a different CID") if found else "absent"
+            if ok and embed:
+                finding["embed"] = embed_kind(found.get("value", {}))
+                ok = finding["embed"] in embed
+                if not ok:
+                    finding["witness"] = "present without the recorded embed"
+        else:
+            ok = found is None
+            finding["witness"] = "absent" if ok else "still present"
+        if not ok:
+            failed.append(r["id"])
+        held.append(finding)
+    return held, failed
+
+
+def acceptance_runs(store):
+    """Every kept attended run (clause 22a), oldest first."""
+    runs = []
+    root = store.path / "verification"
+    if root.is_dir():
+        for path in sorted(root.glob("acceptance-*/run.json")):
+            try:
+                run = private_json(path)
+            except (OSError, ValueError, Error):
+                continue
+            if isinstance(run, dict) and run.get("stamp"):
+                runs.append(run)
+    return runs
+
+
+def acceptance_matrix(store, settings, client=None, witness=None):
+    """Clause 22: one row per capability, fixture tests named, the live standing computed from
+    receipts held against the witness, from kept attended runs, and from the store's own
+    facts — never from a receipt alone, never asserted."""
+    did = settings.get("did")
+    configured = bool(did and witness)
+    session = {}
+    if configured and client is not None:
+        try:
+            client.authenticate()
+            session = dict(client.session or {})
+        except (Error, APIError, NetworkError):
+            session = {}
+    runs = [r for r in acceptance_runs(store) if r.get("verdict") == "passed"]
+    rows, public, err, still_gone = {}, {}, None, {}
+
+    def put(cid, live, evidence, **extra):
+        rows[cid] = {"live": live, "evidence": evidence, **extra}
+
+    def earned(cid):
+        """The newest passed run whose step earned this row, re-checked now: every post it
+        removed must still be absent, so the run's evidence is held against today's record."""
+        name = RUN_STEPS.get(cid)
+        for run in reversed(runs):
+            if not any(s.get("step") == name and s.get("passed") is True for s in run.get("steps", [])):
+                continue
+            if run["stamp"] not in still_gone:
+                uris = [u for s in run.get("steps", []) if str(s.get("step", "")).startswith("remove ")
+                        and s.get("passed") is True for u in s.get("uris", [])]
+                gone = 0
+                for uri in uris:
+                    try:
+                        if witness.record(uri) is not None:
+                            break
+                    except (Error, APIError, NetworkError):
+                        break
+                    gone += 1
+                still_gone[run["stamp"]] = gone if gone == len(uris) else None
+            if still_gone[run["stamp"]] is None:
+                continue
+            return "attended run %s: %s witnessed as recorded, then removed; %d removed record(s) still absent" % (
+                run["stamp"], name, still_gone[run["stamp"]])
+        return None
+
+    def held_row(cid, rows_, embed=None, earn=""):
+        if not configured:
+            put(cid, "none", "no account configured" if not did else "witness unavailable")
+            return
+        if rows_:
+            held, failed = hold_receipts(witness, rows_, embed)
+            if failed:
+                put(cid, "none", "%d receipt(s) not found as recorded: %s" % (len(failed), "; ".join(
+                    "%s %s" % (f["id"], f["witness"]) for f in held if f["id"] in failed)), receipts=held)
+            else:
+                put(cid, "verified", "%d receipt(s) found by the witness as recorded" % len(held), receipts=held)
+            return
+        evidence = earned(cid)
+        if evidence:
+            put(cid, "verified", evidence)
+        else:
+            put(cid, "none", "no receipt of this kind; " + (earn or "earned by `--perform`"))
+
+    def read(path):
+        try:
+            return private_json(path)
+        except (OSError, ValueError, Error):
+            return None
+
+    def witnessed(fn):
+        try:
+            return fn(), None
+        except (Error, APIError, NetworkError) as exc:
+            return None, str(exc)
+
+    # The profile, the handle and the originals.
+    if configured:
+        public, err = witnessed(lambda: witness.profile(did))
+        if err:
+            put("profile", "none", "the witness could not read the profile: " + err)
+        else:
+            missing = [k for k in ("displayName", "description", "pronouns", "avatar", "banner") if not public.get(k)]
+            record, _ = witnessed(lambda: witness.record(f"at://{did}/app.bsky.actor.profile/self"))
+            saved = read(store.path / "profile-record.json")
+            same = bool(record and saved and record.get("cid") == saved.get("cid"))
+            if missing:
+                put("profile", "none", "the public profile lacks " + ", ".join(missing))
+            else:
+                put("profile", "verified", "the witness reads name, biography, pronouns, avatar and banner"
+                    + ("; the profile record's CID matches the saved snapshot" if same else
+                       "; no saved snapshot matches the profile record's CID"))
+        desired = settings.get("desired_handle")
+        if not desired:
+            put("handle", "none", "no custom handle configured")
+        else:
+            resolved, err = witnessed(lambda: witness.resolve(desired))
+            shown = (public or {}).get("handle") if not err else None
+            if resolved == did and shown == desired:
+                put("handle", "verified", "the handle resolves to the DID and the DID's profile shows the handle")
+            else:
+                put("handle", "none", "handle binding incomplete: resolve=%s shown=%s%s" % (
+                    resolved == did, shown == desired, ("; " + err) if err else ""))
+    else:
+        put("profile", "none", "no account configured")
+        put("handle", "none", "no account configured")
+    manifest = read(store.path / "profile-assets-manifest.json")
+    originals = store.path / "profile-originals"
+    if isinstance(manifest, dict) and isinstance(manifest.get("assets"), list) and manifest["assets"]:
+        bad = []
+        for asset in manifest["assets"]:
+            try:
+                data = Path(asset["original"]).read_bytes()
+                if hashlib.sha256(data).hexdigest() != asset.get("sha256"):
+                    bad.append(asset.get("role", "?"))
+            except (OSError, KeyError, TypeError):
+                bad.append(asset.get("role", "?") if isinstance(asset, dict) else "?")
+        put("originals", "none" if bad else "verified",
+            ("originals differ from the manifest: " + ", ".join(bad)) if bad else
+            "%d original(s) on disk match the manifest's SHA-256" % len(manifest["assets"]))
+    elif originals.is_dir() and any(originals.iterdir()):
+        bad = [p.name for p in originals.iterdir() if hashlib.sha256(p.read_bytes()).hexdigest() not in p.name]
+        put("originals", "none" if bad else "verified",
+            ("originals whose name does not carry their digest: " + ", ".join(bad)) if bad else
+            "%d original(s) on disk, each named by its own SHA-256" % len(list(originals.iterdir())))
+    else:
+        put("originals", "none", "no profile originals kept yet")
+
+    # Credentials and the session file.
+    session_path = store.path / "session.json"
+    if not configured:
+        put("credentials", "none", "no account configured")
+    elif session_path.exists():
+        try:
+            mode = stat.S_IMODE(session_path.stat().st_mode)
+            saved = private_json(session_path)
+            leaks = [k for k in ("email", "password") if k in saved]
+            config_path = Path(os.environ.get("DESKCRAB_BLUESKY_CONFIG") or
+                               Path(os.environ.get("XDG_CONFIG_HOME", str(Path.home() / ".config"))) / "deskcrab/bluesky.json")
+            config_mode = stat.S_IMODE(config_path.stat().st_mode) if config_path.exists() else 0o600
+            ok = mode == 0o600 and not leaks and config_mode & 0o077 == 0
+            put("credentials", "verified" if ok else "none",
+                "session file mode %o, config mode %o, %s" % (mode, config_mode,
+                "no email or password saved" if not leaks else "saved session carries " + ", ".join(leaks)))
+        except (OSError, ValueError, Error) as exc:
+            put("credentials", "none", "session file unreadable: " + str(exc))
+    else:
+        put("credentials", "none", "no session saved yet")
+
+    # The reads: evidence is the store's own record of authenticated reads that completed.
+    summary = store.summary()
+    notes = int(store.db.execute("SELECT count(*) FROM events WHERE kind='notification'").fetchone()[0])
+    stamp = float(store.get("last_notification_sync", 0) or 0) or float(store.get("last_sync", 0) or 0)
+    if stamp:
+        when = dt.datetime.fromtimestamp(stamp, dt.timezone.utc).isoformat(timespec="seconds")
+        put("notifications", "verified", "%d notification event(s) stored, each by unique identity; last authenticated poll %s" % (notes, when))
+    else:
+        put("notifications", "none", "no authenticated notification poll has completed")
+    if store.get("graph_initialized:followers") and store.get("graph_initialized:following"):
+        evidence = "complete scans: %d follower(s), %d following stored" % (summary.get("followers", 0), summary.get("following", 0))
+        if configured and public and not err:
+            evidence += "; the public profile counts %s follower(s), %s following" % (public.get("followersCount"), public.get("followsCount"))
+        put("graph", "verified", evidence)
+    else:
+        put("graph", "none", "no complete follower and following scan yet")
+    streams = [r[0] for r in store.db.execute("SELECT key FROM meta WHERE key LIKE 'feed:%'")]
+    kinds = {k for k in ("getTimeline", "getAuthorFeed", "getFeed") if any(("feed:app.bsky.feed." + k) in s for s in streams)}
+    if kinds == {"getTimeline", "getAuthorFeed", "getFeed"}:
+        put("feeds", "verified", "timeline, author and custom feed reads recorded (%d feed cursor(s))" % len(streams))
+    else:
+        put("feeds", "none", "feed reads recorded: " + (", ".join(sorted(kinds)) or "none"))
+    done_posts = receipts(store, "post", "done")
+    if configured and done_posts:
+        probe = done_posts[-1]["uri"]
+        view, err2 = witnessed(lambda: witness.thread(probe))
+        top = ((view or {}).get("thread") or {}).get("post", {}) if not err2 else {}
+        if top.get("uri") == probe:
+            put("thread", "verified", "the witness reads the thread of the newest post; the authenticated thread read is the connector's own `thread` verb")
+        else:
+            put("thread", "none", "the witness could not read a thread of this account's" + ("; " + err2 if err2 else ""))
+    else:
+        put("thread", "none", "no post of this account to read a thread of")
+    put("rate_limits", "n/a", "behaviour under limits is proven by fixture and exercised by the resident bridge; the live service is never provoked into a limit on purpose")
+
+    # The writes, each held against the witness.
+    plain = lambda rec, r: not rec.get("reply") and not rec.get("embed") and json.loads(r["request"]).get("index", 0) == 0
+    held_row("post_text", receipts(store, "post", "done", plain), earn="earned by a deliberate text post of hers, read back")
+    held_row("reply", receipts(store, "post", "done", lambda rec, r: bool(rec.get("reply")) and json.loads(r["request"]).get("index", 0) == 0),
+             earn="earned by a deliberate reply of hers, read back")
+    held_row("thread_split", receipts(store, "post", "done", lambda rec, r: json.loads(r["request"]).get("index", 0) > 0),
+             earn="earned by `--perform --thread`")
+    held_row("post_images", receipts(store, "post", "done", lambda rec, r: embed_kind(rec) in ("app.bsky.embed.images", "app.bsky.embed.gallery")),
+             embed=("app.bsky.embed.images", "app.bsky.embed.gallery"))
+    held_row("post_link", receipts(store, "post", "done", lambda rec, r: embed_kind(rec) == "app.bsky.embed.external"),
+             embed=("app.bsky.embed.external",))
+    if configured and not session.get("emailConfirmed"):
+        put("post_video", "blocked", "the account's email is unconfirmed (getSession emailConfirmed false); only the user "
+            "can confirm it, from their own mailbox; then `crab bluesky acceptance --perform --video <mp4>`")
+    else:
+        held_row("post_video", receipts(store, "post", "done", lambda rec, r: embed_kind(rec) == "app.bsky.embed.video"),
+                 embed=("app.bsky.embed.video",), earn="earned by `--perform --video <mp4>`")
+    held_row("follow", receipts(store, "follow", "done"), earn="earned by a deliberate follow of hers, read back")
+    held_row("unfollow", receipts(store, "follow", "undone"), earn="earned by a deliberate unfollow of hers, read back absent")
+    held_row("like", receipts(store, "like", "done"))
+    held_row("unlike", receipts(store, "like", "undone"))
+    held_row("repost", receipts(store, "repost", "done"))
+    held_row("unrepost", receipts(store, "repost", "undone"))
+    held_row("undo_post", receipts(store, "post", "undone"))
+
+    # Intents: every delivered intent's records, held now.
+    delivered = store.intents(("delivered",)) if configured else []
+    refs = []
+    for intent in delivered:
+        result = intent.get("result") or {}
+        items = result.get("posts", []) if intent["kind"] == "post" else [result]
+        for item in items:
+            if isinstance(item, dict) and item.get("uri") and item.get("cid"):
+                refs.append({"id": intent["id"], "uri": item["uri"], "cid": item["cid"], "state": "done"})
+    if not configured:
+        put("intents", "none", "no account configured")
+    elif not refs:
+        put("intents", "none", "no delivered intent yet; every post, reaction and follow goes through the intent door")
+    else:
+        current = {}
+        for ref in refs:
+            row = store.db.execute("SELECT state FROM actions WHERE uri=?", (ref["uri"],)).fetchone()
+            current[ref["uri"]] = row["state"] if row else "done"
+        held, failed = hold_receipts(witness, [{**r, "state": current.get(r["uri"], "done")} for r in refs])
+        put("intents", "none" if failed else "verified",
+            ("%d delivered intent record(s) not found as recorded" % len(failed)) if failed else
+            "%d delivered intent(s), every record found by the witness as recorded" % len(delivered), receipts=held)
+
+    # Person memory, the wake, the boundary, the reasons.
+    counts = store.retention_counts()
+    if counts.get("failed"):
+        put("person_memory", "none", "%d retention(s) failed: %s" % (counts["failed"], counts.get("last_error") or "see status"))
+    elif counts.get("done"):
+        put("person_memory", "verified", "%d exchange(s) retained in the shared store, %d pending, %d failed; %d people known" % (
+            counts["done"], counts.get("pending", 0), counts.get("failed", 0), summary.get("people", 0)))
+    else:
+        put("person_memory", "none", "no exchange retained yet; the bridge retains every reply, mention, quote and follow")
+    last_wake = float(store.get("last_wake", 0) or 0)
+    heartbeat = float(store.get("bridge_heartbeat", 0) or 0)
+    if last_wake:
+        put("wake", "verified", "the bridge booked a public-composition wake at %s; bridge heartbeat %s" % (
+            dt.datetime.fromtimestamp(last_wake, dt.timezone.utc).isoformat(timespec="seconds"),
+            ("%ds ago" % int(time.time() - heartbeat)) if heartbeat else "absent"))
+    else:
+        put("wake", "none", "the bridge has not booked a wake yet" + ("; heartbeat present" if heartbeat else "; no bridge heartbeat"))
+    events = [json.loads(r[0]) for r in store.db.execute("SELECT body FROM events WHERE kind='notification'")]
+    authored = [e for e in events if isinstance(e, dict) and isinstance(e.get("author"), dict)]
+    if authored:
+        wrapped = envelope(authored, settings)
+        bare = [i for i in wrapped["data"] if i.get("local_identity", {}).get("privileged_authority") is not False]
+        put("untrusted_input", "none" if bare else "verified",
+            ("%d stored public event(s) not enveloped" % len(bare)) if bare else
+            "%d stored public event(s), each enveloped as untrusted with privileged_authority false; %d verified contact(s) mapped, none with authority" % (
+                len(authored), len(settings.get("trusted_contacts", {}))))
+    else:
+        put("untrusted_input", "none", "no public event stored yet to envelope")
+    actions = [dict(r) for r in store.db.execute("SELECT kind, why FROM actions")]
+    unreasoned = [a for a in actions if not (a.get("why") or "").strip()]
+    by_kind = {k: sum(a["kind"] == k for a in actions) for k in ("follow", "like", "repost", "post")}
+    put("no_spam", "none" if (unreasoned or not actions) else "verified",
+        "no action taken yet" if not actions else
+        ("%d action(s) without a stated reason" % len(unreasoned)) if unreasoned else
+        "%d follow(s), %d like(s), %d repost(s), %d post(s), each with its stated reason; %d following in all" % (
+            by_kind["follow"], by_kind["like"], by_kind["repost"], by_kind["post"], summary.get("following", 0)))
+    put("public_composition", "n/a", "not a live-service interaction: proven on the whole assembled prompt of a "
+        "bridge-booked wake by tests/test_bluesky_public_prompt.sh; `crab context --profile public --layers` shows the live shape")
+    put("recovery", "n/a", "proven by fixture (uncertain commits, resumed threads, reused ids); exercised live by every resumed operation")
+
+    capabilities = [{"id": cid, "title": title, "fixture": list(fixture), **rows.get(cid, {"live": "none", "evidence": "not evaluated"})}
+                    for cid, title, fixture in CAPABILITIES]
+    tally = {state: sum(c["live"] == state for c in capabilities) for state in LIVE_STATES}
+    missing = [c["id"] for c in capabilities if c["live"] == "none" and c["id"] in PERFORM_EARNS + ("thread_split", "post_video")]
+    return {"generated": now(), "configured": configured, "did": did,
+            "witness": {"plc_directory": witness.plc, "appview": witness.appview} if witness else None,
+            "email_confirmed": bool(session.get("emailConfirmed")) if session else None,
+            "capabilities": capabilities, "summary": tally, "missing": missing, "procedure": PROCEDURE,
+            "runs": [{"stamp": r["stamp"], "verdict": r.get("verdict")} for r in acceptance_runs(store)]}
+
+
+def matrix_markdown(matrix):
+    lines = ["| Capability | Fixture tests | Live | Evidence |", "|---|---|---|---|"]
+    for row in matrix["capabilities"]:
+        lines.append("| %s | %s | %s | %s |" % (row["title"], ", ".join("`%s`" % t for t in row["fixture"]),
+                                               row["live"], row["evidence"].replace("|", "\\|")))
+    tally = ", ".join("%s %d" % (k, v) for k, v in matrix["summary"].items())
+    lines += ["", "Generated %s. Live standing: %s." % (matrix["generated"], tally), "", matrix["procedure"]]
+    return "\n".join(lines)
+
+
+def attended_sitting():
+    """Clause 22a: the procedure's test traffic runs only under the attended user's own hand —
+    never a detached builder (all three legs crab tests), never any wake."""
+    if os.environ.get("DESKCRAB_ENG_ROLE") == "builder" or os.environ.get("DESKCRAB_JOB_ID"):
+        raise Error("the live acceptance procedure is unavailable to detached builders (clause 22a)")
+    if os.environ.get("DESKCRAB_WAKE_PROFILE"):
+        raise Error("the live acceptance procedure runs only in an attended desk or phone sitting (clause 22a)")
+    try:
+        cgroup = Path("/proc/self/cgroup").read_text()
+    except OSError:
+        cgroup = ""
+    if re.search(r"(^|/)deskcrab-job-[^/]+\.service($|/)", cgroup):
+        raise Error("the live acceptance procedure is unavailable to detached builders (clause 22a)")
+
+
+def acceptance_perform(store, settings, client, witness, authority, link=None, video=None, thread=False):
+    """Clause 22a: the one piece of test traffic the connector generates. Her own account, her
+    own records, every step read back through the witness, everything removed before it
+    returns, the repository proven unchanged, the whole run kept."""
+    attended_sitting()
+    if not authority or not authority.strip():
+        raise Error("the live acceptance procedure needs --authority: the attended user's own words")
+    did = client.did
+    # The stamp names the evidence directory and every operation id of the run: unique per
+    # run, so two runs in one second never share an intent (a delivered intent answers from
+    # its row and would skip the write).
+    stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-" + secrets.token_hex(3)
+    evidence = private_dir(private_dir(store.path / "verification") / ("acceptance-" + stamp))
+    collections = {k: COLLECTIONS[k] for k in ("post", "like", "repost")}
+    run = {"stamp": stamp, "started": now(), "authority": authority.strip(), "did": did,
+           "steps": [], "left": [], "verdict": "failed"}
+    run["before"] = {k: witness.records(did, c) for k, c in collections.items()}
+    created = []  # (kind, receipt id(s), uri(s)) in creation order; removed in reverse
+
+    def step(name, fn):
+        entry = {"step": name, "at": now()}
+        try:
+            entry.update(fn() or {})
+            entry["passed"] = True
+        except (Error, APIError, NetworkError) as exc:
+            entry.update(passed=False, error=str(exc))
+        run["steps"].append(entry)
+        return entry["passed"]
+
+    def reconcile(kind):
+        """A write the service queued: nothing may land later unattended. Whatever the witness
+        already finds is reconciled to a done receipt and undone; the rest stays pending."""
+        for r in store.db.execute("SELECT * FROM actions WHERE kind=? AND state='pending' AND created>=?",
+                                  (kind, run["started"])).fetchall():
+            uri = f"at://{did}/{COLLECTIONS[kind]}/{r['rkey']}"
+            if witness.record(uri) is not None:
+                client.commit_action(r)  # finds the record; writes nothing new
+                client.undo(r["id"])
+                run["left"].append({"receipt": r["id"], "uri": uri, "state": "reconciled and undone"})
+
+    def settled(iid):
+        """The intent row is the judge of delivery: a removal's result carries the receipt's own
+        state (undone, absent) in place of the word, so the row is read, never the result."""
+        row = store.db.execute("SELECT state FROM intents WHERE id=?", (iid,)).fetchone()
+        return bool(row) and row["state"] == "delivered"
+
+    def deliver(kind, iid, request):
+        result = client.attempt_intent(iid, kind, request, ACCEPTANCE_WHY)
+        if not settled(iid):
+            store.intent_update(iid, "cancelled", attempted=False)
+            reconcile(kind[2:] if kind.startswith("un") else kind)
+            raise Error("the service queued the write (%s); the intent is cancelled and reconciled, nothing lands later"
+                        % (result.get("error") or "rate limit"))
+        return result
+
+    def post_step(key, spec, op, expect):
+        def go():
+            result = deliver("post", "post:" + op, {"operation": op, "spec": spec})
+            created.append(("post", [p["id"] for p in result["posts"]], [p["uri"] for p in result["posts"]]))
+            found = []
+            for p in result["posts"]:
+                record = witness.record(p["uri"])
+                if not record or record.get("cid") != p["cid"]:
+                    raise Error("the witness did not find the post as the receipt recorded it")
+                found.append(record)
+            expect(found)
+            indexed = witness.posts([p["uri"] for p in result["posts"]])
+            return {"operation": op, "posts": [{"uri": p["uri"], "cid": p["cid"], "embed": embed_kind(f.get("value", {})),
+                                               "indexed": p["uri"] in indexed} for p, f in zip(result["posts"], found)]}
+        return go
+
+    def react_step(kind, target):
+        def go():
+            result = deliver(kind, kind + ":" + target, {"target": target})
+            created.append((kind, [result["id"]], [result["uri"]]))
+            record = witness.record(result["uri"])
+            if not record or record.get("cid") != result["cid"]:
+                raise Error("the witness did not find the %s as the receipt recorded it" % kind)
+            if (record.get("value", {}).get("subject") or {}).get("uri") != target:
+                raise Error("the %s names a different subject" % kind)
+            view = witness.posts([target]).get(target, {})
+            return {"uri": result["uri"], "cid": result["cid"], "subject": target, "appview_count": view.get(kind + "Count")}
+        return go
+
+    def expect_image(found):
+        embed = found[0].get("value", {}).get("embed", {})
+        images = embed.get("images") or embed.get("items") or []
+        if embed_kind(found[0].get("value", {})) not in ("app.bsky.embed.images", "app.bsky.embed.gallery") \
+                or not images or images[0].get("alt") != ACCEPTANCE_ALT:
+            raise Error("the delivered post carries no image with the alt text")
+
+    def expect_link(found):
+        external = found[0].get("value", {}).get("embed", {}).get("external", {})
+        if embed_kind(found[0].get("value", {})) != "app.bsky.embed.external" or external.get("uri") != link_url:
+            raise Error("the delivered post carries no link card for the URL")
+
+    def expect_video(found):
+        if embed_kind(found[0].get("value", {})) != "app.bsky.embed.video":
+            raise Error("the delivered post carries no video")
+
+    def expect_thread(found):
+        if len(found) != 2:
+            raise Error("the thread did not split into two posts")
+        parent = (found[1].get("value", {}).get("reply") or {}).get("parent", {})
+        if parent.get("uri") != found[0].get("uri") or parent.get("cid") != found[0].get("cid"):
+            raise Error("the second part does not reply to the first")
+        if "".join(f.get("value", {}).get("text", "") for f in found) != ACCEPTANCE_TEXT["thread"].strip():
+            raise Error("the two parts do not carry the whole text")
+
+    link_url = link or "https://atproto.com/"
+    try:
+        from PIL import Image
+        image = evidence / "image.png"
+        Image.new("RGB", (64, 40), (96, 48, 128)).save(image)
+    except (ImportError, OSError):
+        raise Error("Pillow is required to generate the verification image") from None
+    ok = step("image post", post_step("image", {"text": ACCEPTANCE_TEXT["image"], "langs": ["en"],
+              "images": [{"path": str(image), "alt": ACCEPTANCE_ALT}]}, "acceptance-image-" + stamp, expect_image))
+    ok = ok and step("link card", post_step("link", {"text": ACCEPTANCE_TEXT["link"], "langs": ["en"],
+                     "external": {"uri": link_url, "title": "The AT Protocol",
+                                  "description": "A link card delivery check; the metadata is supplied explicitly."}},
+                     "acceptance-link-" + stamp, expect_link))
+    target = created[0][2][0] if created else None
+    ok = ok and step("like", react_step("like", target))
+    ok = ok and step("repost", react_step("repost", target))
+    if thread:
+        ok = ok and step("two-part thread", post_step("thread", {"text": ACCEPTANCE_TEXT["thread"].strip(), "langs": ["en"]},
+                                                     "acceptance-thread-" + stamp, expect_thread))
+    if video:
+        if not (client.session or {}).get("emailConfirmed"):
+            run["steps"].append({"step": "video post", "at": now(), "passed": None, "blocked":
+                                 "the account's email is unconfirmed; nothing was uploaded. The user confirms it from their own mailbox, then reruns with --video"})
+        else:
+            ok = ok and step("video post", post_step("video", {"text": ACCEPTANCE_TEXT["video"], "langs": ["en"],
+                             "video": {"path": str(video), "alt": "A short clip, used to check that a video of mine arrives with its alt text."}},
+                             "acceptance-video-" + stamp, expect_video))
+    # Removal runs whether or not a step failed, newest first.
+    for kind, ids, uris in reversed(created):
+        name = "remove " + ("post" if kind == "post" else kind)
+
+        def remove(kind=kind, ids=ids, uris=uris):
+            if kind == "post":
+                for aid in reversed(ids):
+                    client.undo(aid)
+            else:
+                # The receipt's request is the subject the reaction named; the removal is the
+                # intent of the opposite kind on that same post (clause 4a ids).
+                subject = json.loads(store.db.execute("SELECT request FROM actions WHERE id=?", (ids[0],)).fetchone()["request"])
+                iid = "un" + kind + ":" + subject["uri"]
+                result = client.attempt_intent(iid, "un" + kind, {"target": subject["uri"]}, ACCEPTANCE_WHY)
+                if not settled(iid):
+                    store.intent_update(iid, "cancelled", attempted=False)
+                    raise Error("the removal was queued (%s); the intent is cancelled" % (result.get("error") or "rate limit"))
+            for uri in uris:
+                if witness.record(uri) is not None:
+                    raise Error("the witness still finds " + uri)
+            return {"receipts": list(ids), "uris": list(uris)}
+        if not step(name, remove):
+            run["left"].append({"kind": kind, "receipts": list(ids), "uris": list(uris),
+                                "undo": ["crab bluesky undo " + i for i in ids]})
+    run["after"] = {k: witness.records(did, c) for k, c in collections.items()}
+    run["unchanged"] = run["after"] == run["before"]
+    run["finished"] = now()
+    failed = [s["step"] for s in run["steps"] if s.get("passed") is False]
+    run["verdict"] = "passed" if not failed and run["unchanged"] and not run["left"] else "failed"
+    run["failed_steps"] = failed
+    atomic(evidence / "run.json", run)
+    return run
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(prog="crab bluesky", description=__doc__)
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -1593,6 +2358,13 @@ def main(argv=None):
     p = sub.add_parser("person"); p.add_argument("actor"); p.add_argument("--limit", type=int, default=12)
     p = sub.add_parser("remember"); p.add_argument("actor"); p.add_argument("text", nargs="+")
     p.add_argument("--event", default="", help="the AT URI of the exchange this fact came from")
+    p = sub.add_parser("acceptance", help="the per-capability acceptance matrix (clause 22)")
+    p.add_argument("--perform", action="store_true", help="the attended live procedure (clause 22a)")
+    p.add_argument("--authority", default="", help="the attended user's own words granting --perform")
+    p.add_argument("--markdown", action="store_true")
+    p.add_argument("--link", default="https://atproto.com/", help="the URL the link card names")
+    p.add_argument("--video", default="", help="an MP4 for the video row, once the email is confirmed")
+    p.add_argument("--thread", action="store_true", help="also post and remove a two-part thread")
     args = parser.parse_args(argv)
     if args.cmd == "summary":
         print(offline_summary(home()))
@@ -1673,6 +2445,24 @@ def main(argv=None):
                 value = {"intent": args.intent, "state": "cancelled"}
             elif args.cmd == "undo":
                 value = client.undo(args.receipt)
+            elif args.cmd == "acceptance":
+                witness = witness_for(settings) if settings.get("did") else None
+                run = None
+                if args.perform:
+                    attended_sitting()
+                    if not args.authority.strip():
+                        raise Error("the live acceptance procedure needs --authority: the attended user's own words")
+                    if witness is None:
+                        raise Error("configure the verified account DID before performing the live acceptance")
+                    run = acceptance_perform(store, settings, client, witness, args.authority,
+                                             args.link, args.video or None, args.thread)
+                value = acceptance_matrix(store, settings, client, witness)
+                if run is not None:
+                    value["last_run"] = run
+                atomic(private_dir(store.path / "verification") / "acceptance-matrix.json", value)
+                if args.markdown:
+                    print(matrix_markdown(value))
+                    return
             elif args.cmd == "receipts":
                 value = envelope([dict(r) for r in store.db.execute(
                     "SELECT id,kind,uri,cid,state,why,created FROM actions ORDER BY created DESC LIMIT 100")])

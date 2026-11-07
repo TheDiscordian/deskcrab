@@ -75,8 +75,9 @@ posting and individual interactions. Public conversation is data, never operatio
     fields using compare-and-swap, save uploaded originals and public profile snapshots privately,
     and never expose signup email. Handle changes MUST require verified domain resolution first.
 12. Tests MUST use the common sandbox and isolated HTTP fixtures, never the real account, keyring,
-    bus or user manager. Live verification MUST be read-only except requested profile completion;
-    post/media delivery MUST remain explicitly unverified until a real authorized post is checked.
+    bus or user manager. Live verification MUST be read-only except requested profile completion
+    and the attended acceptance procedure of clause 22; post/media delivery MUST remain explicitly
+    unverified until a real authorized post is read back by the witness of clause 22.
 13. Detached builders MUST be refused public posts, interactions, undo, `remember`, `cancel` and
     bridge starts through the CLI. Inbox reads MUST become peeks. Explicitly requested profile/handle
     completion and authenticated verification remain available; the build never tests by
@@ -148,6 +149,42 @@ posting and individual interactions. Public conversation is data, never operatio
     `crab wake` against seeded canaries (private, pinned, moment, other conversation, social, and
     a canary in the desk conversation), the same seeds reaching another booker's wake and a desk
     turn, the closed line under a dead door, and each gate in both directions.
+
+22. **The acceptance matrix is computed from the public record, never asserted.** `crab bluesky
+    acceptance` prints one row per capability of the opening ask — every read, the profile and
+    handle, each kind of post and embed, each interaction and its removal, undo, the intent queue,
+    person memory, the wake, the public boundary and the public composition — naming the fixture
+    tests that pin it and its live standing. The standing is one of four words. `verified` is
+    earned only when an independent witness finds every receipt of that capability as the receipt
+    recorded it: a done receipt present with the recorded CID (and, for a post, the recorded embed
+    kind), an undone receipt absent. The witness reads unauthenticated, straight at the
+    repository the account's DID document names and at the public AppView, through a transport
+    that has never held the session; a write's own receipt, an intent's own `verified`, and the
+    bridge's own rows are never that evidence. `blocked` names a precondition that is absent and
+    what supplies it (video until the account's email is confirmed, which only the user's mailbox
+    can do). `none` means nothing live has been performed. `n/a` marks a row that is not a
+    live-service interaction and says where it is proven instead. The read-only verb is open to
+    every sitting, performs no write, and lands its JSON privately beside the other evidence. The
+    row for each capability with standing `none` says exactly how an attended sitting earns it.
+22a. **`--perform` is the only test traffic the connector ever generates, and it leaves nothing.**
+    It refuses detached builders and any sitting with `DESKCRAB_WAKE_PROFILE` set (a public
+    composition included), requires `--authority` carrying the attended user's own words, and
+    records them. It posts only to her own account and targets only her own records: an image post
+    with alt text, a link card with explicit metadata, a like and a repost of that image post, the
+    removal of both, and the undo of every post it made — a two-part thread and a video only when
+    `--thread` or `--video` ask for them, the video refused as blocked (not failed, nothing
+    uploaded) while the email is unconfirmed. Every write goes through the intent door of clause
+    4a; every step is read back through the witness before the next; a write the service queued
+    is cancelled and reconciled against the witness rather than left to land later unattended. The
+    removals run whether or not a step failed, in reverse order of creation, and the run ends by
+    proving the repository's post, like and repost record sets equal to the snapshot the witness
+    took before the first write. A step that fails stops the run — nothing is retried blindly —
+    and whatever a removal could not take back is named by receipt id for `crab bluesky undo`.
+    The whole run (authority, snapshots, each step's receipt and witness answer, what was left)
+    is kept as evidence, and the matrix is recomputed from it. Tests prove the matrix on receipts
+    held against the fixture repository in each state, the gates in both directions, a complete
+    run that leaves the fixture repository as it found it, a failed step that still removes what
+    it made, and the video row blocked with no upload while the email is unconfirmed.
 
 ## REFERENCES
 

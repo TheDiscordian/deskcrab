@@ -48,6 +48,7 @@ def jwt(expiry=None):
 class Remote:
     def __init__(self):
         self.records, self.calls, self.failures = {}, [], {}
+        self.auth, self.hooks = [], []  # (ns, bearer present) per call; hooks answer before the fixture does
         self.notes = {None: {"notifications": []}}
         self.followers, self.following = {None: []}, {None: []}
         self.graph_cursor = {}
@@ -70,10 +71,22 @@ class Remote:
         failures = self.failures.get(ns, [])
         if failures:
             return failures.pop(0)
+        for hook in self.hooks:
+            answer = hook(ns, query, body)
+            if answer:
+                return answer
+        if ns.startswith("did:"):
+            # The DID document the witness reads (clause 22): the repository host is this fixture.
+            return 200, {"id": ns, "service": [{"id": "#atproto_pds", "type": "AtprotoPersonalDataServer",
+                                                "serviceEndpoint": self.url}]}, {}
         if ns in ("com.atproto.server.createSession", "com.atproto.server.refreshSession", "com.atproto.server.getSession"):
             return 200, self.session(), {}
         if ns == "com.atproto.identity.resolveHandle":
-            return 200, {"did": OTHER}, {}
+            return 200, {"did": DID if query.get("handle") == "fixture.invalid" else OTHER}, {}
+        if ns == "com.atproto.repo.listRecords":
+            prefix = f"at://{query['repo']}/{query['collection']}/"
+            rows = [{"uri": u, "cid": r["cid"], "value": r["value"]} for u, r in self.records.items() if u.startswith(prefix)]
+            return 200, {"records": rows}, {}
         if ns == "com.atproto.repo.getRecord":
             uri = f"at://{query['repo']}/{query['collection']}/{query['rkey']}"
             if uri not in self.records:
@@ -99,7 +112,8 @@ class Remote:
             return 200, {}, {}
         if ns == "app.bsky.actor.getProfile":
             record = self.records.get(f"at://{DID}/app.bsky.actor.profile/self", {}).get("value", {})
-            result = {"did": query["actor"], "viewer": {}, **record}
+            result = {"did": query["actor"], "viewer": {}, **record,
+                      "handle": "fixture.invalid" if query["actor"] == DID else "friend.invalid"}
             for uri, r in self.records.items():
                 if "/app.bsky.graph.follow/" in uri and r["value"].get("subject") == query["actor"]:
                     result["viewer"]["following"] = uri
@@ -158,6 +172,9 @@ class Remote:
                 return 500, {"error": "embedder down"}, {}
             return 200, {"embeddings": [fixture_vector(t) for t in (body or {}).get("input", [])]}, {}
         if ns == "app.bsky.feed.getPostThread":
+            if not self.thread and query.get("uri") in self.records:
+                r = self.records[query["uri"]]
+                return 200, {"thread": {"post": {"uri": query["uri"], "cid": r["cid"], "record": r["value"]}}}, {}
             return 200, self.thread or {"thread": {"post": self.posts[POST]}}, {}
         return 400, {"error": "UnknownEndpoint"}, {}
 
@@ -180,6 +197,7 @@ class Handler(BaseHTTPRequestHandler):
         if body and self.headers.get("Content-Type") == "application/json":
             body = json.loads(body)
         ns = parsed.path.rsplit("/", 1)[-1]
+        self.server.remote.auth.append((ns, bool(self.headers.get("Authorization"))))
         status, result, headers = self.server.remote.dispatch(ns, query, body)
         self.send_response(status)
         for key, value in headers.items():
@@ -1058,6 +1076,245 @@ class Intents(Doors):
         self.assertEqual(b.replay_intents(self.store, self.client), {"delivered": 0, "queued": 0, "failed": 0})
         self.assertEqual(self.count("com.atproto.repo.putRecord"), 0)
         self.assertIn("queued intents", b.offline_summary(self.store.path))
+
+
+class Acceptance(Doors):
+    """specs/bluesky.md clauses 22 and 22a. The witness reads the fixture through its own
+    loopback transport and the DID document the fixture serves, never the client's session.
+    The attended procedure's gate reads the environment and the cgroup: inside a detached
+    builder these cases run under the user-namespace escape, as every crab-driving suite does."""
+
+    def setUp(self):
+        super().setUp()
+        self.settings.update(plc_directory=self.remote.url, appview=self.remote.url, desired_handle="fixture.invalid")
+        self.witness = b.Witness(b.HTTP(allow_loopback=True), self.remote.url, self.remote.url)
+
+    @contextlib.contextmanager
+    def attended(self):
+        """The user's own sitting: no builder role, no job id, no wake profile."""
+        saved = {k: os.environ.pop(k) for k in ("DESKCRAB_ENG_ROLE", "DESKCRAB_JOB_ID", "DESKCRAB_WAKE_PROFILE") if k in os.environ}
+        try:
+            yield
+        finally:
+            os.environ.update(saved)
+
+    def matrix(self):
+        value = b.acceptance_matrix(self.store, self.settings, self.client, self.witness)
+        return value, {row["id"]: row for row in value["capabilities"]}
+
+    def set_email(self, confirmed):
+        path = self.store.path / "session.json"
+        saved = b.private_json(path)
+        saved["emailConfirmed"] = confirmed
+        b.atomic(path, saved)
+        self.remote.email_confirmed = confirmed
+        self.client.session = None
+
+    def post(self, operation, spec):
+        return self.client.attempt_intent("post:" + operation, "post", {"operation": operation, "spec": spec}, "A reason of mine")
+
+    def test_the_table_names_real_tests_and_every_row_stands_alone(self):
+        names = set()
+        for cls in (Connector, Doors, PersonMemory, Intents, Acceptance):
+            names.update(n for n in dir(cls) if n.startswith("test_"))
+        ids = [c[0] for c in b.CAPABILITIES]
+        self.assertEqual(len(ids), len(set(ids)))
+        for cid, title, fixture in b.CAPABILITIES:
+            self.assertTrue(fixture and title, cid)
+            for name in fixture:
+                if name.startswith("tests/"):
+                    self.assertTrue((ROOT / name).is_file(), name)
+                else:
+                    self.assertIn(name, names, cid)
+        for cid in list(b.RUN_STEPS) + list(b.PERFORM_EARNS):
+            self.assertIn(cid, ids)
+
+    def test_an_unconfigured_store_earns_nothing_and_touches_no_network(self):
+        before = len(self.remote.calls)
+        value = b.acceptance_matrix(self.store, {}, None, None)
+        self.assertEqual(len(self.remote.calls), before)
+        self.assertEqual(value["summary"]["verified"], 0)
+        self.assertEqual({row["live"] for row in value["capabilities"]} - {"none", "blocked", "n/a"}, set())
+        self.assertIn("--perform", value["procedure"])
+        self.assertIn("post_images", value["missing"])
+        self.assertIn("| Capability | Fixture tests | Live | Evidence |", b.matrix_markdown(value))
+
+    def test_receipts_are_held_against_the_witness_in_every_state(self):
+        self.client.update_profile({"displayName": "The reader", "description": "Books.", "pronouns": "she/her",
+                                    "avatar": str(self.image), "banner": str(self.image)})
+        kept = self.post("kept", {"text": "A thought"})
+        gone = self.post("gone", {"text": "A passing thought"})
+        self.post("reply", {"text": "A reply", "reply": POST})
+        self.post("image", {"text": "A drawing", "images": [{"path": str(self.image), "alt": "Purple rectangle"}]})
+        self.post("link", {"text": "A page", "external": {"uri": "https://fixture.invalid/page", "title": "A page",
+                                                           "description": "About a book"}})
+        like = self.client.attempt_intent("like:" + POST, "like", {"target": POST}, "I enjoyed it")
+        follow = self.client.attempt_intent("follow:" + OTHER, "follow", {"target": OTHER}, "A shared interest")
+        self.client.undo(gone["posts"][0]["id"])
+        self.client.notifications()
+        self.client.graph("followers")
+        self.client.graph("following")
+        self.client.feed()
+        self.client.feed("author")
+        self.client.feed("custom", feed="at://did:plc:fixturefeed/app.bsky.feed.generator/fixture")
+        self.set_email(False)
+        value, rows = self.matrix()
+        for cid in ("profile", "handle", "originals", "credentials", "notifications", "graph", "feeds", "thread",
+                    "post_text", "reply", "post_images", "post_link", "like", "follow", "undo_post", "intents", "no_spam"):
+            self.assertEqual(rows[cid]["live"], "verified", (cid, rows[cid]["evidence"]))
+        for cid in ("repost", "unlike", "unrepost", "unfollow", "thread_split", "wake"):
+            self.assertEqual(rows[cid]["live"], "none", (cid, rows[cid]["evidence"]))
+        if MEMORY_OK:  # the reply above was retained under its parent author through the real door
+            self.assertEqual(rows["person_memory"]["live"], "verified", rows["person_memory"]["evidence"])
+        self.assertEqual(rows["post_video"]["live"], "blocked")
+        self.assertIn("mailbox", rows["post_video"]["evidence"])
+        self.assertEqual((rows["public_composition"]["live"], rows["recovery"]["live"]), ("n/a", "n/a"))
+        self.assertEqual(rows["post_text"]["receipts"][0]["uri"], kept["posts"][0]["uri"])
+        self.assertEqual(rows["undo_post"]["receipts"][0]["witness"], "absent")
+        self.assertEqual(rows["post_images"]["receipts"][0]["embed"], "app.bsky.embed.images")
+        self.assertEqual(rows["post_link"]["receipts"][0]["embed"], "app.bsky.embed.external")
+        self.assertFalse(value["email_confirmed"])
+        self.assertEqual(value["missing"], ["thread_split", "unlike", "repost", "unrepost"])
+        # The witness never carries the session: its DID-document read rode without a bearer.
+        docs = [auth for ns, auth in self.remote.auth if ns.startswith("did:")]
+        self.assertTrue(docs and not any(docs))
+        # A record that drifted from its receipt, and one that vanished, lose the word.
+        self.remote.records[like["uri"]]["cid"] = "cid-tampered"
+        self.remote.records.pop(follow["uri"])
+        _, rows = self.matrix()
+        self.assertEqual(rows["like"]["live"], "none")
+        self.assertIn("different CID", rows["like"]["evidence"])
+        self.assertEqual(rows["like"]["receipts"][0]["witness"], "present with a different CID")
+        self.assertEqual(rows["follow"]["live"], "none")
+        self.assertEqual(rows["follow"]["receipts"][0]["witness"], "absent")
+        self.assertEqual(rows["intents"]["live"], "none")
+
+    def test_the_attended_run_earns_the_missing_rows_and_leaves_the_repository_as_found(self):
+        self.post("kept", {"text": "A thought"})
+        self.client.attempt_intent("follow:" + OTHER, "follow", {"target": OTHER}, "A shared interest")
+        before = dict(self.remote.records)
+        puts = self.count("com.atproto.repo.putRecord")
+        with self.attended():
+            run = b.acceptance_perform(self.store, self.settings, self.client, self.witness,
+                                       "the user, present at the desk, asked for this",
+                                       link="https://fixture.invalid/page", thread=True)
+        self.assertEqual(run["verdict"], "passed", run)
+        self.assertTrue(run["unchanged"])
+        self.assertEqual(run["left"], [])
+        self.assertEqual([s["step"] for s in run["steps"]],
+                         ["image post", "link card", "like", "repost", "two-part thread",
+                          "remove post", "remove repost", "remove like", "remove post", "remove post"])
+        self.assertTrue(all(s["passed"] for s in run["steps"]))
+        self.assertEqual(set(self.remote.records), set(before))
+        self.assertEqual(self.count("com.atproto.repo.putRecord") - puts, 6)
+        self.assertEqual(self.count("com.atproto.repo.deleteRecord"), 6)
+        self.assertGreaterEqual(self.count("com.atproto.repo.uploadBlob"), 1)
+        self.assertEqual(run["steps"][0]["posts"][0]["embed"], "app.bsky.embed.images")
+        self.assertTrue(run["steps"][0]["posts"][0]["indexed"])
+        self.assertEqual(run["steps"][1]["posts"][0]["embed"], "app.bsky.embed.external")
+        self.assertEqual(run["steps"][2]["subject"], run["steps"][0]["posts"][0]["uri"])
+        self.assertEqual(len(run["steps"][4]["posts"]), 2)
+        self.assertEqual(run["authority"], "the user, present at the desk, asked for this")
+        evidence = list((self.store.path / "verification").glob("acceptance-*/run.json"))
+        self.assertEqual(len(evidence), 1)
+        self.assertTrue((evidence[0].parent / "image.png").is_file())
+        self.assertEqual((evidence[0].stat().st_mode & 0o777), 0o600)
+        listed = [auth for ns, auth in self.remote.auth if ns == "com.atproto.repo.listRecords" or ns.startswith("did:")]
+        self.assertTrue(listed and not any(listed))
+        _, rows = self.matrix()
+        for cid in ("post_images", "post_link", "like", "repost", "thread_split"):
+            self.assertEqual(rows[cid]["live"], "verified", (cid, rows[cid]["evidence"]))
+            self.assertIn("attended run " + run["stamp"], rows[cid]["evidence"])
+        for cid in ("unlike", "unrepost", "undo_post", "post_text", "follow"):
+            self.assertEqual(rows[cid]["live"], "verified", (cid, rows[cid]["evidence"]))
+        self.assertEqual(rows["post_video"]["live"], "none")
+        self.assertEqual(rows["unfollow"]["live"], "none")
+        # A removed record that came back would take the word away again.
+        self.remote.records[run["steps"][0]["posts"][0]["uri"]] = {"uri": "x", "cid": "cid-back", "value": {}}
+        _, rows = self.matrix()
+        self.assertEqual(rows["post_images"]["live"], "none")
+
+    def test_a_failed_step_stops_the_run_and_still_removes_what_it_made(self):
+        def refuse_reposts(ns, query, body):
+            if ns == "com.atproto.repo.putRecord" and body.get("collection") == b.COLLECTIONS["repost"]:
+                return 400, {"error": "InvalidRecord"}, {}
+        self.remote.hooks.append(refuse_reposts)
+        before = dict(self.remote.records)
+        with self.attended():
+            run = b.acceptance_perform(self.store, self.settings, self.client, self.witness, "the user asked")
+        self.assertEqual(run["verdict"], "failed")
+        self.assertEqual(run["failed_steps"], ["repost"])
+        self.assertEqual([s["step"] for s in run["steps"]],
+                         ["image post", "link card", "like", "repost", "remove like", "remove post", "remove post"])
+        self.assertTrue(all(s["passed"] for s in run["steps"] if s["step"].startswith("remove")))
+        self.assertEqual(run["left"], [])
+        self.assertTrue(run["unchanged"])
+        self.assertEqual(set(self.remote.records), set(before))
+        _, rows = self.matrix()
+        self.assertEqual(rows["repost"]["live"], "none")
+        self.assertEqual(rows["post_images"]["live"], "none")  # a failed run earns nothing
+
+    def test_a_queued_write_is_cancelled_and_reconciled_never_left_to_land(self):
+        self.remote.failures["com.atproto.repo.putRecord"] = [(429, {"error": "RateLimitExceeded"}, {"Retry-After": "60"})]
+        before = dict(self.remote.records)
+        with self.attended():
+            run = b.acceptance_perform(self.store, self.settings, self.client, self.witness, "the user asked")
+        self.assertEqual(run["verdict"], "failed")
+        self.assertEqual(run["failed_steps"], ["image post"])
+        self.assertIn("cancelled", run["steps"][0]["error"])
+        self.assertEqual([i["state"] for i in self.store.intents()], ["cancelled"])
+        self.assertEqual(set(self.remote.records), set(before))
+        with self.store.db:
+            self.store.db.execute("DELETE FROM meta WHERE key LIKE 'backoff:%'")
+        self.assertEqual(b.replay_intents(self.store, self.client), {"delivered": 0, "queued": 0, "failed": 0})
+
+    def test_the_procedure_is_refused_unattended_before_any_write(self):
+        before = len(self.remote.calls)
+        for env in ({"DESKCRAB_WAKE_PROFILE": "public"}, {"DESKCRAB_WAKE_PROFILE": "wake"},
+                    {"DESKCRAB_ENG_ROLE": "builder"}, {"DESKCRAB_JOB_ID": "20990101-000000-1"}):
+            with self.attended(), patch.dict(os.environ, env), self.assertRaises(b.Error):
+                b.acceptance_perform(self.store, self.settings, self.client, self.witness, "words")
+        with self.attended(), self.assertRaises(b.Error):
+            b.acceptance_perform(self.store, self.settings, self.client, self.witness, "  ")
+        self.assertEqual(len(self.remote.calls), before)
+        self.assertFalse(list(self.store.path.glob("verification/acceptance-*")))
+
+    def test_the_video_row_is_blocked_without_a_confirmed_email_and_nothing_is_uploaded(self):
+        self.set_email(False)
+        with self.attended(), self.fake_video():
+            run = b.acceptance_perform(self.store, self.settings, self.client, self.witness, "the user asked",
+                                       video=str(self.video_file))
+        self.assertEqual(run["verdict"], "passed", run)
+        blocked = [s for s in run["steps"] if s["step"] == "video post"][0]
+        self.assertIsNone(blocked["passed"])
+        self.assertIn("mailbox", blocked["blocked"])
+        self.assertEqual(self.count("app.bsky.video.uploadVideo"), 0)
+        _, rows = self.matrix()
+        self.assertEqual(rows["post_video"]["live"], "blocked")
+        self.set_email(True)
+        with self.attended(), self.fake_video():
+            run = b.acceptance_perform(self.store, self.settings, self.client, self.witness, "the user asked",
+                                       video=str(self.video_file))
+        self.assertEqual(run["verdict"], "passed", run)
+        self.assertEqual(self.count("app.bsky.video.uploadVideo"), 1)
+        self.assertEqual([s["step"] for s in run["steps"]][:5], ["image post", "link card", "like", "repost", "video post"])
+        self.assertEqual(run["steps"][4]["posts"][0]["embed"], "app.bsky.embed.video")
+        _, rows = self.matrix()
+        self.assertEqual(rows["post_video"]["live"], "verified")
+
+    def test_the_cli_computes_the_matrix_and_performs_only_under_authority(self):
+        value = self.cli("acceptance")
+        self.assertIn("capabilities", value)
+        self.assertTrue((self.store.path / "verification" / "acceptance-matrix.json").is_file())
+        with self.attended(), self.assertRaises(b.Error):
+            self.cli("acceptance", "--perform")
+        with self.attended():
+            value = self.cli("acceptance", "--perform", "--authority", "the user asked", "--link", "https://fixture.invalid/page")
+        self.assertEqual(value["last_run"]["verdict"], "passed", value["last_run"])
+        rows = {row["id"]: row for row in value["capabilities"]}
+        self.assertEqual(rows["post_images"]["live"], "verified")
+        self.assertEqual(rows["post_link"]["live"], "verified")
+        self.assertEqual(self.remote.records, {})
 
 
 if __name__ == "__main__":
