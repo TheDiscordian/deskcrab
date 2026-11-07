@@ -16,6 +16,7 @@ echo "every knob points inside the sandbox:"
 # runtime directory that everything else is derived from.
 for knob in DESKCRAB_CONF DESKCRAB_STATE_PREFIX WAKES_DIR JOBS_DIR \
             DESKCRAB_MEMORY_DIR ACCOUNT_STATE_FILE DAY_JOURNAL_DIR \
+            DESKCRAB_BLUESKY_DIR DESKCRAB_BLUESKY_CONFIG \
             XDG_STATE_HOME XDG_DATA_HOME XDG_CONFIG_HOME XDG_CACHE_HOME \
             XDG_RUNTIME_DIR DESKCRAB_PIDFILE HOME TMPDIR ARCHIVE_DIR \
             NOTICE_STATE_DIR CLAUDE_BIN \
@@ -152,6 +153,12 @@ $SANDBOX_LIVE_DATA/jobs/$RUNNING_ID.lock"
     "$SANDBOX_LIVE_DATA/metrics" \
     "$SANDBOX_LIVE_DATA/metrics/tokens-2026-01-01.jsonl" \
     "$SANDBOX_LIVE_DATA/metricsish" \
+    "$SANDBOX_LIVE_DATA/bluesky" \
+    "$SANDBOX_LIVE_DATA/bluesky/social.sqlite3" \
+    "$SANDBOX_LIVE_DATA/bluesky/social.sqlite3-journal" \
+    "$SANDBOX_LIVE_DATA/bluesky/session.json" \
+    "$SANDBOX_LIVE_DATA/bluesky/profile-originals/avatar.png" \
+    "$SANDBOX_LIVE_DATA/bluesky/social.sqlite3.bak" \
     "$SANDBOX_LIVE_DATA/chess/games" \
     "$SANDBOX_LIVE_DATA/chess/games/some-game.json" \
     "$SANDBOX_LIVE_DATA/chess/selfplay/night.log" \
@@ -197,6 +204,13 @@ for gone in "$SANDBOX_LIVE_DATA/metrics" \
     check "dropped, because the token ledger records every live attempt: ${gone##*/}" \
         bash -c '! printf "%s\n" "$1" | grep -qxF "$2"' _ "$photo" "$gone"
 done
+for gone in "$SANDBOX_LIVE_DATA/bluesky" \
+            "$SANDBOX_LIVE_DATA/bluesky/social.sqlite3" \
+            "$SANDBOX_LIVE_DATA/bluesky/social.sqlite3-journal" \
+            "$SANDBOX_LIVE_DATA/bluesky/session.json"; do
+    check "dropped, because the resident social connector polls or refreshes it: ${gone##*/}" \
+        bash -c '! printf "%s\n" "$1" | grep -qxF "$2"' _ "$photo" "$gone"
+done
 for gone in "$SANDBOX_LIVE_DATA/chess" \
             "$SANDBOX_LIVE_DATA/chess/games" \
             "$SANDBOX_LIVE_DATA/chess/games/some-game.json" \
@@ -221,6 +235,8 @@ for kept in "$SANDBOX_LIVE_PREFIX-phone-seen.bak" "$SANDBOX_LIVE_PREFIX-convo.tx
             "$SANDBOX_LIVE_PREFIX-gamely" \
             "$SANDBOX_LIVE_DATA/webpushed-elsewhere" \
             "$SANDBOX_LIVE_DATA/metricsish" \
+            "$SANDBOX_LIVE_DATA/bluesky/profile-originals/avatar.png" \
+            "$SANDBOX_LIVE_DATA/bluesky/social.sqlite3.bak" \
             "$SANDBOX_LIVE_DATA/chess/reflex.db.bak" \
             "$SANDBOX_LIVE_DATA/chess/record.py" \
             "$SANDBOX_LIVE_DATA/wakes/deskcrab-wake-1.wake" \

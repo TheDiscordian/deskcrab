@@ -16,7 +16,8 @@ during the very investigation that produced these specs.
 2. The helper MUST pin every knob that can reach live state: the config path, the state prefix, the
    wakes directory, the jobs directory, the memory directory, the account state file, the day
    journal directory, the state home, the data home, the recorder pid file, and the prefix-choice
-   log (rule 13b).
+   log (rule 13b). The Bluesky store and credential-config path MUST also be pinned through
+   `DESKCRAB_BLUESKY_DIR` and `DESKCRAB_BLUESKY_CONFIG`.
 3. The helper MUST stub every desktop tool from **one list**, in one place: the notifier, the
    synthesiser, the audio player, the window manager control, the markdown renderer, the media
    tools, the transcriber, and the CLI itself.
@@ -70,6 +71,11 @@ during the very investigation that produced these specs.
        homes and `DESKCRAB_CHESS_DIR`, the chess suites read their games and reflex rows back
        through those pins, and every FILE under the chess directory beyond these stays
        photographed);
+     - the live Bluesky directory's mtime, `social.sqlite3` and its SQLite journal siblings, and
+       `session.json`, which the resident connector updates at each poll or token refresh. Only
+       these exact files are excluded: profile originals, evidence and other files remain
+       photographed. Both Bluesky knobs are pinned, and the connector suite reads back its
+       database through the state pin; the harness suite checks the pins and exact exclusions;
      - the live wake queue's `ledger.log` only — one line per live booking, firing and tidy;
        the booking RECORDS stay photographed, because a booking landing in the live directory
        is precisely the quarry;

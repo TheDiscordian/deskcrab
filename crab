@@ -940,6 +940,26 @@ What you did tonight is journaled from your tool activity without your help, so 
             exec python3 "$SCRIPT_DIR/lib/eng" --kind want "$@"
         ;;
 
+    bluesky)
+        # Persistent social memory. Builders can verify reads and requested
+        # profile work, but never impersonate her in public conversation.
+        shift
+        case "${1:-}" in
+            post|like|repost|follow|unlike|unrepost|unfollow|undo|bridge)
+                if deskcrab_is_builder_context; then
+                    echo "DeskCrab: public social actions are unavailable to detached builders; use the job log and review record." >&2
+                    exit 64
+                fi
+                ;;
+        esac
+        if [ "${1:-}" = inbox ] && deskcrab_is_builder_context; then
+            set -- inbox --peek
+        fi
+        export DESKCRAB_BLUESKY_DIR="${DESKCRAB_BLUESKY_DIR:-$(deskcrab_home)/bluesky}"
+        export DESKCRAB_BLUESKY_CONFIG DESKCRAB_CRAB="$SCRIPT_DIR/crab"
+        exec python3 "$SCRIPT_DIR/lib/bluesky.py" "$@"
+        ;;
+
     signal)
         # Her own Signal number (specs/signal.md): inbox, history, contacts,
         # groups, sending, and the bridge the user unit runs. A builder may

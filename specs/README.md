@@ -51,6 +51,7 @@ The specs cite the defect dossier with these identifiers:
 | [debug-view.md](debug-view.md) | The live stream viewer: which logs it follows, what it renders, and what it must never duplicate or drop |
 | [phone.md](phone.md) | The HTTP front end and the PWA: turns, the watch cursor, streaming voice, static assets, auth, Web Push |
 | [signal.md](signal.md) | Her own Signal number: the daemon, the bridge that logs incoming messages and books one constant-reason wake, the inbox, contacts, groups, and ungated sending |
+| [bluesky.md](bluesky.md) | Persistent social inbox, feeds and graph, safe posts and media, social memory, identity and public-input boundaries |
 | [chessweb.md](chessweb.md) | The browser chess board: a SpeedyChess-protocol server over the betty-chess store — validation, the resident mover answering each user move in seconds, resume by replay |
 | [chess-reflex.md](chess-reflex.md) | Position memory for betty-chess: every finished game's moves keyed by FEN, result-weighted ranking, the gate that answers known positions without a reasoning turn, and the similarity layer that briefs an unknown one from its nearest stored neighbours |
 | [chess-selfplay.md](chess-selfplay.md) | The overnight grind: the one sanctioned self-play driver, its own model knob (never the real-game mover's), and the hard nightly budget enforced at the mover's choke point |

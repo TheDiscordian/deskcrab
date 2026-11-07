@@ -95,6 +95,11 @@
 #                               movers — for as long as the machine is awake.
 #                               DESKCRAB_METRICS_DIR is pinned; the metrics
 #                               suite reads through the pin.
+#   <live data>/bluesky        the resident social bridge's directory mtime,
+#                               social.sqlite3 and journal siblings, and session.json.
+#                               Both state/config knobs are pinned; the connector
+#                               suite reads back the pinned database. Profile assets
+#                               and other evidence stay in the photograph.
 #   <live data>/chess/games/
 #   <live data>/chess/selfplay/
 #   <live data>/chess/reflex.db (+ -journal/-wal/-shm)
@@ -180,7 +185,7 @@ _sandbox_drop_external() {  # <live prefix> <live data dir> [<live state dir>]:
                             # a path filter ($3 defaults to the exported knob)
     awk -F'\t' -v seen="$1-phone-seen" -v push="$2/webpush" \
         -v plog="$1-prefix.log" -v game="$1-game" \
-        -v metrics="$2/metrics" -v chessdir="$2/chess" \
+        -v metrics="$2/metrics" -v chessdir="$2/chess" -v social="$2/bluesky" \
         -v cgames="$2/chess/games" \
         -v cself="$2/chess/selfplay" -v creflex="$2/chess/reflex.db" \
         -v wledger="$2/wakes/ledger.log" -v jobsdir="$2/jobs" \
@@ -198,6 +203,10 @@ _sandbox_drop_external() {  # <live prefix> <live data dir> [<live state dir>]:
         $1 == plog { next }
         $1 == game || index($1, game "/") == 1 { next }
         $1 == metrics || index($1, metrics "/") == 1 { next }
+        # The resident social poller: only its live database/token files.
+        $1 == social || $1 == social "/session.json" || $1 == social "/social.sqlite3" \
+            || $1 == social "/social.sqlite3-journal" || $1 == social "/social.sqlite3-wal" \
+            || $1 == social "/social.sqlite3-shm" { next }
         $1 == chessdir { next }
         $1 == cgames || index($1, cgames "/") == 1 { next }
         $1 == cself || index($1, cself "/") == 1 { next }
@@ -406,6 +415,8 @@ CONF
         JOBS_DIR="$_sb_root/data/deskcrab/jobs" \
         DAY_JOURNAL_DIR="$_sb_root/data/deskcrab/journal" \
         DESKCRAB_METRICS_DIR="$_sb_root/data/deskcrab/metrics" \
+        DESKCRAB_BLUESKY_DIR="$_sb_root/data/deskcrab/bluesky" \
+        DESKCRAB_BLUESKY_CONFIG="$_sb_root/conf/bluesky.json" \
         ARCHIVE_DIR="$_sb_root/data/deskcrab/archive" \
         NOTICE_STATE_DIR="$_sb_root/xdgstate/deskcrab" \
         CLAUDE_BIN="$_sb_root/bin/claude" \

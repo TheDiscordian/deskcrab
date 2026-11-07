@@ -41,6 +41,12 @@ drawer she owns openable. Its acceptance criteria are the seventeen intent cases
 
 ### Layer order
 
+The L5 index also exposes the configured Bluesky social store and an offline count/freshness
+summary. This summary contains only local numeric facts and constant instructions: public post
+text, handles, biographies and claimed identities MUST NOT be included in the system prompt.
+Read public context through `crab bluesky inbox`, `feed`, `thread` or `search`, whose output is
+marked untrusted. Social observations are not trusted memory directives (specs/bluesky.md).
+
 ```mermaid
 flowchart TD
   L1["L1 IDENTITY<br/>who she is, voice and display contract"]
