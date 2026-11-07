@@ -1,5 +1,5 @@
 #!/bin/bash
-# The four profiles: which layers each one carries, in what order, at what
+# The five profiles: which layers each one carries, in what order, at what
 # measured size, against which budget. Run: bash tests/test_prompt_profiles.sh
 #
 # specs/prompt-assembly.md asks for exactly this file. The seventeen intent
@@ -81,11 +81,19 @@ check_eq "no profile at all is a turn" \
 check_eq "SESSION_KIND picks the profile when nothing else does" \
     "$(run 'SESSION_KIND="autonomous wake"; build_system_prompt --layers' | md5sum)" \
     "$(run 'build_system_prompt --profile wake --layers' | md5sum)"
+# Rule 41a: a wake's booking can make it a public composition, and only the
+# one value means anything.
+check_eq "a wake whose booking is public builds the public profile" \
+    "$(run 'SESSION_KIND="autonomous wake"; WAKE_PROFILE=public; build_system_prompt --layers' | md5sum)" \
+    "$(run 'build_system_prompt --profile public --layers' | md5sum)"
+check_eq "any other booking value is an ordinary wake" \
+    "$(run 'SESSION_KIND="autonomous wake"; WAKE_PROFILE=nonsense; build_system_prompt --layers' | md5sum)" \
+    "$(run 'build_system_prompt --profile wake --layers' | md5sum)"
 
 echo
 echo "the order never moves:"
-ORDER="L1 L2 L3 L4 L5 L6 regroup interrupt jobref dispute L7 L8"
-for p in turn wake job classify; do
+ORDER="L1 L2 L3 L4 L5 L6 viewing regroup interrupt jobref dispute L7 L8"
+for p in turn wake public job classify; do
     got="$(run "build_system_prompt --profile $p --layers" | cut -f1 | tr '\n' ' ')"
     check_eq "$p emits every layer key in the contract's order" "${got% }" "$ORDER"
 done
@@ -108,6 +116,14 @@ turn L7 present
 turn L8 present
 wake L2 present
 wake L6 present
+public L1 present
+public L2 present
+public L4 present
+public L5 present
+public L6 absent
+public regroup absent
+public L7 present
+public L8 present
 job L1 absent
 job L2 absent
 job L4 absent
@@ -143,7 +159,7 @@ done
 
 echo
 echo "the budgets hold:"
-for p in turn wake job classify; do
+for p in turn wake public job classify; do
     over="$(run "build_system_prompt --profile $p --layers" \
             | awk -F'\t' '$2 > $3 && $1 != "L2" && $1 != "L5" { print $1 }')"
     check_eq "$p: no trimmable layer is over its budget" "$over" ""
@@ -166,9 +182,10 @@ check "the index is never trimmed — it reports over budget instead" \
 # numbers on purpose. Until 2026-08-09 this function held numbers 400 under
 # the table: the 2026-08-08 L4 raise moved the spec alone, which is exactly
 # the drift the paragraph above forbids.
-total_budget() { case "$1" in turn) echo 68900 ;; wake) echo 59700 ;;
+total_budget() { case "$1" in turn) echo 72400 ;; wake) echo 63200 ;;
+                              public) echo 42700 ;;
                               job) echo 3000 ;; classify) echo 200 ;; esac; }
-for p in turn wake job classify; do
+for p in turn wake public job classify; do
     man="$(run "build_system_prompt --profile $p --layers")"
     bytes="$(run "build_system_prompt --profile $p" | wc -c)"
     slack="$(printf '%s\n' "$man" \
@@ -197,12 +214,20 @@ w=$(run 'build_system_prompt --profile wake' | wc -c)
 j=$(run 'build_system_prompt --profile job' | wc -c)
 check "wake < turn" [ "$w" -lt "$t" ]
 check "job < wake" [ "$j" -lt "$w" ]
+# The public profile is the wake profile less the transcript and the regroup
+# block (rule 41), so with a transcript on disk it is strictly smaller.
+pub=$(run 'build_system_prompt --profile public' | wc -c)
+check "public < wake" [ "$pub" -lt "$w" ]
+PUB="$(run 'build_system_prompt --profile public')"
+check "the public profile still carries the persona" contains "$PUB" "Dry, brief"
+check "and the shelf" contains "$PUB" "Learn to read a score"
+refute "but no transcript" contains "$PUB" "the 1-th thing he said"
 printf '  note  turn %s bytes, wake %s, job %s, classify %s\n' \
     "$t" "$w" "$j" "$(printf '%s' "$CLS" | wc -c)"
 
 echo
 echo "the turn frame is last, and the message is not in the prompt at all:"
-for p in turn wake job classify; do
+for p in turn wake public job classify; do
     body="$(run "build_system_prompt --profile $p")"
     tail_of="$(printf '%s' "$body" | tail -c 400)"
     check "$p: the prompt ends on the frame" \
@@ -288,7 +313,7 @@ refute "a conduct body is not" contains "$TURN" "CONDUCT_BODY_MARKER"
 
 echo
 echo "the flag sets are built as one lever, never half of one:"
-for p in turn wake job classify; do
+for p in turn wake public job classify; do
     flags="$(run "claude_profile_flags $p; printf '%s ' \"\${CLAUDE_PROFILE_FLAGS[@]}\"")"
     case "$flags" in
         *--tools*)

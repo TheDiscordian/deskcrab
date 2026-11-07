@@ -70,6 +70,8 @@ A push-to-talk desktop assistant for Linux, powered by the Claude Code CLI. The 
 | `lib/day-journal` | the durable per-day record of every finished turn |
 | `lib/empty-mcp.json` | the empty MCP config her sessions run against when `MCP_CONFIG` names no servers of her own |
 | `lib/codex-mcp-args` | her `MCP_CONFIG` servers as codex takes them: one `-c` table, header values in the environment |
+| `lib/watchalong` | shared viewing: the session, immutable packets with decoder timestamps, review receipts, the reader loop, and the viewing layer renderer |
+| `lib/watchalong_fixture.py` | the private synthetic viewing fixture (painted counters, known speech to a file, tones) and the deterministic decoder the test reader uses |
 | `systemd/` | user units: wake, restore, sleep, canary, watchers, server |
 | `specs/` | the contract |
 | `docs/` | engineering history |
@@ -100,6 +102,7 @@ work here, the defect identifiers, the data-flow graph, and the lock table.
 | [model-backends](specs/model-backends.md) | the engine follows the model name: Claude names take the account walk, codex names run the ChatGPT login, limits fall back |
 | [metrics](specs/metrics.md) | the token ledger: per-attempt records, backfill, `crab metrics`, the phone metrics page |
 | [nightly](specs/nightly.md) | sleep, tidy, the self-change watcher, and its canary |
+| [watchalong](specs/watchalong.md) | shared viewing: permission-bound session, epoch-bound packets, receipts, lag and gaps, the viewing layer |
 | [test-harness](specs/test-harness.md) | the one sandbox, four isolation gates, the coverage owed |
 
 ## Everything else

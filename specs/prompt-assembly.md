@@ -55,13 +55,14 @@ flowchart TD
   L4["L4 SHELVES<br/>wants titles, conduct binding test, conduct titles, recent claudism catches"]
   L5["L5 WHERE THINGS ARE<br/>path index"]
   L6["L6 TRANSCRIPT<br/>summary + live conversation"]
+  VIEW["conditional SHARED VIEWING<br/>a viewing session is active — what she has actually seen, specs/watchalong.md"]
   INT["conditional INTERRUPT<br/>he spoke over a turn — the cut context, turn-pipeline rule 15f"]
   JOB["conditional JOB REFERENCE<br/>he named a builder or job — its record, jobs.md rule 46"]
   DSP["conditional DISPUTE<br/>he is pushing back — specs/dispute-turn.md"]
   L7["L7 RANKING RULE<br/>how to weigh what he said"]
   L8["L8 TURN FRAME<br/>names the message below as the subject"]
   MSG["THE MESSAGE<br/>delivered as the user message, never inside the system prompt"]
-  L1 --> L2 --> L3 --> L4 --> L5 --> L6 --> INT --> JOB --> DSP --> L7 --> L8 --> MSG
+  L1 --> L2 --> L3 --> L4 --> L5 --> L6 --> VIEW --> INT --> JOB --> DSP --> L7 --> L8 --> MSG
 ```
 
 6. **L8 MUST be the last thing in the system prompt, and the user's latest message MUST be the user
@@ -100,7 +101,8 @@ flowchart TD
 | conditional interrupt | 2,600 | 0 | 0 | 0 |
 | conditional job reference | 3,200 | 0 | 0 | 0 |
 | conditional dispute | 3,200 | 0 | 0 | 0 |
-| **system-prompt total** | **≤ 68,900** | **≤ 59,700** | **≤ 3,000** | **≤ 200** |
+| conditional shared viewing | 3,500 | 3,500 | 0 | 0 |
+| **system-prompt total** | **≤ 72,400** | **≤ 63,200** | **≤ 3,000** | **≤ 200** |
 | user message | the turn's text | the wake agenda, ≤ 3,600 | the task description | the question and its material |
 
 L5 read 600 here until 2026-08-08, and the assembler has always set 1,000. The table is corrected to
@@ -426,6 +428,19 @@ roughly 800 bytes off every speaking prompt, with nothing removed that a turn ca
     what the line says and nothing the line does not, and — when the words fit more than one
     record — to say which there are and ask rather than pick the freshest.
 
+36e. **The viewing layer.** While a shared-viewing session is active and unexpired
+    ([watchalong.md](watchalong.md) rules 1–5), the `turn` and `wake` profiles carry one
+    conditional layer, key `viewing`, between L6 and the regroup layer, rendered by
+    `lib/watchalong prompt-block`: the title and his authorisation, the estimated position labelled
+    as an estimate with its basis, the status word and the lag, the reviewed intervals of the
+    current epoch and any gaps, and the latest receipts inside an envelope that names them as a
+    reader's untrusted notes (watchalong.md rules 20–23). It exists because on 2026-11-07 a reader
+    followed an episode in thirty-one chunks and not one of its looks was in the prompt of the
+    conversation that was meant to be sharing it. Inactive by default: no session, no layer, on
+    every profile; absent on `job` and `classify` always. The renderer is fail-safe and the
+    assembler guards it again — a broken renderer costs the layer and never the prompt. The
+    layer describes no scene itself; it carries receipts, and it instructs no narration.
+
 37. **In the regroup block, the quote and the instructions are both emitted whole.** The block is
     instructions wrapped around a quote of the words being spoken. Under the trim era's generic
     cut a long reply pushed the closing instructions — don't restate, don't queue, silence is
@@ -555,6 +570,7 @@ only place either fact is known the moment it happens.
 | `~/.local/share/deskcrab/journal/`, `memory/`, library, archive | L5 | named by path in the index block |
 | `${STATE_PREFIX}-convo-summary.txt`, `-convo.txt` | L6 | summary then live transcript |
 | `${STATE_PREFIX}-convo-seam.txt` | L6 | the rotation seam: when the archived record ended, and whether it had been condensed |
+| `$DESKCRAB_WATCHALONG_DIR/current` and the session's receipts via `lib/watchalong prompt-block` | viewing | conditional, rule 36e; see watchalong.md |
 | `${STATE_PREFIX}-live-speech`, `-live-turn` | regroup | conditional |
 | `${STATE_PREFIX}-turn-order/<seq>.ticket` + the cut turn's stream log | interrupt | conditional, rule 36c: the input off the ticket, the part-written reply through the extractor's partial mode |
 | `${STATE_PREFIX}-prompt-cuts.txt` | — | rule 36: written by a build whose total ran over its target (the name is historical — nothing is cut), removed by one inside it, rendered by the state block |
@@ -564,7 +580,7 @@ only place either fact is known the moment it happens.
 
 **Prompt assembly may call:** the state block, the recall block, the shelf reader, the conduct
 reader, the recent-catches reader (`lib/claudism-feedforward`), the conversation context builder,
-the regroup context builder.
+the regroup context builder, the viewing renderer (`lib/watchalong prompt-block`).
 
 **Prompt assembly may be called by:** the turn pipeline, the wake path, the job runner, and any
 classifier. It MUST also be callable directly from a shell for inspection.
@@ -844,6 +860,10 @@ present in the prompt),
 `tests/test_eng_records.sh` (rule 21a: the block is the pointer alone — counts, retrieval doors,
 and the read-the-record-first rule, with no record's title, dates, or prose in the prompt on
 either profile — and an empty drawer costs the block and nothing else),
+`tests/test_watchalong.sh` and `tests/test_watchalong_live.sh` (rule 36e: the viewing layer
+present on both speaking profiles while a session is active, between L6 and regroup, absent on
+job and classify and whenever no session is active, with its receipts inside the untrusted
+envelope; the live suite drives real `crab` turns through the stub CLI while a reader advances),
 `tests/test_prompt_dedup.sh` (rules 40 and 40a: a build carrying the same block through two
 layers emits it once, names the drop in the manifest under the layer it was dropped from, leaves
 the standing record and renders it in the next state block; a build with no duplication emits no
