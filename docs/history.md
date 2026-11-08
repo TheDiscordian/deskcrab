@@ -29,6 +29,36 @@ she says yes to a safe present-tense activity she can perform, she starts or joi
 that it is underway before replying. The OpenRSC drawer also names the idempotent play command, so
 an accepted game invitation does not spend a turn discovering the launcher before acting.
 
+### 2026-10-20 — present work parked two hours out, and five corrections answered in the register
+
+An evening of shared creative work over the phone, in three distinct faults that the first
+investigation had lumped together. The 19:40 turn booked an immediate wake for the work — the right
+act — and said "I've set aside time to begin expanding it", which the user read as deferral and had
+to ask about: wording over a correct booking. At 19:44:14 the expansion sitting itself booked a
+scheduled return at 21:20 to continue its own study, between two phone turns about that very work;
+the frame's rule against inventing a later clock time was in its prompt and did not hold, and the
+19:46 turn read that booking back truthfully as "returning to it at nine twenty tonight". The user
+named it the recurring bug: continuing present work hours later as if anything happened in
+between. And the five correction replies between 19:41 and 19:49 — "'set aside time' was
+needlessly vague", "my earlier wording made the work sound continuous", "a little less paperwork, a
+little more me", "I gave you a defence nobody asked for, quite right", "Yes, I understand. You
+want…" — fired nothing on the phrase list: the register was wrong with no banned phrase in it,
+which is exactly what the 2026-08-20 record had said of the gate's own resays.
+
+Three repairs, each at its own cause. The resay the mirror hands back is now read for its voice
+before it is spliced ([speech-output.md](../specs/speech-output.md) rule 58): the slot refilled on a
+delete entry, a bare acknowledgement opener, report vocabulary the line did not carry, a sentence
+about its own wording, a closing tag the draft already leans on — and a reading other than kept buys
+one more pass on the whole-draft paths, is recorded at the desk, and is shown to her as the miss it
+is at the start of the next turn. The frame says that work moved out now is said in the present, that
+a wake stopping short says so and never books itself a later time, and that a plain question gets
+the thing itself rather than a defence or a read-back
+([prompt-assembly.md](../specs/prompt-assembly.md) rules 39b, 39d, 39j). And the booking door names
+the shape at the moment of the act: a later clock time booked by her own hand while he is in the
+conversation carries a note on its receipt ([wake-queue.md](../specs/wake-queue.md) rule 13d). The
+four archived streams the investigation named were gone from disk by the time the repair was built;
+the day journal and the wake ledger carried every fact above.
+
 ### The prompt used to have no per-path shape
 
 There was one prompt for every path, so a shelf-check wake paid the same prompt as a spoken turn.

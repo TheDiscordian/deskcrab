@@ -258,8 +258,11 @@ grep -q 'FIX" = "delete"' "$REPO_DIR/lib/common.sh" \
     && ok "and the mirror prompt asks for absence when the cure is deletion" \
     || fail "no deletion block in the mirror prompt" ""
 MC=$(grep -c '_claudism_mirror_call "\$SENT" "\$PAT" "\$NOTE" "\$(spoken_part "\$RESPONSE")" "\$FN" "\$FIX"' "$REPO_DIR/lib/common.sh")
-[ "$MC" = 2 ] && ok "both call sites hand it to the mirror" \
-    || fail "a mirror call site still drops the fix" "$MC of 2"
+# Three sites since rule 58: the desk, the whole-draft pass, and that pass's
+# one second pass on a resay read flat — which quotes the first resay after
+# the fix, so the deletion ask rides the second call too.
+[ "$MC" = 3 ] && ok "all three call sites hand it to the mirror" \
+    || fail "a mirror call site still drops the fix" "$MC of 3"
 
 # The mention detector must not disarm an entry built on an idiom (rule 55).
 FLAGS=$(printf 'Say the word and the tree comes down.' | "$REPO_DIR/lib/claudism-mirror" scan "$DEL")

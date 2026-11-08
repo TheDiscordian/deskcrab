@@ -274,7 +274,9 @@ rules 30–32 and sleep's claudism review is [nightly.md](nightly.md) rules 39�
     sentence, as given — never re-checked, never re-flagged, never edited by code (the table of
     rule 47 is the one exception, and it runs before the hold, never after a verdict). A `release`
     verdict, a verdict that never comes inside the deadline, a caller that died, or a caller
-    that has already moved past the turn (the done marker) speaks the original untouched.
+    that has already moved past the turn (the done marker) speaks the original untouched. The
+    one chance is the desk's; the whole-draft paths of rule 44 hold one more, under rule 58's
+    voice reading, and the desk never does.
 41a. A rewrite the draft already carries is not spoken over the draft's own copy of itself.
     Handed one flagged line and the whole draft for context, the mirror sometimes answers with a
     sentence that draft already says next — on 2026-09-03 15:01:20 the draft was `Noted.`
@@ -322,7 +324,9 @@ rules 30–32 and sleep's claudism review is [nightly.md](nightly.md) rules 39�
     before its audio is synthesised — the same pass runs once, on the complete spoken half, with
     the same one-chance and fail-open rules; the spliced reply is what is spoken, shown, and
     committed. The pass on these paths is bounded in fires per turn; what the bound skips is
-    left for the turn-close capture to log.
+    left for the turn-close capture to log. These paths also own the one second pass of rule
+    58: a resay read `flat` or `costume` is handed back once, and a turn pays at most one such
+    call.
 45. Every fire the mirror answers is logged to the day's flag log with its outcome, and every
     row the live path writes carries the mention test's answer: `use=use` on a fire that held,
     routed or swapped, `use=mention` on one rule 50 skipped (outcome `mention`). A row written
@@ -486,6 +490,51 @@ rules 30–32 and sleep's claudism review is [nightly.md](nightly.md) rules 39�
     Both readings are the assistant's own reading of the assistant's own rewrites; no outside
     hand has scored that table, and anything drawn from it MUST be quoted as such.
 
+58. **The resay is read for its voice, not only for the absence of the phrase.** The receipt
+    used to be a detection stamp: a rewrite that came back from the mirror call was spliced and
+    logged `rewrite` whatever it sounded like, so on 2026-08-20 01:03 the flag log said two
+    lines were caught at the gate and never spoken while the user heard an assistant in both —
+    the phrase was gone and the register had stayed. A phrase list cannot catch cadence, but a
+    SHAPE can be read, so before a resay is spliced or logged it is read — deterministically, by
+    `lib/claudism-mirror voice`, no model call, no word of hers changed — against the held
+    sentence and the draft, and the reading rides the row:
+    - `flat`: the report register the register rule names
+      ([self-awareness.md](self-awareness.md) rule 33). Four shapes: the held sentence with
+      ONLY the fired span swapped for other words, on a `fix: delete` entry — the slot refilled
+      instead of emptied, rule 55's named failure and her own 2026-08-09 verdict on
+      "the honest recovery" → "the clean recovery", the same coat with new buttons; a first
+      sentence that is a bare acknowledgement token (`Noted.`, `Understood.`,
+      `Yes, I understand.`); status-report vocabulary the held sentence did not carry (noted,
+      acknowledged, understood, confirmed, verified, implemented, in progress, pending, status);
+      a sentence about her own wording where the held one was about the thing (`my earlier
+      wording`, `to be clear`, `what I meant`, `in other words`) — the sixth shape, talking
+      about the drift.
+    - `costume`: the resay closes on a short tag (three words or fewer after the last comma or
+      dash) the held sentence did not have and the draft already closes another sentence with —
+      rule 54's crutch, doubled. Judged against the draft itself, never against a list of tics,
+      so nothing here knows or rewards a signature phrase.
+    - `kept`: none of the above. The reading never rewards a jab: a plain line is `kept`, and a
+      line with a flourish is not better for it. A deletion on any entry, and a resay that
+      changed the sentence's subject (rule 56's "It went into the moments file" for "Noted that
+      in the moments file"), read `kept`.
+    What the reading does, under the no-gate rule's three tests (nothing suppressed, no code
+    inventing words, every fire seen): on the whole-draft paths (rule 44) a resay read `flat` or
+    `costume` is handed back to her ONCE more, in the same call shape with the resay quoted and
+    the reading named — say it as yourself, the thing itself, no tic added, no account of the
+    wording, or give the original back — bounded by `CLAUDISM_VOICE_RESAY_TIMEOUT` (default
+    30 s) and to ONE second pass per turn, so a turn pays at most one extra call, and whatever
+    comes back second stands and is read again for the record only; an empty second answer
+    leaves the first resay standing. At the desk the hold's budget (rule 46) admits no second
+    call: the reading is recorded and the resay speaks exactly as rule 41 says. The flag row
+    carries `voice` and `voice_why`, and `resays: 2` when the second pass ran; the
+    recent-catches block quotes a resay read `flat` or `costume` as the miss it is
+    ([prompt-assembly.md](prompt-assembly.md) rule 35), so she sees the line that got past the
+    phrase before she writes the next one; and `CLAUDISM_VOICE_RESAY=0` keeps the reading and
+    drops the second pass. The reading fails towards `kept`: a helper that cannot answer leaves
+    the row without a `voice` field and the resay goes out as it always did. Calibrated on the
+    220 live resays recorded to 2026-11-08: thirteen read other than `kept`, every one of them
+    the refilled slot, and the shapes judged clean by hand stay `kept`.
+
 57. The quiet marker is honoured by the LIVE voices as well, PER BLOCK. A text block whose
     first worded chunk OPENS with the marker chose the bubble over the voice while it was being
     written, and no voice may start on it — wherever the block sits in the turn. A turn narrates
@@ -516,6 +565,7 @@ rules 30–32 and sleep's claudism review is [nightly.md](nightly.md) rules 39�
 | `${STATE_PREFIX}-claudism-fires-<pid>.jsonl` | the streamer | append-only: one fire record per held sentence, one outcome record per resolution |
 | `${STATE_PREFIX}-claudism-fires-<pid>.jsonl.verdict-<seq>` | the mirror pass in `lib/common.sh` | one verdict, written atomically: her `rewrite` text, or `release` |
 | `${STATE_PREFIX}-claudism-fires-<pid>.jsonl.done` | the mirror pass | the caller has moved past the turn; a later fire speaks unheld |
+| `~/.local/share/deskcrab/claudism-flags/<date>.jsonl` (live rows) | the mirror pass, through `claudism-mirror logflag` | `stage: live`, the outcome, `before`/`after` on a repair, and on a `rewrite` the voice reading of rule 58: `voice` (`kept`/`flat`/`costume`), `voice_why`, and `resays: 2` when the second pass ran |
 
 ## INTERACTIONS
 
@@ -597,6 +647,18 @@ place while the sentence after it still speaks; a verdict that never comes fails
 original; an unarmed streamer and a missing list never check at all; and rule 46's two deadlines
 read out of the sources that define them, so raising one without the other fails here rather than
 as dead air at his desk).
+
+`tests/test_claudism_voice.sh` (rule 58: the reading itself on the recorded shapes — the refilled
+slot on a delete entry, the acknowledgement opener, report vocabulary introduced, the sentence about
+her own wording, the doubled closing tag — each read `flat` or `costume`, and the clean shapes kept:
+a deletion, a subject swap, a plain line, a line whose jab the draft already had, a resay entry's
+plain-word swap; then the whole-draft path through a stub CLI — a flat first resay buys exactly one
+second call and the second answer is what is spliced and committed, with the row carrying
+`voice`, `voice_why` and `resays: 2`; a kept resay buys no second call; two flat resays leave the
+second standing, read `flat`, no third call; a second fire in the same turn gets no second pass;
+and the desk path records the reading with no second call. And rule 42a held beside it: an
+error-only mirror stream leaves the original standing, the row `original-mirror-failed` with no
+`after` and no `voice`.)
 
 Rules 51–52 are held by `tests/test_claudism_scan.sh` (the rewrite row's before/after pair, the
 family block reaching the mirror call's prompt, and the fail-open shape of both), with the desk

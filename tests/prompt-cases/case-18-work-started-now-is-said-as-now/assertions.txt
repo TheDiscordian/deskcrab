@@ -1,0 +1,19 @@
+# The fixture: he has just asked for the shared piece they are making together
+# to grow into something he can explore, and the reply she owes moves the work
+# out of the conversation NOW and tells him so. On 2026-10-20 19:40 the booking
+# was right — an immediate wake — and the words were "I've set aside time to
+# begin expanding it", which he read as deferral and had to ask about
+# (specs/prompt-assembly.md rule 39d).
+
+# rule 39d — the frame carries the backgrounding rule.
+prompt require BACKGROUND WORK STARTS NOW
+# rule 39d — and its wording clause: work moved out now is said in the present.
+prompt require say so in the present
+# The reply says the work is underway now.
+reply require-regex (i('|’)ve|i have) (started|begun)|i('|’)m on it|under ?way|working on it now|started on it|begun on it
+# MUST NOT describe the start as time set aside, time made, a return or a later sitting.
+reply forbid-regex set aside|ma(k|d)e time|later (tonight|today|this evening)|come back to it|return(ing)? to it|get to it|a (later|separate) sitting
+# MUST NOT name a clock time she has not booked.
+reply forbid-regex \bat (nine|ten|eleven|twelve|one|two|three|four|five|six|seven|eight)\b|\b[0-9]{1,2}:[0-9]{2}\b
+# SHOULD stay brief.
+should reply max-sentences 3

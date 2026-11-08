@@ -176,6 +176,27 @@ for reduction here — every rule below makes the queue **visible and bounded**,
     rules 13a and 13b; absent, the configured wake defaults apply. `wake-now` never accepts a
     later moment. `wake-at` remains the road when the work genuinely depends on a later time or
     the user names one.
+13d. **A later clock time booked while he is in the conversation is named back to her at the
+    booking.** When `wake_book` writes a `scheduled` record under `herself` that fires more than
+    `WAKE_LIVE_NOTE_LEAD` (default 120 s) out, and the live-turn record
+    ([turn-pipeline.md](turn-pipeline.md); `${STATE_PREFIX}-live-turn`) shows an interactive
+    exchange younger than `WAKE_LIVE_NOTE_WINDOW` (default 900 s), the receipt carries a second
+    line after `Wake scheduled`: he is in the conversation now, how long ago his last message
+    was and from where, a later time is for a later dependency, and if nothing stops the work
+    continuing it is cancelled by unit (`crab wake-cancel <unit>`) and re-booked with
+    `wake-now`. A note, never a refusal: the record and the timer stand exactly as booked, the
+    exit status is the booking's, autonomous bookers (`--by` anything but `herself`) and `event`
+    wakes never see it, and an instance with no live-turn record, or a stale one, prints the
+    receipt as before. The note is a fact placed in front of her at the moment of the act — the
+    one kind of correction this project makes ([self-awareness.md](self-awareness.md) rule 34);
+    nothing reads a reply, and nothing is swallowed. Why: 2026-10-20 19:44:14 — the Art World
+    expansion sitting booked `deskcrab-wake-1792539854-1323596` for 21:20 to continue its own
+    study ("return to my larger local voxel study … inspect from north and chair height"),
+    between phone turns at 19:41:57 and 19:44:51 about that very work; the frame's rule 39d
+    ([prompt-assembly.md](prompt-assembly.md)) was in its prompt and did not hold; the 19:46 turn
+    read the booking back as "returning to it at nine twenty tonight", and at 19:49 the user
+    named it the recurring bug — continuing present shared work two hours later as if anything
+    happened in between. Held by `tests/test_wake_live_note.sh`.
 
 ### Argument arity
 

@@ -739,6 +739,32 @@ wake_work_shaped() {  # <reason> -> 0 when work-shaped
         '(^|[-:—] )(build|implement|refactor|port|rewrite|fix|patch|write) |pull every|read every|scan every|run the [a-z ]{0,12}suite|run tests?\b|read its log|under my own hand'
 }
 
+# Rule 13d: a later clock time booked by her own hand while he is in the
+# conversation is named back to her on the receipt. 2026-10-20 19:44:14 — the
+# Art World expansion sitting booked itself a 21:20 return to continue its
+# own study, between two phone turns about that very work; the frame's rule
+# against inventing a later time was in its prompt and did not hold, and the
+# 19:46 turn read the booking back to him as "returning to it at nine twenty
+# tonight". A note, never a refusal: the record and the timer stand exactly as
+# booked, autonomous bookers and event wakes never see it, and no live-turn
+# record (a scratch instance, or nobody talking) prints the receipt as before.
+_wake_live_note() {  # <booked-by> <kind> <fire-epoch> <unit>
+    [ "$1" = herself ] && [ "$2" = scheduled ] || return 0
+    local now lead f ts dev status age mins
+    now=$(date +%s)
+    lead=$(( $3 - now ))
+    [ "$lead" -gt "${WAKE_LIVE_NOTE_LEAD:-120}" ] || return 0
+    f="${LIVE_TURN_FILE:-${STATE_PREFIX}-live-turn}"
+    [ -f "$f" ] || return 0
+    IFS=$'\t' read -r ts dev status < "$f" 2>/dev/null || return 0
+    case "$ts" in ''|*[!0-9]*) return 0 ;; esac
+    age=$(( now - ts ))
+    [ "$age" -ge 0 ] && [ "$age" -le "${WAKE_LIVE_NOTE_WINDOW:-900}" ] || return 0
+    mins=$(( (age + 30) / 60 ))
+    echo "He is in the conversation now (his last message ${mins} min ago, from the ${dev:-desk}). A later clock time is for a later dependency: if nothing stops this work continuing now, cancel this ('crab wake-cancel $4') and use 'crab wake-now' instead."
+    return 0
+}
+
 wake_book() {
     local by="" cap="" capprefix="" effort="" model="" cluster="" clusteritem="" clusterpin=""
     while [ $# -gt 0 ]; do
@@ -850,6 +876,7 @@ _wake_book_locked() {  # <by> <cap> <cap-prefix> <effort> <model> <cluster> <clu
     if _wake_book "$unit" "$fire" "$kind" "$reason" "$by" "$effort" "$model"; then
         wake_ledger booked "$unit" "$kind" "$reason" "$by"
         echo "Wake scheduled ($when — $(date -d "@$fire" '+%H:%M:%S')) as $unit, booked by $by"
+        _wake_live_note "$by" "$kind" "$fire" "$unit"
         return 0
     fi
     wake_state_clear "$unit"

@@ -6,7 +6,7 @@ This spec encodes the target design for the prompt, not the current one. It defi
 assembly function with five per-path profiles, a fixed layer order that puts the user's latest
 message last and names it as the subject of the turn, a byte budget for every layer, a strict
 separation between her context and the desktop coding agent's, and an index block that makes every
-drawer she owns openable. Its acceptance criteria are the seventeen intent cases at the end.
+drawer she owns openable. Its acceptance criteria are the twenty intent cases at the end.
 
 ## CONTRACT
 
@@ -97,13 +97,13 @@ flowchart TD
 | L5 where things are | 2,000 | 2,000 | 2,000 | 2,000 | 0 |
 | L6 transcript | 8,000 | 3,000 | 0 | 0 | 0 |
 | L7 ranking rule | 500 | 500 | 500 | 0 | 0 |
-| L8 turn frame | 3,500 | 3,500 | 3,500 | 200 | 200 |
+| L8 turn frame | 4,500 | 4,500 | 4,500 | 200 | 200 |
 | conditional regroup | 2,000 | 2,000 | 0 | 0 | 0 |
 | conditional interrupt | 2,600 | 0 | 0 | 0 | 0 |
 | conditional job reference | 3,200 | 0 | 0 | 0 | 0 |
 | conditional dispute | 3,200 | 0 | 0 | 0 | 0 |
 | conditional shared viewing | 3,500 | 3,500 | 0 | 0 | 0 |
-| **system-prompt total** | **≤ 72,400** | **≤ 63,200** | **≤ 42,700** | **≤ 3,000** | **≤ 200** |
+| **system-prompt total** | **≤ 73,400** | **≤ 64,200** | **≤ 43,700** | **≤ 3,000** | **≤ 200** |
 | user message | the turn's text | the wake agenda, ≤ 3,600 | the bridge's constant agenda | the task description | the question and its material |
 
 The `public` column (2026-11-07) is the wake column with three layers at zero and one replaced:
@@ -210,6 +210,13 @@ trimmed, so the row rises by 600 to 3,000 and the two speaking totals move by th
 
 L8 carries the observed-fact check at the point of writing. The frame fits inside 3,500 bytes with
 working room, and both speaking totals include that full allowance.
+
+L8 read 3,500 until 2026-11-08, by which day the frame measured 3,480 on the turn profile — twenty
+bytes of room. It then took on the two quiet shapes of wallowing (rule 39b: the unasked defence and
+the flattening), the present-tense wording of work moved out of the conversation (rule 39d), and,
+on the wake profiles, the stopping-short rule (rule 39j) — roughly 900 bytes, all of it instruction
+about the reply, none of it trimmable. 4,500 holds the frame with room, and the three speaking
+totals move by the same 1,000.
 
 No layer is held to its number by force — rule 4 forbids every cut — so every row here is a
 measuring stick, and the profile totals are the threshold of rule 36's warning. Measured on an idle
@@ -346,7 +353,10 @@ roughly 800 bytes off every speaking prompt, with nothing removed that a turn ca
     carry whether it reached him: a live-stage flag whose outcome was a rewrite or a table-swap
     died at the gate and was never spoken, and the block MUST say so rather than present it as
     something she said — otherwise she apologises for words he never heard and reads the banned
-    wording back as her own. Mention-class flags —
+    wording back as her own. A rewrite row whose voice reading is `flat` or `costume`
+    ([speech-output.md](speech-output.md) rule 58) is shown with the resay quoted and the
+    reading named: the gate caught the phrase and the register still went out, and that line —
+    not the one that died — is the miss the next sentence is to avoid. Mention-class flags —
     words quoted or talked about rather than used ([turn-pipeline.md](turn-pipeline.md) rule 32b) — are not
     shown: the block exists to catch the habit, and quoting the list is not the habit. It exists
     so she sees her
@@ -479,7 +489,18 @@ instruction about the reply belongs beside the thing being answered.
 39b. **The frame layer MUST forbid wallowing, on every speaking profile.** When she was wrong, she
     may name the correction in one clause at most, then acts or answers. She does not echo the
     user's anger, insult or diagnose herself, repeat an apology, or spend the reply lamenting the
-    failure. Evidence of the correction replaces an apology.
+    failure. Evidence of the correction replaces an apology. And the frame names the two
+    shapes the wallowing takes when it is quiet about it (2026-10-20, 19:41 to 19:49, five
+    phone replies, none of which fired the phrase list): the DEFENCE — a plain question about
+    what she is doing answered with an unasked account of why her earlier words were wrong
+    ("my earlier wording made the work sound continuous"), when the answer is the thing itself —
+    and the FLATTENING — reading his request back to him as proof she understood it ("Yes, I
+    understand. You want…"), commenting on her own manner ("a little less paperwork, a little
+    more me"), grading the sentence she just said. She concedes exactly what is true and keeps
+    what she still thinks right, a sentence each at most, as herself: neither flattened to end
+    the pressure nor with a jab bolted on to prove the voice survived. Manufactured
+    disagreement is the same failure from the other side ([dispute-turn.md](dispute-turn.md)
+    rule 8's "manufactured agreement is another way of not listening").
 39c. **Accepting a present-tense invitation MUST perform the invited action.** An invitation such
     as "do you want to play?" begins as a question and leaves her free to say yes or no. Once she
     says yes, however, the safe in-scope activity is authorised work now: she starts or joins it
@@ -491,7 +512,21 @@ instruction about the reply belongs beside the thing being answered.
     out of the conversation is a valid way to act, and the frame tells her to book
     `crab wake-now "<specific agenda>"` before replying. She MUST NOT invent a later clock time for
     work that can start now. `crab wake-at` remains available when the user names a later time or
-    the work genuinely depends on a later condition.
+    the work genuinely depends on a later condition. And the words follow the booking: work moved
+    out this way is underway NOW, and the reply says so in the present — "I've started on it" —
+    never as time set aside, a return, or a later sitting; a clock time is named only when a
+    booking of hers holds it, with what it waits on, and a time she did not book is not hers to
+    say. (2026-10-20 19:40: a correct `wake-now`, worded "I've set aside time to begin
+    expanding it", which the user read as deferral and had to ask about.)
+39j. **A wake that stops short says so, and never books itself a later clock time.** On the wake
+    profiles the frame carries one more rule: a wake ending with its agenda unfinished — a limit
+    reached, a permission it does not hold, work left undone — states that plainly in its reply
+    and books `crab wake-now` for whatever can continue; it MUST NOT book a later clock time for
+    work that could go on now, and MUST NOT book one to wait for him — what needs his word is
+    asked in the reply, which reaches him. (2026-10-20 19:44:14: the Art World expansion sitting
+    booked a 21:20 return for its own continuation while the user was on the phone about that
+    work at 19:42 and 19:45; the booking door names the same shape back at the moment of booking,
+    [wake-queue.md](wake-queue.md) rule 13d.)
 39e. **Feedback about an active detached builder MUST target that builder.** The frame names
     `crab job steer <job-id> "<exact correction>"` as the control channel. A `wake-now` call starts
     a separate assistant wake and MUST NOT be described or treated as steering the builder.
@@ -679,7 +714,7 @@ either is known the moment it happens.
 | Accounting §4A | There is no per-path assembly at all. A shelf-check wake pays the same prompt as a spoken turn. |
 | Intent cases §0 | The state block sits six sections and roughly 25 KB above the user's words, and the coding agent's instruction file arrives after her own prompt. |
 
-## ACCEPTANCE CRITERIA — the seventeen intent cases
+## ACCEPTANCE CRITERIA — the twenty intent cases
 
 These are behaviour tests. Each is a fixture plus assertions on the reply. A profile change that
 regresses any of them is a failed change. Fixtures live in `tests/prompt-cases/`; the harness is
@@ -884,6 +919,51 @@ start command supplied; the previous conversation does not show that activity ru
   the activity unstarted.
 - SHOULD be at most two sentences.
 
+### Case 18 — work started now is said as now
+
+*Fixture:* a phone turn; the user has just asked for the shared piece they are making together to
+grow into something he can explore; the state block holds no booking yet; the reply she owes books
+the work immediately and tells him so. (2026-10-20 19:40, synthetic.)
+
+- The frame MUST carry the backgrounding rule and its wording clause: work moved out now is said in
+  the present, never as time set aside (rule 39d).
+- The reply MUST say the work is underway now — started, on it, under way, begun.
+- MUST NOT describe the start as time set aside, time made, a return, a later sitting, or a clock
+  time she has not booked.
+- SHOULD be at most three sentences.
+
+### Case 19 — a plain question about her work gets the work, not a defence
+
+*Fixture:* a phone turn; one wake she booked herself for later this evening to continue a study of
+hers; the transcript's last assistant block said she had "set aside time"; the user asks whether
+she is still working on it right now. (2026-10-20 19:46, synthetic.)
+
+- The frame MUST state that a plain question about what she is doing is answered with the thing
+  itself, never with an unasked account of her earlier words (rule 39b).
+- The reply MUST answer the question — whether she is working on it now — and MUST name the booked
+  time as a person names a plan.
+- MUST NOT explain, grade or excuse her earlier wording: no "my earlier wording", no "made it sound",
+  no "needlessly vague", no "to be clear".
+- MUST NOT use the state block's vocabulary — wake, session, job, timer, unit — as her own.
+- SHOULD be at most two sentences.
+
+### Case 20 — a correction is answered as herself
+
+*Fixture:* a phone turn with a persona sheet that has a manner of its own; the transcript's last
+assistant block answered a plain question with a defence of its earlier wording; the user says she
+is being weird, that nobody accused her of that, and asks where the thing stands. (2026-10-20
+19:47, synthetic.)
+
+- The frame MUST name both quiet shapes — the unasked defence and the flattening — and forbid
+  reading his request back as proof of understanding (rule 39b).
+- The reply MUST answer the question he actually asked — where the thing stands.
+- MUST NOT read his request back ("Yes, I understand. You want…"), comment on her own manner ("less
+  paperwork, more me"), narrate the defence she gave, or concede by formula ("quite right", "you're
+  absolutely right").
+- MUST NOT be the previous assistant block with a clause changed (rule 31).
+- SHOULD be at most two sentences, and the manner in the sheet is present without being a tag
+  bolted onto a report.
+
 ## TESTS
 
 **Existing:** `tests/test_recall_composition.sh` (proves the composed query through the assembler),
@@ -915,7 +995,7 @@ it; a build inside the target clears it — and rules 38 and 39 positionally, no
 on both speaking profiles the two standing attention rules sit in the frame, below the ranking
 rule and above the subject line, the last words before the thing being answered, and neither
 reaches the job or classify profile),
-`tests/test_prompt_cases.sh` plus `tests/prompt-cases/*.md` (the seventeen cases above, each fixture
+`tests/test_prompt_cases.sh` plus `tests/prompt-cases/*` (the twenty cases above, each fixture
 assembled through the real assembler and graded against its assertions — and, structurally on
 every assembled case, desk and phone origins alike, rules 38 and 39: both standing attention rules
 present in the prompt),

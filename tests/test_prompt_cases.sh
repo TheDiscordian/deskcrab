@@ -1,10 +1,10 @@
 #!/bin/bash
-# The seventeen intent cases from specs/prompt-assembly.md, as a runnable suite.
+# The twenty intent cases from specs/prompt-assembly.md, as a runnable suite.
 # Run: bash tests/test_prompt_cases.sh
 #
 # WHAT THIS IS
 #
-# specs/prompt-assembly.md ends in sixteen acceptance criteria — each one a
+# specs/prompt-assembly.md ends in twenty acceptance criteria — each one a
 # real exchange that went wrong, reduced to a fixture plus the MUST/MUST-NOT
 # rules the reply owes. This file is the harness for them, and
 # tests/prompt-cases/ holds the fixtures. The fixtures are SYNTHETIC: same

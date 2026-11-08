@@ -32,6 +32,13 @@ Modes:
       the why — the live: no wide net included (rule 52). Context for the
       mirror call's prompt, so a missing file or an unknown function prints
       nothing and exits 0: the call goes out exactly as before.
+  voice
+      {"before", "after", "pattern", "fix", "draft"} on stdin — the held
+      sentence, her resay, the fired entry's pattern and fix, the spoken
+      draft. Prints {"voice": kept|flat|costume, "why": ...} (rule 58): a
+      deterministic reading of the resay's register, never a gate on it.
+      Any failure prints nothing and exits 2; the caller reads nothing as
+      "no reading" and the resay goes out as it always did.
   tableswap <phrase-file> <flags-dir> <kind> <pid>
       The whole response on stdin. Her replacement table (rules 47-49),
       applied to the spoken half: every sentence an entry's own replace
@@ -330,9 +337,16 @@ def flag_row(kind, pid, rec, outcome, rewrite=None):
         "stage": "live",
         "outcome": outcome,
     }
-    for key in ("note", "function", "use"):
+    for key in ("note", "function", "use", "voice", "voice_why"):
         if rec.get(key):
             row[key] = str(rec[key])
+    # The voice reading's second pass (rule 58): how many times the line
+    # was resaid before this `after` stood. Absent means once, as ever.
+    try:
+        if int(rec.get("resays") or 0) > 1:
+            row["resays"] = int(rec["resays"])
+    except (TypeError, ValueError):
+        pass
     if rewrite:
         row["before"] = row["sentence"]
         row["after"] = str(rewrite)
@@ -406,6 +420,136 @@ def echo_sentence(rewrite, text, flagged):
             if near_duplicate(rewrite, sent):
                 return sent
     return None
+
+
+# --- The voice reading of a resay — specs/speech-output.md rule 58 ---------
+# A rewrite that came back from the mirror call used to be spliced and logged
+# `rewrite` whatever it sounded like, so the receipt claimed a clean catch
+# for a line scrubbed of its phrase and left in the same register (2026-08-20
+# 01:03: "the catcher fired and the rewrite landed in the same flat register
+# wearing different words"). A phrase list cannot catch cadence; a SHAPE can
+# be read. Deterministic, no model call, never a word of hers changed: the
+# reading rides the flag row and buys one more pass on the whole-draft paths.
+# It never rewards a tic — a plain line is kept, and a flourish is not voice.
+_WORD_RE = re.compile(r"[A-Za-z0-9']+")
+# The bare acknowledgement token as a whole first sentence: the register
+# rule's "reading the panel out" — Noted. Understood. Yes, I understand.
+_ACK_RE = re.compile(
+    r"^\s*(?:noted|understood|acknowledged|confirmed|done|correct|agreed|right|"
+    r"all right|alright|okay|ok|yes|fair enough|quite right|"
+    r"yes,?\s+i\s+understand|understood,?\s+[^.!?]{0,40})[.!]?\s*$", re.I)
+# Status-report vocabulary. Judged only when the RESAY introduces it — a
+# line that already carried the word is not flattened by keeping it.
+_REPORT_RE = re.compile(
+    r"\b(?:noted|acknowledged|understood|confirmed|verified|implemented|"
+    r"in progress|pending|status)\b", re.I)
+# A sentence about her own wording where the held one was about the thing:
+# the sixth shape (talking about the drift is drift), and the 2026-10-20
+# 19:46 defence nobody asked for.
+_SELF_RE = re.compile(
+    r"\b(?:my (?:earlier|previous|last|first) (?:wording|phrasing|sentence|"
+    r"words|reply|answer)|what i meant(?: to say)?|i should have (?:said|put|"
+    r"worded|phrased)|to be clear|to clarify|in other words|put (?:it )?"
+    r"(?:differently|another way)|let me (?:rephrase|put that)|(?:needlessly|"
+    r"too) vague|made (?:it|the work|that) sound)\b", re.I)
+
+
+def _toks(s):
+    return [w.lower() for w in _WORD_RE.findall(s or "")]
+
+
+def _first_sentence(text):
+    ss = sentences(text or "")
+    return ss[0] if ss else (text or "").strip()
+
+
+def _closing_tag(sent):
+    """The short tag a sentence closes on after its last comma or dash — up
+    to three words, normalised — or None. "…, I suppose." -> "i suppose"."""
+    s = (sent or "").strip().rstrip(".!?…\"'”’ ")
+    m = re.search(r"[,—–-]\s*([^,—–-]{1,40})$", s)
+    if not m:
+        return None
+    tag = " ".join(_toks(m.group(1)))
+    if not tag or len(tag.split()) > 3:
+        return None
+    return tag
+
+
+def _slot_refilled(before, after, pattern):
+    """Is the resay the held sentence with ONLY the fired span swapped for
+    other words — every token before and after it identical? Returns the
+    (hit, replacement) pair when so, else None. A deletion (nothing in the
+    slot) is the cure and reads None; a resay that changed anything else is
+    a different sentence and reads None too."""
+    try:
+        rx = re.compile(pattern, re.I)
+    except re.error:
+        return None
+    m = rx.search(before)
+    if not m:
+        return None
+    pre, post = _toks(before[:m.start()]), _toks(before[m.end():])
+    hit = _toks(m.group(0))
+    at = _toks(after)
+    if not pre and not post:
+        return None
+    if at[:len(pre)] != pre:
+        return None
+    if post:
+        if len(at) < len(pre) + len(post) or at[len(at) - len(post):] != post:
+            return None
+        mid = at[len(pre):len(at) - len(post)]
+    else:
+        mid = at[len(pre):]
+    if not mid or mid == hit:
+        return None
+    return (" ".join(hit), " ".join(mid))
+
+
+def voice_reading(before, after, pattern="", fix="", draft=""):
+    """Read a resay for its voice: {"voice": kept|flat|costume, "why": ...}.
+    `flat` is the report register — the slot refilled on a delete entry (rule
+    55's named failure), a bare acknowledgement opener, report vocabulary the
+    line did not carry, or a sentence about its own wording. `costume` is
+    rule 54's crutch doubled: a closing tag the held line lacked and the
+    draft already leans on elsewhere. Everything else is `kept`."""
+    before = (before or "").strip()
+    after = (after or "").strip()
+    if not after:
+        return {"voice": "kept", "why": "nothing to read"}
+    if (fix or "").lower() == "delete":
+        sw = _slot_refilled(before, after, pattern)
+        if sw:
+            return {"voice": "flat",
+                    "why": "the slot was refilled, not emptied: '%s' became "
+                           "'%s' and the sentence stayed" % sw}
+    fa, fb = _first_sentence(after), _first_sentence(before)
+    if _ACK_RE.match(fa) and not _ACK_RE.match(fb):
+        return {"voice": "flat",
+                "why": "opens on a bare acknowledgement: '%s'" % fa}
+    intro = ({m.lower() for m in _REPORT_RE.findall(after)}
+             - {m.lower() for m in _REPORT_RE.findall(before)})
+    if intro:
+        return {"voice": "flat",
+                "why": "reaches for report vocabulary the line did not "
+                       "have: %s" % ", ".join(sorted(intro))}
+    ms = _SELF_RE.search(after)
+    if ms and not _SELF_RE.search(before):
+        return {"voice": "flat",
+                "why": "talks about its own wording instead of the thing: "
+                       "'%s'" % ms.group(0)}
+    ta, tb = _closing_tag(after), _closing_tag(before)
+    if ta and ta != tb and ta not in " ".join(_toks(before)):
+        for para in (draft or "").splitlines():
+            for s in sentences(para):
+                if near_duplicate(s, before) or near_duplicate(s, after):
+                    continue
+                if _closing_tag(s) == ta:
+                    return {"voice": "costume",
+                            "why": "closes on '%s', a tag the line did not "
+                                   "have and the draft already leans on" % ta}
+    return {"voice": "kept", "why": ""}
 
 
 def scan(text, patterns):
@@ -494,6 +638,20 @@ def main(argv):
                         flag_row(kind, pid, rec, outcome, rewrite or None))
         except OSError:
             return 2
+        return 0
+    if mode == "voice":
+        # Rule 58: {"before", "after", "pattern", "fix", "draft"} on stdin;
+        # the reading on stdout. Any failure is exit 2 and NOTHING printed,
+        # which every caller reads as "no reading" — the resay goes out
+        # exactly as it always did, the row with no voice field.
+        try:
+            d = json.load(sys.stdin)
+            out = voice_reading(str(d.get("before", "")), str(d.get("after", "")),
+                                str(d.get("pattern", "")), str(d.get("fix", "")),
+                                str(d.get("draft", "")))
+        except Exception:
+            return 2
+        print(json.dumps(out, ensure_ascii=False))
         return 0
     if mode == "family":
         # Context for the mirror call, never a gate: anything unreadable

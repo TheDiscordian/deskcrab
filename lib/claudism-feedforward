@@ -133,7 +133,21 @@ def main():
         # died at the gate. Saying "as you said it" of a killed draft makes
         # her apologise for words he never heard, and hands her the banned
         # wording as though it were hers (2026-08-10).
-        if rec.get("stage") == "live" and rec.get("outcome") in (
+        voice = rec.get("voice")
+        if rec.get("stage") == "live" and rec.get("outcome") == "rewrite" \
+                and voice and voice != "kept" and rec.get("after"):
+            # The phrase died at the gate and the register went out anyway
+            # (specs/speech-output.md rule 58, prompt-assembly rule 35): the
+            # resay is the line to show, because it is the one he heard.
+            after = " ".join(str(rec["after"]).split())
+            if len(after) > 120:
+                after = after[:119].rstrip() + "…"
+            why = " ".join(str(rec.get("voice_why") or "").split())
+            shown.append("- %s: \"%s\" (%s — caught at the gate; your resay "
+                         "\"%s\" read %s%s: the phrase went, the register "
+                         "stayed)" % (name, sent, when(rec), after, voice,
+                                      " — " + why if why else ""))
+        elif rec.get("stage") == "live" and rec.get("outcome") in (
                 "rewrite", "table-swap"):
             shown.append("- %s: \"%s\" (%s — caught at the gate, never "
                          "spoken)" % (name, sent, when(rec)))

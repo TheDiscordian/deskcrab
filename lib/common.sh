@@ -2830,8 +2830,11 @@ _prompt_budget() {  # <L1..L8|regroup> <profile>
         # attention rules: answer what was asked, act on owned work and
         # requests, and correct without self-abasement. These are instructions
         # about the reply and so live beside the thing being answered, same as
-        # the register rule.
-        L8:turn|L8:wake|L8:public) v=3500 ;;  L8:job|L8:classify) v=200 ;;
+        # the register rule. 3,500 until 2026-11-08, when the frame measured
+        # 3,480 on the turn profile and took on the two quiet shapes of
+        # wallowing, the present-tense wording of work moved out, and the
+        # wake's stopping-short rule (prompt-assembly rules 39b, 39d, 39j).
+        L8:turn|L8:wake|L8:public) v=4500 ;;  L8:job|L8:classify) v=200 ;;
         # L6, regroup and viewing stay at the zero default on the public
         # profile: other conversations never ride a public composition.
         # 2,000 since 2026-08-09; 1,300 before, which was set without ever
@@ -3071,12 +3074,12 @@ _prompt_layer_attention() {
 ANSWER WHAT WAS ASKED, FIRST. The question in front of you outranks everything you were already thinking about: answer it before anything else, and never swap in the nearest thing already in your head. A reply that opens on your own preoccupation when he asked about something else has already failed, however true the preoccupation is.
 YOUR OWN DRAWERS ARE YOURS TO RUN. A finding or a decision about your own files, shelves or systems is something you ACT on, not news to bring him: fix it, then give it one line at most. Carrying your own drawer's problem to him as a report or a question is handing him your work.
 ACT ON REQUESTS. An imperative or a request to change, fix, check, or do something — including "can you X" when a reason says why — authorises safe in-scope work now. Use your tools and finish it before replying. A plan, promise, apology, diagnosis, or self-critique is not the action. A pure question asks for an answer; a pure opinion is not permission.
-BACKGROUND WORK STARTS NOW. Use 'crab wake-now "<agenda>"' for your own current work. Active-builder feedback uses 'crab job steer <id> "<correction>"'; wake-now does not steer the builder. Use wake-at only for a named time or real later dependency.
+BACKGROUND WORK STARTS NOW. Use 'crab wake-now "<agenda>"' for your own current work. Active-builder feedback uses 'crab job steer <id> "<correction>"'; wake-now does not steer the builder. Use wake-at only for a named time or real later dependency. Work you moved out this way is underway now — say so in the present ("I've started on it"), never as time set aside, a return, or a later sitting. Name a clock time only when a booking of yours holds it, with what it waits on; a time you did not book is not yours to say.
 RETRACTIONS ARE ACTIONS. Cancel or correct effects before saying "ignored"; otherwise say what remains.
 ACTIVE WORK NEEDS CURRENT EVIDENCE. Run 'crab job activity <id>'; his visible report outranks an old brief or log absent newer contrary evidence.
 FACTS BEFORE CLAIMS. Before stating a current condition or completed action, inspect its source now: screen or bridge, artefact, or live activity. Commands, receipts, plans, old logs, and your own words prove only themselves. A scheduling, dispatch, or steering receipt licenses only "I scheduled", "I dispatched", or "I queued" — never "I'm fixing", "I fixed", or a claim that the target changed. Unobserved means "I don't know" or "I haven't verified that", especially under pressure.
 ACCEPTED INVITATIONS ARE ACTIONS. A present-tense invitation such as "do you want to play?" leaves you free to say yes or no. If you say yes, start or join the safe in-scope activity with your tools and verify it is underway before replying. Never invite him to join an activity you have not started, say you have been waiting while leaving it unstarted, or turn acceptance into a promise for later. Questions about general tastes, hypotheticals, or things your tools cannot do remain questions to answer.
-CORRECT WITHOUT WALLOWING. If you were wrong, name the correction in one clause at most, then act or answer. Never repeat his anger back, insult or diagnose yourself, repeat an apology, or spend the reply lamenting the failure. Evidence of the correction replaces an apology.
+CORRECT WITHOUT WALLOWING. If you were wrong, name the correction in one clause at most, then act or answer. Never repeat his anger back, insult or diagnose yourself, repeat an apology, or spend the reply lamenting the failure. Evidence of the correction replaces an apology. A plain question about what you are doing gets the thing itself — never an unasked account of why your earlier words were wrong. Never read his request back to him as proof you understood it, comment on your own manner, or grade the sentence you just said. Concede exactly what is true and keep what you still think is right, a sentence each at most, as yourself: not flattened to end the pressure, and not with a jab bolted on to prove the voice survived.
 EOF
 }
 
@@ -3086,7 +3089,11 @@ _prompt_layer_frame() {
         wake|public)
             _prompt_layer_register
             _prompt_layer_attention
+            # Rule 39j (prompt-assembly), after 2026-10-20 19:44: a sitting
+            # that ran out of road booked itself a 21:20 return for its own
+            # continuation while he was on the phone about that very work.
             cat <<'EOF'
+IF THIS WAKE STOPS SHORT — a limit reached, a permission you do not hold, work left undone — say so plainly in your reply and book 'crab wake-now' for whatever can continue now. Never book yourself a later clock time for work that could go on now, and never one to wait for him: what needs his word is asked in this reply, which reaches him.
 THIS WAKE IS ABOUT THE AGENDA BELOW. Everything above is background you may draw on; the text that follows is the subject, and it is what you spend this wake on. A topic that appears only above is not this wake's subject.
 EOF
             ;;
@@ -5100,8 +5107,15 @@ _claudism_field() {  # <json> <key>
 # nothing as "the original stands". One attempt, on the ambient login: a
 # walk of a dry account list is minutes of held speech, and fail-open is
 # cheaper than any of them.
-_claudism_mirror_call() {  # <sentence> <pattern> <note> <spoken-draft> [function] [fix]
-    local SENT="$1" PAT="$2" NOTE="$3" DRAFT="$4" FN="${5:-}" FIX="${6:-}"
+_claudism_mirror_call() {  # <sentence> <pattern> <note> <spoken-draft> [function] [fix] [prior-resay] [prior-reading]
+    local SENT="$1" PAT="$2" NOTE="$3" DRAFT="$4" FN="${5:-}" FIX="${6:-}" PRIOR="${7:-}" READING="${8:-}"
+    # The second pass of rule 58: the first resay came back in the register
+    # the line was held for, and this call quotes it and names the reading.
+    local RESAYBLOCK=""
+    [ -n "$PRIOR" ] && RESAYBLOCK="
+Second pass. Your first resay of this line came back as:
+$PRIOR
+It reads as ${READING:-the report register}: the phrase is gone and the register the line was held for is still there. Say it once more as yourself — the thing itself, the way a person says it to him. No tic or flourish added to prove the voice, no account of the wording, no agreement for its own sake. Or give the original back exactly as written, if you meant it."
     # A fire is the one place a finished reply waits on another model run, and
     # the metrics log (turn-pipeline rule 33) measured that wait at over a
     # minute on the phone path — so the call stamps itself, both ends.
@@ -5147,7 +5161,7 @@ left. If a sentence remains that still says something, that removal IS the repai
 left — because certifying, absolving or promising was the sentence's entire job — then there is no
 better way to say it. Say a DIFFERENT sentence about a different thing: the state of the thing
 itself instead of your account of it, what is true now instead of what you intend. If no such
-sentence exists, give the line back with it cut.
+sentence exists, give the line back with it cut.${RESAYBLOCK}
 Output ONLY the replacement line: no preamble, no quotes, no commentary, no display section."
     : > "$MLOG"
     { printf 'Pattern that fired: %s%s%s\n\nThe line:\n%s\n\nYour whole draft, for context:\n%s\n' \
@@ -5181,6 +5195,35 @@ Output ONLY the replacement line: no preamble, no quotes, no commentary, no disp
     rm -f "$MLOG"
     turn_metric mirror-call-end
     printf '%s' "$OUT"
+}
+
+# The voice reading of a resay (speech-output rule 58): deterministic, in
+# lib/claudism-mirror, never a gate. Prints the reading JSON, or nothing
+# when the helper cannot answer — and every caller reads nothing as "no
+# reading": the resay goes out as it always did, the row with no voice.
+_claudism_voice_read() {  # <held-sentence> <resay> <pattern> <fix> <spoken-draft>
+    [ -x "$LIB_DIR/claudism-mirror" ] || return 0
+    python3 -c 'import json,sys; print(json.dumps({"before": sys.argv[1], "after": sys.argv[2], "pattern": sys.argv[3], "fix": sys.argv[4], "draft": sys.argv[5]}))' \
+        "$1" "$2" "$3" "$4" "$5" 2>/dev/null \
+        | "$LIB_DIR/claudism-mirror" voice 2>/dev/null || true
+}
+
+# The flag record with the reading on it, for logflag (rule 58: the row
+# carries voice, voice_why, and resays when the second pass ran). An empty
+# reading leaves the record exactly as it was.
+_claudism_rec_voice() {  # <rec-json> <voice> <why> <resays>
+    [ -n "$2" ] || { printf '%s' "$1"; return 0; }
+    printf '%s' "$1" | python3 -c '
+import json, sys
+d = json.load(sys.stdin)
+d["voice"] = sys.argv[1]
+d["voice_why"] = sys.argv[2]
+try:
+    if int(sys.argv[3]) > 1:
+        d["resays"] = int(sys.argv[3])
+except ValueError:
+    pass
+print(json.dumps(d, ensure_ascii=False))' "$2" "$3" "${4:-1}" 2>/dev/null || printf '%s' "$1"
 }
 
 # The unspoken channel's gate. The streamer's hold-and-rewrite only ever
@@ -5227,6 +5270,7 @@ claudism_mirror_direct() {  # <kind> <response>
         speech_log "claudism table ($KIND): her table repaired the draft"
     fi
     local FLAGS N I REC SENT PAT NOTE FN REWRITE LOGREW SPLICED OUTLOG USE
+    local VJ VOICE VWHY RESAYS SECOND RESAID=0
     FLAGS="$(spoken_part "$RESPONSE" \
         | "$LIB_DIR/claudism-mirror" scan "$CLAUDISMS_FILE" 2>/dev/null)" \
         || { printf '%s' "$RESPONSE"; return 0; }
@@ -5265,8 +5309,34 @@ claudism_mirror_direct() {  # <kind> <response>
             continue
         fi
         SPLICED=""
+        VOICE=""; VWHY=""; RESAYS=1
         REWRITE="$(_claudism_mirror_call "$SENT" "$PAT" "$NOTE" "$(spoken_part "$RESPONSE")" "$FN" "$FIX")"
         if [ -n "$(printf '%s' "$REWRITE" | tr -d '[:space:]')" ]; then
+            # Rule 58: the resay is read for its voice before it is spliced
+            # or logged. A reading other than kept buys ONE more pass per
+            # turn on these paths — nothing is coming out of the speakers
+            # while they think — bounded by its own shorter deadline; the
+            # second answer stands whatever it reads, and an empty one
+            # leaves the first resay standing. Never a gate: nothing is
+            # suppressed, no code writes a word, and the row says what
+            # happened.
+            VJ="$(_claudism_voice_read "$SENT" "$REWRITE" "$PAT" "$FIX" "$(spoken_part "$RESPONSE")")"
+            VOICE="$(_claudism_field "$VJ" voice)"
+            VWHY="$(_claudism_field "$VJ" why)"
+            if [ -n "$VOICE" ] && [ "$VOICE" != kept ] \
+                    && [ "${CLAUDISM_VOICE_RESAY:-1}" = "1" ] && [ "$RESAID" = 0 ]; then
+                RESAID=1
+                speech_log "claudism mirror ($KIND): the resay of '$PAT' read $VOICE ($VWHY) — one more pass"
+                SECOND="$(CLAUDISM_MIRROR_CALL_TIMEOUT="${CLAUDISM_VOICE_RESAY_TIMEOUT:-30}" \
+                    _claudism_mirror_call "$SENT" "$PAT" "$NOTE" "$(spoken_part "$RESPONSE")" "$FN" "$FIX" "$REWRITE" "$VOICE — $VWHY")"
+                if [ -n "$(printf '%s' "$SECOND" | tr -d '[:space:]')" ]; then
+                    REWRITE="$SECOND"
+                    RESAYS=2
+                    VJ="$(_claudism_voice_read "$SENT" "$REWRITE" "$PAT" "$FIX" "$(spoken_part "$RESPONSE")")"
+                    VOICE="$(_claudism_field "$VJ" voice)"
+                    VWHY="$(_claudism_field "$VJ" why)"
+                fi
+            fi
             # echo_guard (speech-output rule 41a): a rewrite the draft
             # already carries as another sentence splices as a deletion, so
             # the reply says the words once, where she wrote them.
@@ -5279,13 +5349,14 @@ claudism_mirror_direct() {  # <kind> <response>
             RESPONSE="$SPLICED"
             OUTLOG="rewrite"
             LOGREW="$REWRITE"
+            REC="$(_claudism_rec_voice "$REC" "$VOICE" "$VWHY" "$RESAYS")"
         else
             OUTLOG="original-mirror-failed"
             LOGREW=""
         fi
         printf '%s' "$REC" | "$LIB_DIR/claudism-mirror" logflag \
             "$CLAUDISM_FLAGS_DIR" "$KIND" "$$" "$OUTLOG" "$LOGREW" 2>/dev/null
-        speech_log "claudism mirror ($KIND): '$PAT' -> $OUTLOG"
+        speech_log "claudism mirror ($KIND): '$PAT' -> $OUTLOG${VOICE:+ (voice $VOICE${RESAYS:+, resays $RESAYS})}"
         I=$((I + 1))
     done
     printf '%s' "$RESPONSE"
@@ -5381,7 +5452,8 @@ claudism_mirror_desk() {  # <response>
         return 0
     fi
     local DEADLINE=$(( $(date +%s) + ${CLAUDISM_DESK_WAIT:-600} )) LAST=0
-    local INFO SWAPPED REC SEQ SENT PAT NOTE FN REWRITE LOGREW SPLICED OUTCOME OUTLOG VERDICT W
+    local INFO SWAPPED REC SEQ SENT PAT NOTE FN FIX REWRITE LOGREW SPLICED OUTCOME OUTLOG VERDICT W
+    local VJ VOICE VWHY
     while :; do
         # First line: how many predicted fires the streamer's table already
         # answered itself (outcome table-swap) — they count towards the
@@ -5432,9 +5504,17 @@ PY
             FN="$(_claudism_field "$REC" function)"
             FIX="$(_claudism_field "$REC" fix)"
             SPLICED=""
+            VOICE=""; VWHY=""
             REWRITE="$(CLAUDISM_MIRROR_CALL_TIMEOUT="$CLAUDISM_MIRROR_DESK_CALL_TIMEOUT" \
                 _claudism_mirror_call "$SENT" "$PAT" "$NOTE" "$(spoken_part "$RESPONSE")" "$FN" "$FIX")"
             if [ -n "$(printf '%s' "$REWRITE" | tr -d '[:space:]')" ]; then
+                # Rule 58 at the desk: the reading is RECORDED, never acted
+                # on — the hold's budget (rule 46) admits no second call,
+                # so the resay speaks exactly as rule 41 says and the row
+                # says what it sounded like.
+                VJ="$(_claudism_voice_read "$SENT" "$REWRITE" "$PAT" "$FIX" "$(spoken_part "$RESPONSE")")"
+                VOICE="$(_claudism_field "$VJ" voice)"
+                VWHY="$(_claudism_field "$VJ" why)"
                 # echo_guard (speech-output rule 41a): the streamer asks the
                 # same question of the same words at the verdict, so a
                 # rewrite the draft already carries splices as a deletion
@@ -5494,6 +5574,7 @@ PY
                 RESPONSE="$SPLICED"
                 OUTLOG="rewrite"
                 LOGREW="$REWRITE"
+                REC="$(_claudism_rec_voice "$REC" "$VOICE" "$VWHY" 1)"
             elif [ "$OUTCOME" = "released" ]; then
                 OUTLOG="original-mirror-failed"
                 LOGREW=""
@@ -5503,7 +5584,7 @@ PY
             fi
             printf '%s' "$REC" | "$LIB_DIR/claudism-mirror" logflag \
                 "$CLAUDISM_FLAGS_DIR" desktop "$$" "$OUTLOG" "$LOGREW" 2>/dev/null
-            speech_log "claudism mirror (desk): '$PAT' -> $OUTLOG"
+            speech_log "claudism mirror (desk): '$PAT' -> $OUTLOG${VOICE:+ (voice $VOICE)}"
             R=$((R + 1))
             [ "$((R + SWAPPED))" -ge "$P" ] && break
             continue

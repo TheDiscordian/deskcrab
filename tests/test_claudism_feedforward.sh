@@ -120,3 +120,21 @@ OUT="$("$FF")"
 check "the use beside it is shown" contains "$OUT" "Honestly, the fan is fine."
 check "and filed under its function" contains "$OUT" "(the vouching move)"
 refute "the mention stayed out of the block" contains "$OUT" "drop the hedge"
+
+echo
+echo "a resay read flat is shown as the miss it is (speech-output rule 58, prompt-assembly rule 35):"
+mkdir -p "$FLAGS"
+printf '{"epoch": %s, "time": "%s", "kind": "phone", "pid": 77, "sentence": "Honestly, the recovery took twenty minutes.", "pattern": "%s", "stage": "live", "outcome": "rewrite", "before": "Honestly, the recovery took twenty minutes.", "after": "The clean recovery took twenty minutes.", "voice": "flat", "voice_why": "the slot was refilled, not emptied", "resays": 2}\n' \
+    "$((NOW - 300))" "$(date -d "@$((NOW - 300))" +%Y-%m-%dT%H:%M:%S%z)" "$HONEST" > "$FLAGS/$TODAY.jsonl"
+OUT="$("$FF")"
+check "the row is shown" contains "$OUT" "the honesty family"
+check "with the resay quoted — the line he actually heard" contains "$OUT" 'your resay "The clean recovery took twenty minutes." read flat'
+check "and the why" contains "$OUT" "the slot was refilled, not emptied"
+check "named as the register surviving the phrase" contains "$OUT" "the phrase went, the register stayed"
+refute "and never as a line that died at the gate" contains "$OUT" "never spoken"
+printf '{"epoch": %s, "time": "%s", "kind": "phone", "pid": 78, "sentence": "Honestly, the lamp is lit.", "pattern": "%s", "stage": "live", "outcome": "rewrite", "before": "Honestly, the lamp is lit.", "after": "The lamp is lit.", "voice": "kept", "voice_why": ""}\n' \
+    "$((NOW - 200))" "$(date -d "@$((NOW - 200))" +%Y-%m-%dT%H:%M:%S%z)" "$HONEST" > "$FLAGS/$TODAY.jsonl"
+OUT="$("$FF")"
+check "a resay read kept is the gate working: caught, never spoken, exactly as before" \
+    contains "$OUT" "caught at the gate, never spoken"
+refute "with no resay quoted" contains "$OUT" "your resay"
