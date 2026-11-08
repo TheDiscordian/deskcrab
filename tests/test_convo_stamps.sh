@@ -17,7 +17,12 @@
 #   4. _compact_split splits a MIXED file, and its output stays an exact line
 #      prefix of the conversation (what _compact_drop depends on)
 #   5. convo_time_range: same day, across days, and unstamped
-#   6. the summariser is told the span it is condensing
+#   6. the summariser is told the span it is condensing — on either engine
+#      the model name selects (specs/model-backends.md): the Claude CLI takes
+#      the instructions on argv, codex as a model_instructions_file, and each
+#      stub captures them where they land. The default summariser is Sol, so
+#      a capture that only ever replaced the claude stub watched an engine the
+#      walk never reached and reported the span missing when it was not.
 #   7. wake_says_nothing_new still recognises an assistant block, stamped or not
 #   8. build_convo_context ships the stamps and says how to read them
 #   9. serve.py's phone parser: stamp and mark out of the text, each into its
@@ -164,29 +169,65 @@ fi
         || fail "an unstamped excerpt invented a time range" "$(convo_time_range "$WORK/unstamped.txt")"
 
     # 6. The summariser is told the span, so the condensed half keeps a clock.
-    # The stub claude prints nothing, so compact_convo leaves history alone —
-    # what is under test is the prompt, captured from the argument it is given.
+    # What is under test is the instructions the summariser is handed, read
+    # off whichever engine the model name selects (claude_classify follows the
+    # name, specs/model-backends.md rule 3): the Claude CLI takes them on argv
+    # as --system-prompt, codex as a model_instructions_file it is pointed at.
+    # Each stub copies the instructions ALONE to $SUMPROMPT_OUT and drains the
+    # material on stdin unread: the excerpt carries its own stamps, so a
+    # capture that kept it would pass the span check off the material even if
+    # the instructions had lost the span. The engine is pinned per call rather
+    # than left to the default: the default is Sol, and a capture that only
+    # replaced the claude stub watched an engine the walk never reached —
+    # three red checks for a span that was arriving all along, on the other
+    # engine.
     sandbox_stub claude <<'STUB'
 #!/usr/bin/env bash
 for a in "$@"; do printf '%s\n' "$a"; done > "$SUMPROMPT_OUT"
+cat > /dev/null
 STUB
-    {
+    sandbox_stub codex <<'STUB'
+#!/usr/bin/env bash
+for a in "$@"; do
+    case "$a" in
+        model_instructions_file=*) cat "${a#model_instructions_file=}" > "$SUMPROMPT_OUT" ;;
+    esac
+done
+cat > /dev/null
+printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"stub reply."}}'
+STUB
+    CODEX_BIN="$SANDBOX_BIN/codex"
+    stamped_convo() {
         printf 'User [%s 09:12]: q1\nAssistant [%s 09:13]: a1\n\n' "$TODAY" "$TODAY"
         printf 'User [%s 10:00]: q2\nAssistant [%s 10:01]: a2\n\n' "$TODAY" "$TODAY"
         printf 'User [%s 11:40]: q3\nAssistant [%s 11:41]: a3\n\n' "$TODAY" "$TODAY"
-    } > "$CONVOFILE"
-    CLAUDE_BIN="$SANDBOX_BIN/claude" SUMPROMPT_OUT="$WORK/sumprompt.txt" compact_convo
-    grep -q "Keep time in the summary" "$WORK/sumprompt.txt" \
-        && ok "the summariser is asked to keep time" \
-        || fail "the summariser was not asked to keep time"
-    # However many blocks the window folds away, the excerpt starts at the
-    # oldest one — so its span opens at that block's stamp.
-    grep -qF "$TODAY 09:12" "$WORK/sumprompt.txt" \
-        && ok "the excerpt's span reaches the summariser" \
-        || { cat "$WORK/sumprompt.txt"; fail "the excerpt's span never reached the summariser"; }
-    # And an unstamped excerpt must make the summariser say so, not guess.
+    }
+    # span_reaches <engine> <capture>: what every engine owes. However many
+    # blocks the window folds away, the excerpt starts at the oldest one — so
+    # its span opens at that block's stamp.
+    span_reaches() {
+        [ -s "$2" ] \
+            || { fail "the $1 summariser never ran, so nothing was captured"; return 0; }
+        grep -q "Keep time in the summary" "$2" \
+            && ok "the $1 summariser is asked to keep time" \
+            || fail "the $1 summariser was not asked to keep time"
+        grep -qF "$TODAY 09:12" "$2" \
+            && ok "the excerpt's span reaches the $1 summariser" \
+            || { cat "$2"; fail "the excerpt's span never reached the $1 summariser"; }
+    }
+    CONVO_SUMMARY_MODEL=haiku
+    stamped_convo > "$CONVOFILE"
+    SUMPROMPT_OUT="$WORK/sumprompt-claude.txt" compact_convo
+    span_reaches "Claude" "$WORK/sumprompt-claude.txt"
+    CONVO_SUMMARY_MODEL=sol
+    stamped_convo > "$CONVOFILE"
+    SUMPROMPT_OUT="$WORK/sumprompt-sol.txt" compact_convo
+    span_reaches "Sol" "$WORK/sumprompt-sol.txt"
+    # And an unstamped excerpt must make the summariser say so, not guess —
+    # the same instructions reach both engines, so one capture settles it.
+    CONVO_SUMMARY_MODEL=haiku
     printf 'User: q1\nAssistant: a1\n\nUser: q2\nAssistant: a2\n\n' > "$CONVOFILE"
-    CLAUDE_BIN="$SANDBOX_BIN/claude" SUMPROMPT_OUT="$WORK/sumprompt-bare.txt" compact_convo
+    SUMPROMPT_OUT="$WORK/sumprompt-bare.txt" compact_convo
     grep -q "the excerpt is unstamped" "$WORK/sumprompt-bare.txt" \
         && ok "an unstamped excerpt tells the summariser its span is unknown" \
         || fail "an unstamped excerpt did not tell the summariser its span is unknown"

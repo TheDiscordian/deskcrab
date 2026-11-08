@@ -10,6 +10,16 @@
 # and NO text, so the wake's whole output is its work trace; a green run means
 # that trace reached the judge and the credited record was stamped.
 #
+# The wake is fired the way every booker fires one — kind and reason on the
+# command line — because that is the only channel `crab wake` reads
+# (_wake_norm, over argv). The reason is the wake's agenda AND its recall
+# query (specs/memory-recall.md rule 4): a wake that arrives without one
+# beside an unrelated want retrieves nothing, writes no injected-ids sidecar,
+# and the judge has nothing to judge. So the chain is pinned from the front
+# as well as the back — the agenda and the directive both reach the judge —
+# and every step is a counted assertion, so a red run says which step broke
+# instead of "0 passed, 0 failed".
+#
 # Needs the local ollama embedder (like tests/test_memory.py); everything else
 # is stubbed, silent, and confined to the sandbox.
 . "$(dirname "$(readlink -f "$0")")/lib/sandbox.sh"
@@ -49,20 +59,21 @@ CLAUDE_BIN="$SANDBOX_BIN/claude"
 LAST_ORIGIN_FILE="$WORK/last-origin"
 WANTS_FILE="$WORK/wants.md"
 WAKE_QUIET_HOURS=""
-IDLE_RETURN=0
 EOF
-# IDLE_RETURN=0: the wake below is fired with no positional reason, and in an
-# idle sandbox the own-time discipline (specs/wake-queue.md rules 40a-40f)
-# would route it to the choosing session on the codex engine — whose stub
-# emits no tool_use block, so the work trace this file exists to follow would
-# vanish for a reason that has nothing to do with reinforcement. The subject
-# here is the wordless wake's path to the judge, on the historic wants walk.
 printf '# Wants\n\n- a want, so the wake path is enabled at all\n' > "$WORK/wants.md"
 
-"$REPO/crab" memory add --kind directive --topics files \
-    "Never report a build done without verifying it with a real test." >/dev/null
+DIRECTIVE="Never report a build done without verifying it with a real test."
+REASON="a file that constitutes you changed"
+"$REPO/crab" memory add --kind directive --topics files "$DIRECTIVE" >/dev/null
 
-WAKE_REASON="a file that constitutes you changed" "$REPO/crab" wake >/dev/null 2>&1 || true
+# An event wake carrying what happened, the reason as its own argument. The
+# first draft of this file exported WAKE_REASON and fired a bare `crab wake`;
+# crab reads kind and reason from argv and overwrote the environment's with
+# nothing, so the wake it tested had no agenda, recalled nothing, wrote no
+# sidecar, and the judge was — correctly — never fired. A reasoned event wake
+# is also never the standing own-time return (idle_return_candidate), so
+# nothing routes it to the choosing session on the other engine.
+"$REPO/crab" wake event "$REASON" >/dev/null 2>&1 || true
 
 DB="$DESKCRAB_MEMORY_DIR/memory.db"
 # The judge is detached on purpose — give it a bounded moment to land.
@@ -71,15 +82,42 @@ for _ in $(seq 60); do
     sleep 0.5
 done
 
+# The judge's own log beside a miss, when there is one. Guarded on purpose:
+# this file runs under set -e, and a bare `cat` of a log that was never
+# written exits 1 inside the `|| { …; die; }` group BEFORE die runs — the
+# test then ended silently, "exited 1 — 0 passed, 0 failed", and the
+# diagnostic hid the very verdict it was there to explain.
+judge_log() { cat "${DESKCRAB_STATE_PREFIX}-memory-judge.log" 2>/dev/null || true; }
+
 [ -f "$WORK/judge-prompt.txt" ] \
-    || { cat "${DESKCRAB_STATE_PREFIX}-memory-judge.log" 2>/dev/null; die "wordless wake never fired the judge"; }
+    || { judge_log; die "wordless wake never fired the judge"; }
+ok "the wordless wake fired the judge"
+# The front of the chain: the reason reached the wake (it is the agenda the
+# judge is shown) and the recall it composed injected the directive (the
+# record the judge is asked about). Lose either and no sidecar is written,
+# so the judge is never fired at all — which is what a reason left in the
+# environment looked like.
+grep -qF "$REASON" "$WORK/judge-prompt.txt" \
+    && ok "the wake's reason reached the judge as its agenda" \
+    || fail "the wake's reason never reached the judge as its agenda"
+grep -qF "$DIRECTIVE" "$WORK/judge-prompt.txt" \
+    && ok "the recalled directive reached the judge" \
+    || fail "the recalled directive never reached the judge"
 grep -q "What she DID this turn" "$WORK/judge-prompt.txt" \
-    || die "the work trace never reached the judge prompt"
+    && ok "the work trace reached the judge prompt" \
+    || fail "the work trace never reached the judge prompt"
 grep -q "proof-of-work.md" "$WORK/judge-prompt.txt" \
-    || die "the trace reached the judge but named no work"
-[ "$(sqlite3 "$DB" 'SELECT use_count FROM memories WHERE id=1')" = "1" ] \
-    || { cat "${DESKCRAB_STATE_PREFIX}-memory-judge.log" 2>/dev/null; die "credited record was never reinforced"; }
-ls "${DESKCRAB_STATE_PREFIX}"-memory-injected-*.json 2>/dev/null \
-    && die "injected-ids sidecar not consumed"
+    && ok "the trace named the work" \
+    || fail "the trace reached the judge but named no work"
+if [ "$(sqlite3 "$DB" 'SELECT use_count FROM memories WHERE id=1')" = "1" ]; then
+    ok "the credited record was reinforced"
+else
+    judge_log; fail "credited record was never reinforced"
+fi
+if ls "${DESKCRAB_STATE_PREFIX}"-memory-injected-*.json >/dev/null 2>&1; then
+    fail "injected-ids sidecar not consumed"
+else
+    ok "the injected-ids sidecar was consumed"
+fi
 
 ok "wordless wake -> work trace -> judge -> reinforce"
