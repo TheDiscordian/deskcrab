@@ -519,6 +519,24 @@ for reduction here — every rule below makes the queue **visible and bounded**,
        — journalled as dropped after it waited, ledgered `dropped-stale`, traced — and a judge
        that fails delivers. The read waits one poll past the clear, because a turn writes its
        journal entry after it releases its ticket.
+     - **The release is a re-read, never a timer.** The gates answering clear on one poll is not
+       the words going out. The wait lets one poll settle, and the judge above can take seconds,
+       and in any of those seconds a turn of his can begin, a recording can start, he can speak
+       again, or the night can arrive — the first shape of this wait returned off the settle alone,
+       and was caught at review (2026-11-08) delivering into a turn that began two seconds after
+       the gates had cleared. So every gate — the flight, the user busy, and for a note the heat —
+       is read again after the settle AND again after the judge, and the words go out only on a
+       read that finds them all clear. A gate that closed again puts the words back into the same
+       wait, under the same deadline, however many times the moment closes and opens; a note that
+       waited on is asked rule 27b's question again at its next release, against everything said
+       since the one cut, so a conversation that overtakes it during a later wait retires it as
+       one during the first does. Quiet hours arriving at any point — the settle and the judge
+       included — end the wait by name, because the night gate is a delivery gate no wait waits
+       out. The deadline and the urgent lane bound the WAITING, never the delivery: a release that
+       finds every gate clear delivers whatever the clock says, as the words would have gone out
+       with no hold at all, and the lock is released seconds later; both are consulted again only
+       when the words must wait again, and a reclosure past the budget, or beside a waiting event
+       wake, ends the wait by name on the spot.
      - **Delivered once, structurally.** A wait that cleared delivers and books nothing; a wait
        that ended books and delivers nothing; the identical-reason coalesce at the door folds a
        second re-book into the pending one. Nothing here reads the reply to decide WHETHER (rule
@@ -931,7 +949,7 @@ flowchart TD
   G2 -->|yes| G3{"quiet hours, a turn in flight,<br/>or user busy?"}
   G3 -->|"yes, a job's return (rule 27d)"| G3c["wait, bounded, for the moment to pass<br/>dry: re-book whole — original booker,<br/>original reason, stamped once"]
   G3c -->|cleared| G4
-  G3 -->|yes, a turn in flight| G3b["wait, bounded, for the moment to pass (rule 27g)<br/>cleared: rule 27b's question, then deliver<br/>dry: journal, re-book the words through the queue (rule 27c)"]
+  G3 -->|yes, a turn in flight| G3b["wait, bounded, for the moment to pass (rule 27g)<br/>cleared: settle, re-read the gates, rule 27b's question, re-read again, then deliver<br/>closed again: back into the same wait, same budget<br/>dry: journal, re-book the words through the queue (rule 27c)"]
   G3b -->|cleared, still news| G4
   G3 -->|yes, otherwise| G3a["suppress speech<br/>journal what was swallowed"]
   G3 -->|no| G4["append to the conversation<br/>then speak, then show"]
@@ -1060,7 +1078,16 @@ a conversation that keeps going delivers nothing while it goes on and the note l
 stops; a SPOKEN wake held in flight lands once when the ticket clears and is never journalled as
 held; a wait that runs dry journals why and books the one comeback as rule 27a does; a note whose
 substance the exchange covered while it waited is dropped by rule 27b's judge, journalled and
-ledgered, a SAY delivers, and a wait with nothing said never calls the judge),
+ledgered, a SAY delivers, and a wait with nothing said never calls the judge; and the release as a
+re-read — under the controlled clock, a turn that begins, a recording that starts or a message
+that lands during the settle puts the words back into the wait and they go out only once it clears
+again, within the one budget, so does a gate that closes during the judge, a conversation that
+grows during the second wait is judged again and a DROP then retires the note, quiet hours
+arriving during the settle or the judge end the wait by name with nothing delivered, a reclosure
+past the budget or beside an urgent-lane claim ends it on the spot, and a release that finds the
+gates clear delivers whatever the clock or the urgent lane says; then through `crab wake`, a judge
+during which he speaks again holds the note until the conversation cools once more and delivers it
+exactly once, and one whose record grows across the second wait is asked again and dropped),
 `tests/test_job_news_delivery.sh` (rule 27d: a spoken job return beside a live delivery-queue
 ticket, and one beside a recording in progress, each wait the gate out and reach the phone — the
 audio pointer, the conversation and the synthesiser all carrying the words, exactly once, only

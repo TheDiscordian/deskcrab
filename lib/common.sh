@@ -7254,13 +7254,39 @@ wake_hold_for_heat() {  # <the held words>
 # wait announces itself on the speech log — entered, cleared, or ended and
 # why — because a delivery held here is a silence, and every silence explains
 # itself somewhere (specs/speech-output.md rule 53).
+#
+# The RELEASE IS A RE-READ, never a timer. The gates answering clear on one
+# poll is not the words going out: the wait lets one poll settle first (the
+# turn that just landed writes its journal entry after it releases its
+# ticket, and the staleness read wants that entry), and the caller then asks
+# rule 27b's judge, which can take seconds — and in any of those seconds a
+# turn of his can begin, a recording can start, he can speak again, or the
+# night can arrive. The first shape of this wait returned 0 off the settle
+# alone and was caught doing exactly that at review (2026-11-08): the gates
+# clear at one instant, a turn in flight two seconds later, the words
+# delivered into it. So every gate is read again after the settle and again
+# after the judge (wake_hot_release_open), and the words go out only on a
+# read that finds them all clear. A gate that closed again puts the words
+# back into the same wait under the same deadline — the budget is one for the
+# whole delivery, reclosures included — and quiet hours arriving at any
+# point, the settle and the judge included, end the wait by name. The
+# deadline and the urgent lane bound the WAITING, never the delivery: a
+# release that finds every gate clear delivers whatever the clock says, as
+# the words would have gone out with no hold at all, and the lock is released
+# seconds later; both are consulted again only when the words must wait again.
 wake_hot_moment() {  # <1 when the output has a spoken half, else 0>
     local NOW SPEAKS="${1:-0}" f ep
     WAKE_HOT_DRY=""
     [ "${WAKE_HOT_WAIT:-0}" -gt 0 ] 2>/dev/null || {
         WAKE_HOT_DRY="the in-process wait is off"; return 1; }
     NOW="$(date +%s)"
-    WAKE_HOT_DEADLINE="${WAKE_HOT_DEADLINE:-$(( NOW + WAKE_HOT_WAIT ))}"
+    # One deadline for the process, set on the first call; the entry is
+    # announced once, and a return into the wait (a gate that closed again
+    # during the settle or the judge) is announced by whoever saw it close.
+    if [ -z "${WAKE_HOT_DEADLINE:-}" ]; then
+        WAKE_HOT_DEADLINE=$(( NOW + WAKE_HOT_WAIT ))
+        speech_log "held note: delivery is waiting for the moment to pass (a turn in flight, the user mid-something, or the conversation hot)"
+    fi
     # Where the staleness read (wake_held_note_stale) begins: the EARLIER of
     # this session's start and the start of any turn of his already in
     # flight when the wait began — a turn's journal entry carries its own
@@ -7276,25 +7302,21 @@ wake_hot_moment() {  # <1 when the output has a spoken half, else 0>
             [ "$ep" -lt "$WAKE_HOT_CUT" ] && WAKE_HOT_CUT="$ep"
         done
     fi
-    speech_log "held note: delivery is waiting for the moment to pass (a turn in flight, the user mid-something, or the conversation hot)"
-    while _wake_hot_moment_closed "$SPEAKS"; do
-        if in_quiet_hours; then
-            WAKE_HOT_DRY="quiet hours arrived mid-wait"
-        elif wake_urgent_waiting; then
-            WAKE_HOT_DRY="another event wake is waiting for the run lock"
-        elif [ "$(date +%s)" -ge "$WAKE_HOT_DEADLINE" ]; then
-            WAKE_HOT_DRY="the moment outlasted the ${WAKE_HOT_WAIT}s wait"
-        fi
-        [ -z "$WAKE_HOT_DRY" ] || {
-            speech_log "held note: $WAKE_HOT_DRY — handing the words back to the queue"
-            return 1
-        }
+    while :; do
+        while _wake_hot_moment_closed "$SPEAKS"; do
+            _wake_hot_wait_over && return 1
+            sleep "$WAKE_HOT_POLL"
+        done
+        # The gates answered clear. One poll to let the record settle — the
+        # turn that just landed writes its journal entry after it releases
+        # its ticket (session_finish's order), and the staleness read wants
+        # that entry — and then the re-read, because the settle is itself a
+        # window the moment can close in.
         sleep "$WAKE_HOT_POLL"
+        wake_hot_release_open "$SPEAKS" && break
+        [ -z "$WAKE_HOT_DRY" ] || return 1
+        speech_log "held note: the moment closed again during the settle — waiting on"
     done
-    # The turn that just landed writes its journal entry after it releases
-    # its ticket (session_finish's order), and the staleness read wants that
-    # entry: one more poll lets it land before the record is read.
-    sleep "$WAKE_HOT_POLL"
     speech_log "held note: the moment passed — delivering now"
     return 0
 }
@@ -7306,6 +7328,45 @@ _wake_hot_moment_closed() {  # <speaks>  -> 0 while some gate still holds the no
     convo_hot
 }
 
+# What ends the wait while the words are held: quiet hours, an event wake in
+# the urgent lane, the budget. 0 when one of them stands, WAKE_HOT_DRY naming
+# it and the speech log told; 1 when the wait goes on.
+_wake_hot_wait_over() {
+    WAKE_HOT_DRY=""
+    if in_quiet_hours; then
+        WAKE_HOT_DRY="quiet hours arrived mid-wait"
+    elif wake_urgent_waiting; then
+        WAKE_HOT_DRY="another event wake is waiting for the run lock"
+    elif [ "$(date +%s)" -ge "$WAKE_HOT_DEADLINE" ]; then
+        WAKE_HOT_DRY="the moment outlasted the ${WAKE_HOT_WAIT}s wait"
+    fi
+    [ -n "$WAKE_HOT_DRY" ] || return 1
+    speech_log "held note: $WAKE_HOT_DRY — handing the words back to the queue"
+    return 0
+}
+
+# The read at release (rule 27g): are the words clear to go out THIS
+# instant? Asked after the settle and again after the judge, because both
+# take time and the moment can close in either. Returns 0 when every gate is
+# clear — deliver, whatever the clock or the urgent lane says, as the words
+# would have gone out with no hold at all. Returns 1 otherwise, in one of two
+# shapes the caller tells apart by WAKE_HOT_DRY: named, the wait is over
+# (quiet hours — the one delivery gate no wait waits out — or a gate closed
+# again with the budget spent or the urgent lane standing) and the words go
+# to the queue; empty, a gate merely closed again and the words go back into
+# the same wait under the same deadline.
+wake_hot_release_open() {  # <speaks>
+    WAKE_HOT_DRY=""
+    if in_quiet_hours; then
+        WAKE_HOT_DRY="quiet hours arrived mid-wait"
+        speech_log "held note: $WAKE_HOT_DRY — handing the words back to the queue"
+        return 1
+    fi
+    _wake_hot_moment_closed "$1" || return 0
+    _wake_hot_wait_over || true
+    return 1
+}
+
 # Rule 27b's question, asked of a note that waited in THIS process. The
 # fire-time gate (wake_stale_note_drop) judges a comeback against what was
 # said since the hold stamp; a note that never left the process has no
@@ -7315,8 +7376,11 @@ _wake_hot_moment_closed() {  # <speaks>  -> 0 while some gate still holds the no
 # record, same judge, same discipline: nothing said since the cut and the
 # judge is never called; only a positive DROP retires the note — journalled,
 # ledgered and traced; a judge that fails delivers. One record is judged
-# once: a SAY stands until the record grows. Returns 0 only when the note was
-# dropped.
+# once: a SAY stands until the record grows — and the record CAN grow, because
+# a note whose gates closed again after the judge waits on and is asked here
+# again at the next release, against everything said since the one cut, so a
+# conversation that overtakes the note during its second wait retires it just
+# as one during its first does. Returns 0 only when the note was dropped.
 wake_held_note_stale() {  # <the note>
     [ "${WAKE_STALE_GATE:-1}" = "1" ] || return 1
     local NOTE="$1" TURNS VERDICT WHY
@@ -7347,18 +7411,24 @@ wake_held_note_stale() {  # <the note>
 }
 
 # One hold, two outcomes (rules 27a, 27c, 27g). Returns 0 when the words are
-# to be delivered NOW — the in-process wait cleared and the note still stands
-# — and 1 when this wake ends here: the note dropped as stale, re-booked
-# through the queue, or refused at the door, each journalled in those words.
+# to be delivered NOW — the in-process wait cleared, the note still stands,
+# and the gates were read clear again after the judge — and 1 when this wake
+# ends here: the note dropped as stale, re-booked through the queue, or
+# refused at the door, each journalled in those words. The wait and the judge
+# alternate until a release read finds the gates clear: the judge can take
+# seconds, and a gate that closed in them puts the words back into the wait
+# under the same deadline (the judge is asked again only if the record grew).
 # The first argument is the gate's own wording for the journal line, kept
 # verbatim from before the wait existed so the record reads as it always has;
 # the rider is what the line carries after the parenthesis.
 wake_hold_words() {  # <why, for the journal> <the words> <the journal rider> <1 when spoken, else 0>
     local WHY="$1" WORDS="$2" RIDER="$3" SPEAKS="${4:-0}"
-    if wake_hot_moment "$SPEAKS"; then
+    while wake_hot_moment "$SPEAKS"; do
         wake_held_note_stale "$WORDS" && return 1
-        return 0
-    fi
+        wake_hot_release_open "$SPEAKS" && return 0
+        [ -z "$WAKE_HOT_DRY" ] || break
+        speech_log "held note: the moment closed again while the note was judged — waiting on"
+    done
     # The booking FIRST, the record after (rule 27a): the line may promise a
     # comeback only when one stands.
     if wake_hold_for_heat "$WORDS"; then

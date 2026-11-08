@@ -482,6 +482,15 @@ ran dry, not the retry. In the same breath the user banned the excuse that had g
 delay — "it fired but got held because you were talking to me" — which lives in the conduct file
 rather than here, because no regex holds a story-shape.
 
+
+The first shape of rule 27g's wait was rejected at its completion review (2026-11-08): the wait
+returned ready off its one-poll settle alone, and the staleness judge ran after it with no gate
+read again, so a turn that began, a recording that started or a message that landed in those
+seconds was delivered into — reproduced on the function itself with a fake clock, the gates clear
+at one instant and a turn in flight two seconds later. The release is now a re-read: every gate
+again after the settle and again after the judge, a reclosure back into the same wait under the
+same budget, quiet hours ending it by name wherever they arrive, the deadline and the urgent lane
+bounding the waiting and never a release that finds the gates clear.
 ## Speech, display, and the never-silent guarantee
 
 TTS streams in parallel with generation — speech starts before the full response is ready. The

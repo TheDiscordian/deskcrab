@@ -33,10 +33,26 @@
 #       dropped by rule 27b's judge — journalled, ledgered, traced — and a
 #       SAY delivers it
 #    7. WAKE_HOT_WAIT=0 restores the flat re-book exactly
+#    8. the release is a RE-READ, never a timer (the review of 2026-11-08
+#       reproduced the first shape delivering into a turn that began during
+#       the settle): under the controlled clock, a turn that begins, a
+#       recording that starts or a message that lands during the settle puts
+#       the words back into the wait, and they go out only once it clears
+#       again, within the one budget; so does a gate that closes during the
+#       judge; a record that grows during the second wait is judged again
+#       and a DROP retires the note; quiet hours arriving during the settle
+#       or the judge end the wait by name with nothing delivered; a
+#       reclosure past the budget or beside an urgent-lane claim ends it on
+#       the spot; a release that finds the gates clear delivers whatever the
+#       clock or the urgent lane says; then through `crab wake`, a judge
+#       during which he speaks again holds the note until the conversation
+#       cools once more, and one whose record grows across the second wait is
+#       asked again and dropped
 #
 # On the tree before rule 27g existed, 1 fails (no wait to call) and 2
 # through 4 fail (nothing delivered, one comeback booked five minutes out).
-# Everything is stubbed and confined to the sandbox.
+# On the first shape of rule 27g (f6b5a2c), 8 fails: the settle alone
+# released the words. Everything is stubbed and confined to the sandbox.
 . "$(dirname "$(readlink -f "$0")")/lib/sandbox.sh"
 set -o pipefail
 
@@ -63,7 +79,11 @@ case "\$*" in
     *claude-fable-5*)
         echo judge >> "$CALLS"
         cat > "$WORK/judge-prompt.txt"
+        date +%s >> "$WORK/judge-at"
         MODE="\$(cat "$WORK/judge-mode" 2>/dev/null || echo say)"
+        # A scenario's hand inside the judge: what happens WHILE it runs —
+        # after this call's answer is fixed, so a hook can set the NEXT one.
+        [ -f "$WORK/judge-hook" ] && . "$WORK/judge-hook"
         case "\$MODE" in
             drop) TEXT="DROP: he was told about the win while this waited, in those words" ;;
             *)    TEXT="SAY: nothing since touches this — it is still news" ;;
@@ -144,10 +164,16 @@ CLOCK='
     WAKE_HOT_WAIT=300
     WAKE_HOT_POLL=2
     WAKE_FLIGHT_HOLD=1
-    unset WAKE_HOT_DEADLINE WAKE_HOT_CUT
+    unset WAKE_HOT_DEADLINE WAKE_HOT_CUT WAKE_HOT_JUDGED
     rm -f "${LAST_ORIGIN_FILE:?}" "${WAKE_URGENT_CLAIM:?}"
+    : > "$SPEECH_LOG"
     START=$FAKE_NOW
-    report() { printf "rc=%s elapsed=%s ticks=%s dry=[%s]\n" "$1" $(( FAKE_NOW - START )) "$TICKS" "$WAKE_HOT_DRY"; }
+    yn() { "$@" && echo yes || echo no; }
+    again() { local c; c="$(grep -c "closed again" "$SPEECH_LOG" 2>/dev/null)"; printf "%s\n" "${c:-0}"; }
+    report() { printf "rc=%s elapsed=%s ticks=%s inflight=%s busy=%s hot=%s urgent=%s again=%s dry=[%s]\n" \
+                   "$1" $(( FAKE_NOW - START )) "$TICKS" \
+                   "$(yn interactive_turn_in_flight)" "$(yn user_busy)" "$(yn convo_hot)" "$(yn wake_urgent_waiting)" \
+                   "$(again)" "$WAKE_HOT_DRY"; }
 '
 clocked() {  # <scenario body>  -> the report line
     sandbox_bash "$CLOCK
@@ -257,6 +283,185 @@ check_eq "without a single poll" "$(field "$R" ticks)" "0"
 check_eq "and says the wait is off" "$(field "$R" dry)" "the in-process wait is off"
 
 # ---------------------------------------------------------------------------
+# 1b. The release is a RE-READ, never a timer. The review of the first shape
+# of this wait (2026-11-08) reproduced the gap on the function itself: the
+# gates clear at one instant, a turn in flight two seconds later, the words
+# delivered into it — because the settle poll returned 0 on its own, and the
+# judge ran after it with no gate read again. Every scenario below is the
+# reviewer's fake clock: nothing real passes, the moment closes on an exact
+# tick, and the report line carries the state of every gate AT RETURN.
+JCOUNT="$WORK/clock-judged"
+HOLD='
+    JCOUNT="'"$JCOUNT"'"; rm -f "$JCOUNT" "'"$WORK"'/clock-grew" "'"$WORK"'/clock-night" "'"$WORK"'/clock-turn2"
+    BOOKED=0
+    wake_hold_for_heat() { BOOKED=$(( BOOKED + 1 )); return 0; }
+    wake_turns_since() { printf "[00:00] he said: something, while it waited\n"; }
+    judged() { [ -f "$JCOUNT" ] && wc -l < "$JCOUNT" || echo 0; }
+    hold_report() { printf "%s" "$SESSION_OUTCOME" > "'"$WORK"'/clock-outcome"
+                    printf "rc=%s elapsed=%s ticks=%s judged=%s booked=%s again=%s dry=[%s]\n" \
+                        "$1" $(( FAKE_NOW - START )) "$TICKS" "$(judged)" "$BOOKED" \
+                        "$(again)" "$WAKE_HOT_DRY"; }
+'
+
+echo
+echo "the release is a re-read — the reviewer's shape: a turn begins during the settle:"
+R="$(clocked 'he_spoke_ago 900
+              interactive_turn_in_flight() { [ "$TICKS" -ge 1 ] && [ "$TICKS" -lt 6 ]; }
+              wake_hot_moment 1; report $?')"
+check_eq "the words still go out" "$(field "$R" rc)" "0"
+check_eq "but never into the turn — at return nothing is in flight" "$(field "$R" inflight)" "no"
+check_eq "they waited for it: released at 14 s, not off the 2 s settle" "$(field "$R" elapsed)" "14"
+check_eq "and the speech log says the moment closed again during the settle" "$(field "$R" again)" "1"
+
+echo
+echo "a message that lands during the settle puts a note back into the wait:"
+R="$(clocked 'he_spoke_ago 4; on_tick() { [ "$TICKS" -eq 59 ] && he_spoke; :; }
+              wake_hot_moment 0; report $?')"
+check_eq "delivered in the end" "$(field "$R" rc)" "0"
+check_eq "with the conversation cold at return" "$(field "$R" hot)" "no"
+check_eq "a full window after he spoke again, plus the settle (240 s)" "$(field "$R" elapsed)" "240"
+check_eq "one reclosure announced" "$(field "$R" again)" "1"
+
+echo
+echo "a recording that starts during the settle does the same:"
+R="$(clocked 'he_spoke_ago 900
+              user_busy() { [ "$TICKS" -ge 1 ] && [ "$TICKS" -lt 4 ]; }
+              wake_hot_moment 0; report $?')"
+check_eq "delivered once the recording ended" "$(field "$R" rc)" "0"
+check_eq "not busy at return" "$(field "$R" busy)" "no"
+check_eq "at 10 s: the recording's 8 s and the settle" "$(field "$R" elapsed)" "10"
+
+echo
+echo "a reclosure under the one budget is still bounded by it — the same deadline, not a new one:"
+# A ticket clears at 4 s; he speaks at 6 s, during the settle, and keeps
+# speaking: the second wait runs dry at 300 s from the FIRST call.
+R="$(clocked 'he_spoke_ago 900
+              interactive_turn_in_flight() { [ "$TICKS" -lt 2 ]; }
+              on_tick() { [ "$TICKS" -ge 3 ] && he_spoke; :; }
+              wake_hot_moment 0; report $?')"
+check_eq "the wait runs dry" "$(field "$R" rc)" "1"
+check_eq "at 300 s from the first call" "$(field "$R" elapsed)" "300"
+check_eq "naming the budget" "$(field "$R" dry)" "the moment outlasted the 300s wait"
+
+echo
+echo "a reclosure PAST the budget ends the wait on the spot, by name:"
+R="$(clocked 'he_spoke_ago 900
+              interactive_turn_in_flight() { [ "$TICKS" -lt 149 ] || [ "$TICKS" -ge 150 ]; }
+              wake_hot_moment 1; report $?')"
+check_eq "the wait ends" "$(field "$R" rc)" "1"
+check_eq "at the budget" "$(field "$R" elapsed)" "300"
+check_eq "naming the budget" "$(field "$R" dry)" "the moment outlasted the 300s wait"
+check_eq "without pretending to wait on" "$(field "$R" again)" "0"
+
+echo
+echo "a reclosure beside an urgent-lane claim yields on the spot, by name:"
+R="$(clocked 'he_spoke_ago 900
+              interactive_turn_in_flight() { [ "$TICKS" -lt 2 ] || [ "$TICKS" -ge 3 ]; }
+              on_tick() { [ "$TICKS" -eq 3 ] && printf "%s\n" $(( FAKE_NOW + 100 )) > "$WAKE_URGENT_CLAIM"; :; }
+              wake_hot_moment 1; report $?')"
+check_eq "the wait yields" "$(field "$R" rc)" "1"
+check_eq "on the settle tick" "$(field "$R" elapsed)" "6"
+check_eq "naming the waiter" "$(field "$R" dry)" "another event wake is waiting for the run lock"
+
+echo
+echo "but a release that finds the gates CLEAR delivers whatever the clock says — the budget bounds the waiting, never the delivery:"
+R="$(clocked 'he_spoke_ago 900
+              interactive_turn_in_flight() { [ "$TICKS" -lt 149 ]; }
+              wake_hot_moment 1; report $?')"
+check_eq "delivered" "$(field "$R" rc)" "0"
+check_eq "on a settle that ended exactly at the deadline" "$(field "$R" elapsed)" "300"
+check_eq "nothing ended it" "$(field "$R" dry)" ""
+
+echo
+echo "...and whatever the urgent lane says:"
+R="$(clocked 'he_spoke_ago 900
+              interactive_turn_in_flight() { [ "$TICKS" -lt 2 ]; }
+              on_tick() { [ "$TICKS" -eq 3 ] && printf "%s\n" $(( FAKE_NOW + 100 )) > "$WAKE_URGENT_CLAIM"; :; }
+              wake_hot_moment 1; report $?')"
+check_eq "delivered" "$(field "$R" rc)" "0"
+check_eq "with the claim standing at return" "$(field "$R" urgent)" "yes"
+check_eq "at 6 s" "$(field "$R" elapsed)" "6"
+
+echo
+echo "quiet hours arriving during the settle end the wait with nothing delivered:"
+R="$(clocked 'he_spoke_ago 900
+              interactive_turn_in_flight() { [ "$TICKS" -lt 2 ]; }
+              in_quiet_hours() { [ "$TICKS" -ge 3 ]; }
+              wake_hot_moment 1; report $?')"
+check_eq "the wait ends" "$(field "$R" rc)" "1"
+check_eq "on the settle tick, with every other gate clear" "$(field "$R" elapsed)" "6"
+check_eq "naming the night" "$(field "$R" dry)" "quiet hours arrived mid-wait"
+
+echo
+echo "the judge takes time too — a message that lands while the note is judged puts it back into the wait:"
+# The hold itself (wake_hold_words), the judge stubbed: he speaks again
+# DURING the judge, which answers SAY. The note is not delivered into that;
+# it waits a full window more and goes out once, and the judge — whose record
+# did not grow — is not asked twice.
+R="$(clocked "$HOLD"'
+              he_spoke_ago 4
+              wake_stale_judge() { echo x >> "$JCOUNT"; he_spoke; printf "SAY: still news\n"; }
+              wake_hold_words "the conversation was hot, nothing shown" "the note" "the rider" 0; hold_report $?')"
+check_eq "the hold says deliver" "$(field "$R" rc)" "0"
+check_eq "at 240 s — a full window after he spoke during the judge, plus the settle" "$(field "$R" elapsed)" "240"
+check_eq "the judge was asked once; the record did not grow" "$(field "$R" judged)" "1"
+check_eq "the reclosure was announced" "$(field "$R" again)" "1"
+check_eq "and nothing was booked" "$(field "$R" booked)" "0"
+
+echo
+echo "a spoken note held in flight: a new turn that begins during the judge is waited out:"
+R="$(clocked "$HOLD"'
+              he_spoke_ago 900
+              interactive_turn_in_flight() { [ "$TICKS" -lt 2 ] || { [ -f "'"$WORK"'/clock-turn2" ] && [ "$TICKS" -lt 8 ]; }; }
+              wake_stale_judge() { echo x >> "$JCOUNT"; touch "'"$WORK"'/clock-turn2"; printf "SAY: still news\n"; }
+              wake_hold_words "a turn was in flight, nothing spoken and nothing shown" "the note" "the rider" 1; hold_report $?')"
+check_eq "delivered" "$(field "$R" rc)" "0"
+check_eq "after the second turn's 10 s and the settle: 18 s" "$(field "$R" elapsed)" "18"
+check_eq "the judge was asked once" "$(field "$R" judged)" "1"
+check_eq "the reclosure was announced" "$(field "$R" again)" "1"
+
+echo
+echo "a record that grows during the second wait is judged again, and a DROP then retires the note:"
+R="$(clocked "$HOLD"'
+              he_spoke_ago 4
+              wake_turns_since() { printf "[00:00] he said: something, while it waited\n"
+                                   [ -f "'"$WORK"'/clock-grew" ] && printf "[00:02] he said: did we win that one\n[00:02] she said: we did, a few minutes ago\n"; :; }
+              wake_stale_judge() { echo x >> "$JCOUNT"
+                                   if [ -f "'"$WORK"'/clock-grew" ]; then printf "DROP: he was told while it waited\n"
+                                   else he_spoke; touch "'"$WORK"'/clock-grew"; printf "SAY: still news\n"; fi; }
+              wake_hold_words "the conversation was hot, nothing shown" "the note" "the rider" 0; hold_report $?')"
+check_eq "the hold ends the wake" "$(field "$R" rc)" "1"
+check_eq "the judge was asked twice — once per record" "$(field "$R" judged)" "2"
+check_eq "nothing was booked: a dropped note has no comeback" "$(field "$R" booked)" "0"
+check "the journal line says dropped after it waited, with the second judge's reason" \
+    grep -q "stale — held note dropped unspoken; judged against what was said while it waited: he was told while it waited" "$WORK/clock-outcome"
+
+echo
+echo "quiet hours arriving during the judge end the wait by name — the words go to the queue, nothing is delivered:"
+R="$(clocked "$HOLD"'
+              he_spoke_ago 4
+              in_quiet_hours() { [ -f "'"$WORK"'/clock-night" ]; }
+              wake_stale_judge() { echo x >> "$JCOUNT"; touch "'"$WORK"'/clock-night"; printf "SAY: still news\n"; }
+              wake_hold_words "the conversation was hot, nothing shown" "the note" "the rider" 0; hold_report $?')"
+check_eq "the hold ends the wake" "$(field "$R" rc)" "1"
+check_eq "naming the night" "$(field "$R" dry)" "quiet hours arrived mid-wait"
+check_eq "one comeback booked" "$(field "$R" booked)" "1"
+check "the journal line names the heat, the night and the comeback" \
+    bash -c 'grep -q "held — the conversation was hot, nothing shown; quiet hours arrived mid-wait; coming back in 5min" "$1"' _ "$WORK/clock-outcome"
+
+echo
+echo "a reclosure during the judge past the budget ends the wait on the spot:"
+R="$(clocked "$HOLD"'
+              WAKE_HOT_WAIT=118; he_spoke_ago 4
+              wake_stale_judge() { echo x >> "$JCOUNT"; he_spoke; printf "SAY: still news\n"; }
+              wake_hold_words "the conversation was hot, nothing shown" "the note" "the rider" 0; hold_report $?')"
+check_eq "the hold ends the wake" "$(field "$R" rc)" "1"
+check_eq "at the budget, which the settle had reached with the gates clear" "$(field "$R" elapsed)" "118"
+check_eq "naming the budget" "$(field "$R" dry)" "the moment outlasted the 118s wait"
+check_eq "without pretending to wait on" "$(field "$R" again)" "0"
+check_eq "one comeback booked" "$(field "$R" booked)" "1"
+
+# ---------------------------------------------------------------------------
 # 2–7. Through `crab wake` for real, the poll sub-second so a scenario takes
 # a second or two of wall clock. The moment is controlled by hand: his last
 # message is an epoch the test writes, a turn in flight is a ticket the test
@@ -284,7 +489,7 @@ run_wake() {  # <reply text>  — one wake, its own day-journal fixture
     N=$(( N + 1 ))
     printf '%s' "$1" > "$WORK/wake-reply.txt"
     rm -f "$WORK/spoken.txt" "$WORK/displayed.txt" "$WORK/notified.txt" \
-        "$WORK/judge-prompt.txt" "$CALLS" "$CONVO"
+        "$WORK/judge-prompt.txt" "$WORK/judge-at" "$CALLS" "$CONVO"
     rm -f "${WAKES_DIR:?}"/*.wake 2>/dev/null
     DAY_JOURNAL_DIR="$WORK/journal-$N" \
         "$REPO/crab" wake event "chessweb: a move landed in game browser-006" "" chessweb \
@@ -300,8 +505,12 @@ held_field() {  # <field number>
 }
 calls_of() { sandbox_count_in "^$1\$" "$CALLS"; }
 journal_entry() {  # <dir> <epoch> <kind> <user> <reply>
-    mkdir -p "$1"
-    python3 - "$@" <<'PYEOF'
+    "$WORK/journal-entry.sh" "$@"
+}
+cat > "$WORK/journal-entry.sh" <<'JEOF'
+#!/usr/bin/env bash
+mkdir -p "$1"
+python3 - "$@" <<'PYEOF'
 import json, os, sys, time
 d, epoch, kind, user, reply = sys.argv[1], int(sys.argv[2]), sys.argv[3], sys.argv[4], sys.argv[5]
 obj = {"epoch": epoch,
@@ -311,7 +520,8 @@ path = os.path.join(d, time.strftime("%Y-%m-%d", time.localtime(epoch)) + ".json
 with open(path, "a", encoding="utf-8") as f:
     f.write(json.dumps(obj, ensure_ascii=False) + "\n")
 PYEOF
-}
+JEOF
+chmod +x "$WORK/journal-entry.sh"
 
 # Run <command> only once the wake is provably inside the rule-27g wait, a
 # beat later, recording the moment and whether the conversation was still
@@ -476,6 +686,71 @@ FIRE="$(held_field 1)"
 check "booked the flat five minutes out" [ "$(( FIRE - $(date +%s) ))" -gt 120 ]
 check "and the journal says the wait is off before it promises the comeback" \
     bash -c 'tail -n1 "$1" | grep -q "the in-process wait is off" && tail -n1 "$1" | grep -q "coming back in 5min"' _ "$JOURNAL"
+
+echo
+echo "through crab wake: he speaks again DURING the judge, and the note waits for the conversation to cool once more:"
+# The judge stub, asked once the first wait clears, itself makes him speak
+# (a message 119 s old — hot for one more second under the 120 s window) and
+# answers SAY. The note must not go out into that: the speech log carries the
+# reclosure, the words land once, at least a second after the judge ran, and
+# the judge is not asked again because the record did not grow.
+write_conf 20
+: > "$SPEECH"
+printf '%s' say > "$WORK/judge-mode"
+printf 'printf "desk\\t%%s\\n" "$(( $(date +%%s) - 119 ))" > "%s/last-origin"\n' "$WORK" > "$WORK/judge-hook"
+he_spoke_at 0
+REL="$WORK/witness-judge-reclose"; rm -f "$REL" "$REL.leaked"
+N_NEXT=$(( N + 1 ))
+release_when_waiting 'journal_entry "$WORK/journal-'"$N_NEXT"'" "$(date +%s)" desk \
+                          "how is the weather looking" "Clear and cold for the rest of the day."
+                      he_spoke_at 600' "$REL"
+run_wake "(quiet) $WIN_NOTE"
+wait "$RELEASER_PID" 2>/dev/null
+check_eq "the judge was asked exactly once" "$(calls_of judge)" "1"
+check "the speech log says the moment closed again while the note was judged" \
+    grep -q "closed again while the note was judged" "$SPEECH"
+delivered_once "judge reclosure" "rook pair did it" "$REL"
+JUDGE_AT="$(head -n1 "$WORK/judge-at" 2>/dev/null || echo 0)"
+AT="$(stat -c %Y "$CONVO" 2>/dev/null || echo 0)"
+check "delivered only after his message had cooled — a second or more after the judge (${AT}-${JUDGE_AT})" \
+    [ $(( AT - JUDGE_AT )) -ge 1 ]
+check "and the journal records it as shown, never as held" \
+    bash -c 'tail -n1 "$1" | grep -q "shown without speech" && ! tail -n1 "$1" | grep -q "coming back"' _ "$JOURNAL"
+
+echo
+echo "...and a record that grows across the second wait is judged again, and dropped:"
+# The first judge makes him speak AND lands the exchange that covers the
+# note in the day journal, then switches the stub to DROP; the second wait
+# clears, the record has grown, the judge is asked again and retires it.
+: > "$SPEECH"
+printf '%s' say > "$WORK/judge-mode"
+N_NEXT=$(( N + 1 ))
+cat > "$WORK/judge-hook" <<EOF
+printf 'desk\t%s\n' "\$(( \$(date +%s) - 119 ))" > "$WORK/last-origin"
+"$WORK/journal-entry.sh" "$WORK/journal-$N_NEXT" "\$(date +%s)" desk "did we actually win that one?" "We did — finished it a few minutes ago, the rook pair did it."
+printf '%s' drop > "$WORK/judge-mode"
+rm -f "$WORK/judge-hook"
+EOF
+he_spoke_at 0
+REL="$WORK/witness-judge-grew"; rm -f "$REL" "$REL.leaked"
+release_when_waiting 'journal_entry "$WORK/journal-'"$N_NEXT"'" "$(date +%s)" desk \
+                          "how is the weather looking" "Clear and cold for the rest of the day."
+                      he_spoke_at 600' "$REL"
+run_wake "(quiet) $WIN_NOTE"
+wait "$RELEASER_PID" 2>/dev/null
+check_eq "the judge was asked twice" "$(calls_of judge)" "2"
+check "the second time with the exchange that landed during the first judge" \
+    grep -qF "did we actually win" "$WORK/judge-prompt.txt"
+check "the speech log says the moment closed again while the note was judged" \
+    grep -q "closed again while the note was judged" "$SPEECH"
+check "nothing entered the conversation" bash -c '[ ! -s "$1" ]' _ "$CONVO"
+check "no bubble, no voice, no window, no notification" \
+    bash -c '[ ! -f "$1/spoken.txt" ] && [ ! -f "$1/displayed.txt" ] && [ ! -f "$1/notified.txt" ]' _ "$WORK"
+check_eq "and nothing was booked" "$(held_count)" "0"
+check "the journal says it was dropped after it waited" \
+    bash -c 'tail -n1 "$1" | grep -q "stale — held note dropped unspoken; judged against what was said while it waited"' _ "$JOURNAL"
+check "the trace names the in-process wait" grep -q "DROP, after the in-process wait" "$STALELOG"
+rm -f "$WORK/judge-hook"
 
 PASSED=0; [ -f "$SANDBOX/witness/passes" ] && PASSED=$(wc -l < "$SANDBOX/witness/passes")
 FAILED=0; [ -f "$SANDBOX/witness/failures" ] && FAILED=$(wc -l < "$SANDBOX/witness/failures")
