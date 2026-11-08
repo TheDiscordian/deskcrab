@@ -717,7 +717,8 @@ night is where the day's promises are settled honestly, from the whole record at
     `type: sweep` row forever, so reconciled debt stayed eligible for redispatch until it aged
     out (the record `the-end-of-day-promise-sweep-calls-existing-arte`).
     `lib/promise_ledger.py` is the ONE reader of this identity — the grouping of raw sweep
-    rows into runs and the matching of resolutions against them live there and nowhere else. A
+    rows into runs and the matching of resolutions against them live there and nowhere else,
+    as do the due rows of rule 53k, their outcomes, and the due-day arithmetic. A
     stamped run matches its `sweep_time` exactly, never by nearness, and a resolution carrying
     any decision outside the three named above settles nothing. A sweep row from before the
     identity landed (no `sweep_time`, no `item`) is identified by
@@ -730,6 +731,60 @@ night is where the day's promises are settled honestly, from the whole record at
     and appends the resolution row. Resolution is per item and evidence-bearing, never a
     blanket: a decision settles the one row it names, and an unresolved miss stays owed
     however many of its neighbours resolved.
+53k. A commitment made for a LATER DAY is not an end-of-day miss, because the day it is
+    judged against has not happened yet — and it is not nothing, because the turn that made
+    it will lie outside every later sweep's journal by construction. "I'll re-seat the heater
+    tomorrow", "I'll write it up on Friday", "next week I'll move the timer": before this
+    rule the night either called such a line missed on the evening it was said (a miss the
+    morning dismissed in a sentence, eight times over — the record
+    `the-tidy-could-check-that-a-named-artefact-exist`) or dropped it as a plan and never
+    looked again, and nothing followed a promise made about tomorrow at all. The sweep's
+    judge classifies TIME beside polarity (rule 52): a commitment stated for a day after the
+    swept day is a LATER verdict, never a MISS, quoted verbatim with the time it was said and
+    the moment AS SHE STATED IT. The sweep retains it durably as a `type: due` row on the
+    promise ledger — the origin `day`, `said_at`, the `promise`, the stated `when`, and the
+    `due` day — and books nothing for it tonight. The due day is resolved MECHANICALLY from
+    the ORIGIN day, never from the wall clock: the sweep runs after midnight, and "tomorrow"
+    counted from the clock would land a day late. "tomorrow" in any dress is the origin day
+    plus one, "in N days" plus N, a weekday the next such day after the origin, "next week"
+    plus seven, a dated day itself; a moment the resolver cannot read falls to the next day,
+    the stated words kept on the row so the morning can read what she meant, and a LATER
+    whose moment resolves within the swept day is the day's own commitment and the day is
+    over — it is a miss exactly as rule 52 says. A negative later-day commitment is dropped
+    unjudged, as rule 52's. Each due row carries a `due_id` derived from the origin day and
+    the promise's words, and a sweep that finds a LATER already retained under that id
+    retains nothing twice: a day swept again (rule 53f's 2026-08-26 was swept twice) leaves
+    one row, not two.
+53l. Every sweep follows the due rows that have FALLEN DUE — `due` on or before the swept
+    day, no `type: due-outcome` row yet — as their own labelled, numbered section of the
+    judge's prompt, each beside the paths its own sentence names statted from the disk
+    (rule 52a's stat; "the sentence names the file — stat it"), and, when the due day is not
+    the swept day (a night the sweep did not run), beside the due day's own journal digest
+    and commits as well. The item is judged against the DUE day's record — the swept day's
+    sections when they are the same day — never against the origin turn, which is not in
+    evidence and owes nothing. A day with no journal but with fallen-due rows is still swept
+    for them. The judge answers each numbered item, and only in one of two shapes: DUE-KEPT
+    with the evidence in a sentence, or DUE-MISSED with why it reads unfulfilled. KEPT lands as
+    a `due-outcome` row carrying the evidence and books nothing. MISSED lands as a `type: sweep`
+    row of THAT night's run — the run's `sweep_time`, the next `item` after the day's own
+    misses, `day` the swept day — carrying `origin_day`, `due` and `due_id` beside the promise,
+    so it rides the same morning wake (quoted with the day and time it was said and the day it
+    fell due), answers to the same resolve door (rule 53f), and reaches the night's owed shelf
+    (rule 58b) exactly as any miss does; and a `due-outcome` row of `missed` naming that sweep
+    row settles the due row. A MISS the judge quotes in the words of a fallen-due item is read
+    as that item's DUE-MISSED, never as a second debt. Never before the due day, never twice:
+    a due row standing for a later day is not asked about, and a due row with an outcome is
+    asked no more.
+53m. An item the judge leaves unanswered on a night it answered stays pending and is asked
+    again the next night against the same due day's record, the trace naming it; a pending
+    row more than `PROMISE_DUE_GRACE_DAYS` (default 7) days past due is surfaced on the next
+    sweep as a miss unjudged, its `why` saying no night since could judge it — erring toward
+    surfacing as rule 52 does, so no commitment waits forever. A night with no verdict at
+    all (rules 14c-14e) changes nothing here either: nothing is retained, no outcome lands,
+    every pending row stays pending. This remains the retrospective nightly check and the
+    next-morning report that rules 51-53 describe — a gate on nothing she says; the live
+    auditor's deferred-promise wake ([wake-queue.md](wake-queue.md) rule 43a) stays the
+    daytime catch, and the two never read each other.
 
 ### The twin-merge pass — part of sleep, before the night's work
 
@@ -1116,7 +1171,7 @@ that was asked for, and promised work must stop waiting for a live turn to perso
 | `~/.local/state/deskcrab/unit-sync.json`, `unit-sync.log`, `unit-sync.attention` | installed-unit sync | pending reload journal, last refresh/failure evidence, and the prompt's plain attention line (rule 6b) |
 | `~/.local/share/deskcrab/claudisms.md` | her, by hand | the phrase list: what is borrowed, and why |
 | `~/.local/share/deskcrab/sleep/claudism-review/<date>/` | the claudism review | rule 43: the pre-edit copy of every file the night's review edited |
-| `~/.local/share/deskcrab/promise-ledger.jsonl` | the promise checker; the sweep appends its records (rule 53) and any hand appends resolutions through the resolve door (rule 53f) | live catches, end-of-day misses and their resolutions ([turn-pipeline.md](turn-pipeline.md) DATA); the night's work reads the unresolved sweep records back as owed-work material (rules 53f, 58b), through `lib/promise_ledger.py` alone |
+| `~/.local/share/deskcrab/promise-ledger.jsonl` | the promise checker; the sweep appends its records (rule 53), its retained later-day commitments and their outcomes (rules 53k-53l), and any hand appends resolutions through the resolve door (rule 53f) | live catches, end-of-day misses and their resolutions, `type: due` rows and their `due-outcome` rows ([turn-pipeline.md](turn-pipeline.md) DATA); the night's work reads the unresolved sweep records back as owed-work material (rules 53f, 58b), through `lib/promise_ledger.py` alone |
 | `~/.local/share/deskcrab/night-work/dispatched.tsv` | the night's work | one line per dispatched pick: night, key, job id, title (rule 59) — threads, swept promises and wake-parked work alike |
 | `~/.local/share/deskcrab/wants/<slug>.md`, `wants.md` | the wants tool ([wants.md](wants.md)) | the want reflection's ONLY writes, on a WANT verdict, through `lib/eng --kind want new` alone (rule 53i); the reflection owns no file of its own, and a NOTHING night writes nothing at all |
 
@@ -1242,6 +1297,22 @@ game record presented as an empty section rather than omitted; every sweep row l
 door named beside them; and the resolve door itself (rule 53f) appends a resolution row bearing
 the run's own `sweep_time` while refusing an item the run never surfaced and a decision outside
 the three.
+`tests/test_promise_tomorrow.sh` — rules 53k-53m: the follow-up of a promise made about a
+later day, every case against a stub judge and an isolated ledger — a LATER verdict on the
+origin day's sweep retains one `type: due` row with the due day counted from the ORIGIN day
+(the fixture's day is far from the wall clock on purpose), books no wake and lands no sweep
+row, and a MISS the judge quotes in the same words is dropped beside it; the same day swept
+again retains nothing twice; the resolver's arithmetic — tomorrow in its dresses, in N days,
+a weekday, next week, a dated day, an unreadable moment falling to the next day, a same-day
+moment resolving to the origin day; the due day's sweep, whose journal never names the
+promise, hands the judge the fallen-due item beside its origin and the named path statted
+from disk, and a KEPT verdict lands one outcome row and no wake; the day swept again asks the
+judge nothing about it; a MISSED verdict lands as a numbered sweep row of that night carrying
+its origin, rides the morning wake with its origin named, settles through the resolve door,
+and leaves the owed shelf when resolved; a due row for a later day is not asked about; an
+unanswered item stays pending while one past the grace surfaces unjudged; a due day with no
+journal is still swept for its fallen-due rows; and a judge with no verdict retains nothing,
+settles nothing, and leaves every pending row pending.
 `tests/test_night_work.sh` — rules 54-61: the daylight window guard; the cap counted from every
 dispatched-or-running job; the live shelf (rule 58c) — a record standing `state: open` under the
 records drawer reaches the selector's prompt whole, front matter and body, newest-touched first,

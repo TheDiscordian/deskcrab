@@ -59,7 +59,7 @@ A push-to-talk desktop assistant for Linux, powered by the Claude Code CLI. The 
 | `lib/job-claim-check` | after delivery: a stated job fate held against its record; a contradiction or an unbacked claim books the correction wake |
 | `lib/promise-audit` | did the reply state a want that is not on the shelf? |
 | `lib/promise-check` | did the reply promise an action the turn's tool record never performed? |
-| `lib/promise_ledger.py` | the one reader of sweep-row identity: runs, ordinals, and which rows a resolution has settled |
+| `lib/promise_ledger.py` | the one reader of sweep-row identity: runs, ordinals, which rows a resolution has settled, and the later-day commitments the sweep retains with their due days counted from the day they were said |
 | `lib/chore-scan` | the one detector of work handed to the user: the delivery chore gate and the record ending gate both read it |
 | `lib/notice-newfiles` | emitter: files landing in a watched directory become a wake |
 | `lib/notice-selfchange` | emitter: another hand changed the files that constitute her |

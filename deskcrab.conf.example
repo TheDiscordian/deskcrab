@@ -354,6 +354,8 @@ WHISPER_MODEL="/usr/share/whisper.cpp-model-small.en/ggml-small.en.bin"
 # PROMISE_CHECK_WAKE_CAP=3          # pending unkept-commitment wakes, at most
 # PROMISE_CHECK_REBOOK_MAX=2        # wakes one verbatim promise may earn a day
 # PROMISE_SWEEP_WAKE_AT="09:45"     # when the night sweep's misses are surfaced
+# PROMISE_DUE_GRACE_DAYS=7          # nights a retained later-day promise may stand
+#                                   # unanswered before it surfaces unjudged (nightly.md rule 53m)
 
 # Job references and job-fate claims (specs/jobs.md rules 46-47). A message
 # that refers to a builder, a job or a fix by description carries a prompt

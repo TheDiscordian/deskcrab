@@ -594,8 +594,15 @@ rows = []
 for d in owed_rows:
     promise = " ".join(str(d.get("promise", "?")).split())[:300]
     why = " ".join(str(d.get("why", "")).split())[:200]
-    rows.append("- [%s, said at %s] \"%s\" — %s"
-                % (d.get("day", "?"), d.get("said_at", "?"), promise, why))
+    if d.get("origin_day"):
+        # A fallen-due miss (nightly.md rule 53l): promised on an earlier day
+        # for the swept one, and that day's record never showed it done.
+        rows.append("- [%s, said %s at %s for %s] \"%s\" — %s"
+                    % (d.get("day", "?"), d.get("origin_day"), d.get("said_at", "?"),
+                       d.get("due", "?"), promise, why))
+    else:
+        rows.append("- [%s, said at %s] \"%s\" — %s"
+                    % (d.get("day", "?"), d.get("said_at", "?"), promise, why))
 rows = rows[-20:]
 if resolved_n:
     rows.append("(%d swept miss(es) from these nights already resolved — "

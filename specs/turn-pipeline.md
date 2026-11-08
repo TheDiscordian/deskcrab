@@ -597,7 +597,7 @@ file rather than re-instrumented every time the question comes up.
 | `~/.local/share/deskcrab/claudisms.md` | her, by hand | phrase list: a `## heading` per claudism with a `- pattern:` line carrying the trigger in a backtick span; a list with no `- pattern:` lines is read as one trigger per bullet/heading, from its first span; entries MAY add `- function:`, `- fix:` and `- live:` lines (rule 32a, [speech-output.md](speech-output.md) rule 50) |
 | `~/.local/share/deskcrab/claudism-flags/<date>.jsonl` | `lib/claudism-capture` | one JSON object per flagged sentence |
 | `${STATE_PREFIX}-claudism-capture.log` | `lib/claudism-capture` | one line per run: ran-and-found-nothing versus never-ran |
-| `~/.local/share/deskcrab/promise-ledger.jsonl` | `lib/promise-check` | one JSON line per UNKEPT commitment (rule 32c), plus the sweep's identified records and their later resolutions ([nightly.md](nightly.md) rules 53, 53f) |
+| `~/.local/share/deskcrab/promise-ledger.jsonl` | `lib/promise-check` | one JSON line per UNKEPT commitment (rule 32c), plus the sweep's identified records and their later resolutions ([nightly.md](nightly.md) rules 53, 53f), and the later-day commitments the sweep retains as `type: due` rows with their `due-outcome` rows (rules 53k-53m) |
 | `${STATE_PREFIX}-promise-check.log` | `fire_promise_check`, `lib/promise-check` | one line per run: the pre-check's verdict, the model's verdicts, or why nothing was judged |
 | `${STATE_PREFIX}-chore-gate.log` | `chore_gate_pass` (rule 16c) | one line per scanned display half: clean, fired with the job id, or why the conversion failed open |
 | `${STATE_PREFIX}-promise-evidence-*` | `fire_promise_check` (rule 32a) | the turn's stream log, snapshotted for the detached checker, removed by it |

@@ -1558,6 +1558,25 @@ doors' provocation record already had exactly these delayed-evidence semantics; 
 marker was the one place that demanded instant retaliation. Unprovoked combat keeps the far
 clearance retreat untouched.
 
+### 2026-11-08 — a promise made about tomorrow was either missed tonight or never followed
+
+"I'll re-seat the heater tomorrow" reached the night sweep on the evening it was said, and the
+sweep had two ways to be wrong about it. Read as a commitment, it was a miss by nightly.md rule 52
+— the day's record held no re-seating, because the day it named had not happened — and the
+morning dismissed it in a sentence; the record `the-tidy-could-check-that-a-named-artefact-exist`
+counts eight such false flags in a fortnight of August, and the user's opposite worry the same
+night (2026-08-20): a promise made and simply never kept. Read as a plan and dropped, nothing ever
+looked again — the turn that made it lies outside the next night's journal by construction, so the
+one sweep that could have checked the due day's record had no commitment to check. The
+named-artefact half of that record landed first (turn-pipeline.md rules 32bc-32bd, nightly.md rule
+52a: the sentence names the file, stat it); the tomorrow half is nightly.md rules 53k-53m. The
+judge classifies time beside polarity and answers LATER; the sweep retains the commitment on the
+promise ledger with its due day counted from the day it was SAID — the sweep runs after midnight,
+and "tomorrow" counted from the clock lands a day late — and the due day's sweep asks after it
+against that day's record, the named path statted beside it. Kept settles quietly; missed becomes
+a numbered miss of that night, on the same morning wake and behind the same resolve door. Still a
+retrospective check and a next-morning report, never a gate on speech.
+
 ### 2026-10-28 — the sweep read the tidy's housekeeping line as a promise she had spoken
 
 The night sweep of 2026-10-27 booked its 09:45 wake over one miss: the tidy's own journal line,
