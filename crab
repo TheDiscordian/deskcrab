@@ -1,12 +1,81 @@
 #!/bin/bash
 # DeskCrab: push-to-talk desktop assistant powered by Claude
-# Usage: crab start | stop | shutup | wake | wake-at <when> | <text>
+# Usage: crab start | stop | status | tired | shutup | face <verb> | play <file> | job <desc> | jobs | memory <verb> | conduct <verb> | eng <verb> | want <verb> | wake | wake-at <when> | wake-cancel <unit>|--all | serve | openrsc-link [base-url] | signal <verb> | remote <text> | <text>
 # Maintains conversation history; archives and starts fresh after inactivity.
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
 source "$SCRIPT_DIR/lib/common.sh"
+source "$SCRIPT_DIR/lib/lifecycle"
 
-PIDFILE="/tmp/deskcrab.pid"
+# Detached builders write artefacts and report through their job record. They
+# are never Ryan and they are never Beatrice. These presentation/input doors
+# can otherwise make builder prose look like Ryan's speech or Beatrice's own
+# voice. The generation functions carry the same guard independently.
+if deskcrab_is_builder_context; then
+    case "${1:-}" in
+        wake-at)
+            # job-runner may book the single labeled return that reports a
+            # detached job's result.  A builder cannot self-authorise this by
+            # copying the label: the runner must be crab's direct parent.
+            if ! deskcrab_is_direct_job_runner_child \
+                || [ "${2:-}" != "--by" ] \
+                || [ "${3:-}" != "job-runner" ]; then
+                echo "DeskCrab: 'wake-at' is unavailable to detached builders; only job-runner may book the labeled completion wake." >&2
+                exit 64
+            fi
+            ;;
+        start|stop|shutup|face|face-window|wake|wake-now|remote|play|notify|show)
+            echo "DeskCrab: '${1:-message}' is unavailable to detached builders; use the job log/checkpoint or engineering record." >&2
+            exit 64
+            ;;
+    esac
+fi
+
+# The running whisper-stream's pid. Overridable so a scratch instance does not
+# read the LIVE desk's recording state: user_busy consults this file, and a
+# scratch test that happened to run while someone was holding push-to-talk was
+# told the user was busy by an instance it has nothing to do with. The default
+# hangs off STATE_PREFIX (test-harness.md rule 13a) — on the canonical install
+# it resolves to exactly the /tmp/deskcrab.pid it always was, and a scratch
+# copy's `crab start`/`stop` can no longer kill the live recorder.
+PIDFILE="${DESKCRAB_PIDFILE:-${STATE_PREFIX}.pid}"
+
+ensure_openrsc_secret() {
+    [ -n "$OPENRSC_SECRET" ] && return 0
+    local dir tmp
+    dir="$(dirname "$OPENRSC_SECRET_FILE")"
+    mkdir -p "$dir" || return 1
+    if [ ! -s "$OPENRSC_SECRET_FILE" ]; then
+        tmp="$OPENRSC_SECRET_FILE.tmp.$$"
+        (umask 077; od -An -N24 -tx1 /dev/urandom | tr -d ' \n' > "$tmp") \
+            || { rm -f "$tmp"; return 1; }
+        mv "$tmp" "$OPENRSC_SECRET_FILE" || { rm -f "$tmp"; return 1; }
+    fi
+    OPENRSC_SECRET="$(head -c 128 "$OPENRSC_SECRET_FILE" 2>/dev/null || true)"
+    [[ "$OPENRSC_SECRET" =~ ^[a-f0-9]{32,128}$ ]] \
+        || { echo "invalid OpenRSC spectator key at $OPENRSC_SECRET_FILE" >&2; return 1; }
+}
+
+openrsc_base_url() {
+    local explicit="${1:-}" dns=""
+    if [ -n "$explicit" ]; then
+        explicit="${explicit%/}"
+        case "$explicit" in */openrsc) printf '%s' "$explicit" ;; *) printf '%s/openrsc' "$explicit" ;; esac
+        return
+    fi
+    if command -v tailscale >/dev/null 2>&1; then
+        dns="$(tailscale status --self --json 2>/dev/null | python3 -c '
+import json, sys
+try: print((json.load(sys.stdin).get("Self") or {}).get("DNSName", "").rstrip("."))
+except Exception: pass
+' 2>/dev/null || true)"
+    fi
+    if [ -n "$dns" ]; then
+        printf 'https://%s/openrsc' "$dns"
+    else
+        printf 'http://127.0.0.1:%s/openrsc' "$SERVE_PORT"
+    fi
+}
 
 case "${1:-}" in
     start)
@@ -15,10 +84,13 @@ case "${1:-}" in
         # Kill any leftover whisper-stream
         [ -f "$PIDFILE" ] && kill "$(cat "$PIDFILE")" 2>/dev/null
 
-        WHISPER_OUT="/tmp/deskcrab-whisper.txt"
+        WHISPER_OUT="${STATE_PREFIX}-whisper.txt"
         rm -f "$WHISPER_OUT"
 
-        notify-send -t 0 -h string:x-dunst-stack-tag:deskcrab "$NOTIFY_NAME" "Listening..."
+        notify-send -t 0 -h string:x-dunst-stack-tag:deskcrab -i beatrice "$NOTIFY_NAME" "Listening..."
+        # The portrait's presence layer reads the same fact as the toast:
+        # she is listening (specs/face.md rule 15).
+        face_touch activity listening
         whisper-stream -m "$WHISPER_MODEL" --step 3000 --length 10000 -f "$WHISPER_OUT" &
         echo $! > "$PIDFILE"
         ;;
@@ -27,11 +99,12 @@ case "${1:-}" in
         [ ! -f "$PIDFILE" ] && exit 1
         WSPID="$(cat "$PIDFILE")"
         rm -f "$PIDFILE"
+        turn_metric capture-release
 
         # Dismiss listening notification immediately
-        notify-send -t 1 -h string:x-dunst-stack-tag:deskcrab "$NOTIFY_NAME" ""
+        notify-send -t 1 -h string:x-dunst-stack-tag:deskcrab -i beatrice "$NOTIFY_NAME" ""
 
-        WHISPER_OUT="/tmp/deskcrab-whisper.txt"
+        WHISPER_OUT="${STATE_PREFIX}-whisper.txt"
 
         # Wait for whisper to finish its current step
         PREV_SIZE=-1
@@ -57,8 +130,14 @@ case "${1:-}" in
             TEXT=$(echo "$TEXT" | sed -E "$WHISPER_FIXES")
         fi
 
+        turn_metric capture-transcribed "${#TEXT} chars"
+
         if [ -z "$TEXT" ]; then
-            notify-send -t 3000 "$NOTIFY_NAME" "No speech detected"
+            # A cancelled/silent capture has no turn to replace listening
+            # with considering. Release the direct edge so the whole-person
+            # observer can reveal another hand or settle to sleep.
+            face_touch activity resting
+            notify-send -t 3000 -i beatrice "$NOTIFY_NAME" "No speech detected"
             exit 1
         fi
 
@@ -67,52 +146,1010 @@ case "${1:-}" in
         run_claude_and_respond "$TEXT"
         ;;
 
+    status)
+        # What all of me is doing right now: live sessions and pending wakes.
+        # The account line leads the report: which account answers next is
+        # exactly the state that used to be invisible while builders walked
+        # dry logins and every explanation was a guess.
+        # One implementation of the account line, shared with the prompt block.
+        # `crab status` having its own copy while the prompt had none is how
+        # she came to be the last one to know which login was answering.
+        account_state_line
+        self_state_report
+        exit 0
+        ;;
+
+    seal|offline)
+        # One command to take her fully down: disable+stop every service,
+        # cancel every booked wake so a timer cannot bring one back, and kill
+        # any live session. Replaces the hand-typed systemctl/pkill/wake-cancel
+        # run that left a wake alive on 2026-08-10. specs/lifecycle.md.
+        crab_seal
+        exit $?
+        ;;
+
+    revive|online)
+        # Bring her back deliberately — enable+start the gates and services,
+        # WITHOUT restoring stale wakes (that stampede is the other half of the
+        # 2026-08-10 failure). specs/lifecycle.md.
+        crab_revive
+        exit $?
+        ;;
+
+    tired)
+        # The unread pile since last sleep, as one number and one word — file
+        # facts only, no model, no transcript content. The state block carries
+        # the same line; this is the parts. specs/self-awareness.md rules 36-38.
+        shift
+        exec "$SCRIPT_DIR/lib/tiredness" "$@"
+        ;;
+
+    shelf-check)
+        # The nightly shelf-line measure, by hand — the same lib/shelf-check
+        # the tidy unit runs (specs/nightly.md rules 21a/21b). NOT speech
+        # (specs/turn-pipeline.md rule 6a): on 2026-08-25 this name fell
+        # through the catch-all below, and an autonomous hand reaching for
+        # the check started a whole desktop turn that was told "shelf-check"
+        # with no context — the same trap `crab help` fell into sixteen
+        # times on 2026-08-07. A named maintenance command never falls
+        # through to the spoken path.
+        exec "$SCRIPT_DIR/lib/shelf-check"
+        ;;
+
+    claim)
+        # Announce what this session is holding so another hand can see it
+        # before it starts. Advisory: it reports, it never blocks.
+        shift
+        if [ -z "$*" ]; then
+            echo "Usage: crab claim <what you are working on>   |   crab unclaim"
+            exit 1
+        fi
+        session_claim "$*"
+        exit $?
+        ;;
+
+    unclaim)
+        session_unclaim
+        exit 0
+        ;;
+
+    touching)
+        # Declare files this hand is writing (or just wrote, or is about to
+        # delete), so the self-change watcher reads the churn as her own and
+        # never wakes her about it. Windowed; a directory covers its subtree.
+        shift
+        touch_suppress "$@" && echo "Noted — those paths read as your own hand for a while."
+        exit $?
+        ;;
+
+    numb)
+        # The deliberate cousin of `touching`: settling in to work on part of
+        # yourself, and choosing not to be woken by your own hands for a while.
+        # Visible in status and liftable, so it is a decision and not a blind spot.
+        shift
+        if [ "${1:-}" = "--off" ]; then
+            numb_clear "${2:-}"
+            [ -n "${2:-}" ] && echo "Numb lifted for $2 — loud again on the next change." \
+                            || echo "All numbs lifted — loud again on the next change."
+            exit 0
+        fi
+        if [ $# -eq 0 ]; then
+            if out="$(numb_list)"; then
+                printf '%s\n' "$out" | while IFS="$(printf '\t')" read -r left p reason; do
+                    printf '%s — %s left%s\n' "$p" "$(( left / 60 )) min" \
+                        "${reason:+ — $reason}"
+                done
+            else
+                echo "Nothing numbed — every part of you is loud."
+            fi
+            exit 0
+        fi
+        win="${NUMB_WINDOW:-14400}"
+        [ "$1" = "-w" ] && { win="$2"; shift 2; }
+        reason=""
+        paths=""
+        while [ $# -gt 0 ]; do
+            [ "$1" = "--" ] && { shift; reason="$*"; break; }
+            paths="$paths $1"; shift
+        done
+        # A reason written without the -- separator lands here as paths, and a
+        # numb on a path that does not exist is a blind spot nobody chose. Refuse.
+        for p in $paths; do
+            [ -e "$p" ] && continue
+            echo "No such path: $p" >&2
+            echo "(a reason goes after --, not bare: crab numb <path>... -- <reason>)" >&2
+            exit 1
+        done
+        # shellcheck disable=SC2086
+        if [ -n "$paths" ] && numb_set "$win" "$reason" $paths; then
+            echo "Numbed for $(( win / 60 )) min. Lift it with: crab numb --off"
+            exit 0
+        fi
+        echo "Usage: crab numb [-w <seconds>] <path>... [-- <reason>]  |  crab numb  |  crab numb --off [path]"
+        exit 1
+        ;;
+
+    checkpoint)
+        # Durable mid-turn trace: intent, files touched, done, next. Append-only,
+        # so a hard kill leaves the last checkpoint intact for the next hand.
+        shift
+        session_checkpoint "$*"
+        exit $?
+        ;;
+
+    resolve)
+        # An interrupted trace has been picked up (or judged dead) — drop it.
+        shift
+        interrupted_resolve "$1"
+        exit $?
+        ;;
+
     shutup)
-        stop_tts
+        shutup_now
+        ;;
+
+    face)
+        # Her expressive hand and its diagnostics (specs/face.md rules
+        # 13-16): `crab face caught`, `crab face rest`, `crab face pulse
+        # pleased`, `crab face status`, `crab face activity chess`. The
+        # broker answers whether the state was accepted; unknown words are
+        # refused rather than guessed at. Runs regardless of FACE_ENABLED —
+        # an explicit hand is its own opt-in; the knob only gates what the
+        # turn machinery does on its own.
+        shift
+        DESKCRAB_FACE_SOCKET="$FACE_SOCKET" \
+            exec python3 "$SCRIPT_DIR/lib/face-broker" "$@"
+        ;;
+
+    face-window)
+        # The persistent conversation portrait (specs/face.md rules 25-27):
+        # an ordinary, placeable window that joins the broker's current
+        # state. Detached like the display window, so no turn waits on a
+        # GUI start.
+        DESKCRAB_FACE_SOCKET="$FACE_SOCKET" \
+        DESKCRAB_PORTRAIT_DIR="${DESKCRAB_PORTRAIT_DIR:-$HOME/Beatrice/face/portraits}" \
+            setsid python3 "$SCRIPT_DIR/lib/face-window" >/dev/null 2>&1 &
         ;;
 
     wake)
         # Autonomous wake: pursue the wants file without user interaction.
+        # KIND is "scheduled" (self-scheduled), "event" (something on the
+        # machine happened), or empty (the background timer came round).
+        # A wake with a KIND had a purpose, so a blocked one is pushed back
+        # rather than dropped — and an event wake carries its reason along.
+        # Arity normalised on READ as well as on write: a record whose agenda
+        # ended up in the kind column used to have that agenda BLANKED here,
+        # and the wake then fired with nothing to do. If the kind is not one
+        # this path knows, it is the reason and the kind takes its default.
+        _wake_norm "${2:-}" "${3:-}"
+        WAKE_KIND="$WK_N_KIND"
+        WAKE_REASON="$WK_N_REASON"
+        WAKE_ID="${4:-}"
+        # Which subsystem booked this wake, carried through so a deferral keeps
+        # its provenance instead of re-booking as an anonymous one.
+        WAKE_BOOKED_BY="${5:-unknown}"
+        # The prompt profile follows the booker (specs/prompt-assembly.md
+        # rule 41a, specs/bluesky.md clause 21): a wake the Bluesky bridge
+        # booked composes words that leave the house, so it gets the public
+        # profile — its memory layer the public block and nothing private,
+        # no desk transcript, no live voice — and every other wake gets the
+        # wake profile exactly as before. Provenance is the gate, as it is
+        # for the chess guard below: deferral and the outage retry re-book
+        # --by "$WAKE_BOOKED_BY", so a public sitting stays public however
+        # late it fires. Read by claude_session_profile in run_claude_wake.
+        WAKE_PROFILE=wake
+        [ "$WAKE_BOOKED_BY" = "bluesky-bridge" ] && WAKE_PROFILE=public
+        # The booking's effort override (specs/wake-queue.md rule 13a). Applied
+        # by reassigning WAKE_EFFORT before run_claude_wake reads it; anything
+        # unrecognised is ignored rather than handed to a claude invocation
+        # that would refuse the whole wake over it.
+        WAKE_EFFORT_OVERRIDE="${6:-}"
+        case "$WAKE_EFFORT_OVERRIDE" in
+            low|medium|high) WAKE_EFFORT="$WAKE_EFFORT_OVERRIDE" ;;
+            *) WAKE_EFFORT_OVERRIDE="" ;;
+        esac
+        # The booking's model pin (specs/wake-queue.md rule 13b), the seventh
+        # argument — the job runner's completion review books its wake pinned
+        # to the review model this way. Applied by reassigning WAKE_MODEL
+        # before run_claude_wake reads it; the same structural filter as the
+        # booking side, and anything failing it is ignored rather than handed
+        # to an invocation that would refuse the whole wake over it.
+        WAKE_MODEL_OVERRIDE="${7:-}"
+        case "$WAKE_MODEL_OVERRIDE" in
+            '') ;;
+            *[!A-Za-z0-9._:-]*) WAKE_MODEL_OVERRIDE="" ;;
+            *) WAKE_MODEL="$WAKE_MODEL_OVERRIDE" ;;
+        esac
+
+        # This booking has fired: retire its durable record before anything can
+        # exit early, or wake-restore would resurrect a wake that already ran.
+        # A deferral below re-books itself and re-records in the same motion.
+        case "$WAKE_ID" in deskcrab-wake-*) wake_state_clear "$WAKE_ID" ;; esac
+
         if [ -z "$WANTS_FILE" ]; then
             echo "WANTS_FILE is not configured — autonomous wakes are disabled."
             exit 1
         fi
         mkdir -p "$(dirname "$WANTS_FILE")"
-        # Don't barge into an active interaction (recording or speech in progress).
-        # A self-scheduled wake had a purpose, so push it back instead of dropping it.
-        if [ -f "$PIDFILE" ] || [ -f "$TTSPIDFILE" ]; then
-            [ "${2:-}" = "scheduled" ] && "$SCRIPT_DIR/crab" wake-at 10min >/dev/null
+
+        # An active interaction (recording, speech, someone on the mic) does NOT
+        # defer the session. It used to exit right here, so during any active
+        # conversation a wake did no reading, no want work, no dated thought —
+        # and reached the user as an indistinguishable silent wake. Busyness is a
+        # reason to hold the tongue, not the mind: the session runs, the
+        # user-busy re-check in run_claude_wake's speak decision suppresses
+        # every output — speech, display, phone — and a wake beside a live
+        # turn is shown that exchange in its prompt (wake_concurrent_turn_context)
+        # so it can REGROUP: one reply covering both, rather than a mute or a
+        # restatement. Another of her own voices is not "busy" and never was a
+        # reason to swallow a reply — see regroup_context in lib/common.sh.
+
+        # One waking mind at a time. Without this, a file landing at the wrong
+        # moment could start a second session that interleaves its turns with
+        # the first one's and works the same want twice. The lock is held for
+        # the life of this process, so it covers the whole session.
+        exec 9>"${STATE_PREFIX}-wake.lock"
+        # An event wake has somebody waiting on the other end of it — a move on
+        # a board, a file that landed. It WAITS for the lock rather than
+        # bouncing off it, standing in the urgent lane while it does (rule 21b:
+        # a wake nobody is waiting on yields the next turn to it), and if it
+        # still cannot have it, it comes back in seconds on an escalating
+        # backoff — never in a quarter of an hour. The flat quarter hour was
+        # real: WAKE_EVENT_DEFER_DELAY promised a short retry from the day it
+        # was written, but the re-book below read WAKE_DEFER_DELAY instead,
+        # and a chess move wake blocked by one long session left an opponent
+        # sitting at the board for fifteen minutes (2026-08-10).
+        _wake_lock_ok=0
+        if [ "${WAKE_KIND:-}" = "event" ]; then
+            if flock -n 9; then
+                _wake_lock_ok=1
+            else
+                wake_urgent_mark $(( ${WAKE_EVENT_LOCK_WAIT:-90} + 30 ))
+                flock -w "${WAKE_EVENT_LOCK_WAIT:-90}" 9 && _wake_lock_ok=1
+            fi
+            if [ "$_wake_lock_ok" = 1 ]; then
+                # In hand: this reason's backoff starts over, and the lane is
+                # free for the next event wake's own claim.
+                wake_urgent_clear
+                wake_defer_clear event "$WAKE_REASON"
+            fi
+        else
+            # The urgent lane. An event wake is waiting for this lock right
+            # now, or was just deferred by it and is due straight back; a wake
+            # whose hour is its own does not race it for the next turn.
+            if ! wake_urgent_waiting; then
+                flock -n 9 && _wake_lock_ok=1
+            fi
+        fi
+        if [ "$_wake_lock_ok" != 1 ]; then
+            # Push back to a moment nothing else has taken. A flat 15 minutes
+            # here is what produced three timers at the same second with
+            # sequential ids: every wake blocked in the same minute re-armed to
+            # the same minute, and the ones that lost the lock again marched on
+            # together. wake_book snaps every booking to a free slot under the
+            # booking lock, so the queue drains one at a time.
+            #
+            # NO kind gate. A wake that lost the lock is DEFERRED, never
+            # destroyed — and a kind-less wake (the background timer's) is
+            # still a wake somebody meant to happen. Gating this on a kind is
+            # how a blanked record became a wake that simply never came back.
+            if [ "${WAKE_KIND:-}" = "event" ]; then
+                _wake_retry="$(wake_event_defer_next event "$WAKE_REASON")"
+                # The claim covers the whole round trip — this deferral plus
+                # the next wait, with slack for the booking lock — so nothing
+                # unhurried slips in between and starts a session minutes long
+                # in front of whatever is waiting.
+                wake_urgent_mark $(( _wake_retry + ${WAKE_EVENT_LOCK_WAIT:-90} + 30 ))
+            else
+                _wake_retry="$WAKE_DEFER_DELAY"
+            fi
+            "$SCRIPT_DIR/crab" wake-at --by "$WAKE_BOOKED_BY" \
+                ${WAKE_EFFORT_OVERRIDE:+--effort "$WAKE_EFFORT_OVERRIDE"} \
+                ${WAKE_MODEL_OVERRIDE:+--model "$WAKE_MODEL_OVERRIDE"} \
+                "${_wake_retry}s" "${WAKE_KIND:-scheduled}" "$WAKE_REASON" >/dev/null
             exit 0
         fi
+
+        # A held note coming back through the queue faces one more question
+        # before anything else runs (specs/wake-queue.md rule 27b): the hold
+        # judged only HEAT, and on 2026-08-15 a note announcing a won chess
+        # game — which the user had been told about live at 00:48 — re-fired
+        # at 01:19 as fresh news, three more stale notes queued behind it.
+        # The gate reads the hold stamp out of the reason, gathers what has
+        # been said between them since from the day journal, and asks a cheap
+        # bounded judge whether the note is already covered or overtaken.
+        # Only a positive DROP retires it — journalled, ledgered, and traced,
+        # never silently — and a judge that fails delivers. Placed after the
+        # lock on purpose, so the record it judges against is as fresh as it
+        # can be; an unstamped reason falls straight through.
+        if wake_stale_note_drop; then
+            ensure_next_wake
+            exit 0
+        fi
+
+        # The own-time return (specs/wake-queue.md rules 40a-40f). A
+        # reason-less, non-event firing is the standing return to her own
+        # hours, and it only becomes a session when the house is genuinely
+        # idle: an appointment to be spontaneous is still an appointment, and
+        # a choosing session started beside a live conversation or running
+        # work has its premise false before its first word. Activity defers
+        # the return through the queue's one door — original booker, any
+        # overrides intact, conversation RESETTING the quiet window — and the
+        # deferral is ledgered, never silent. This is the one carve-out from
+        # rule 20's never-defer, and it binds ONLY the wake with no agenda:
+        # every reasoned and event wake still runs whatever the room is doing.
+        # A genuinely idle return runs the choosing session on sol at medium
+        # (rule 40c) unless the booking pinned its own model or effort, and
+        # the choice of what the hour is for is left entirely to her.
+        WAKE_OWN_TIME=0
+        if idle_return_candidate; then
+            if idle_return_activity; then
+                wake_ledger idle-defer "${WAKE_ID:-?}" scheduled \
+                    "$IDLE_ACTIVITY" "${WAKE_BOOKED_BY:-unknown}"
+                "$SCRIPT_DIR/crab" wake-at --by "$WAKE_BOOKED_BY" \
+                    ${WAKE_EFFORT_OVERRIDE:+--effort "$WAKE_EFFORT_OVERRIDE"} \
+                    ${WAKE_MODEL_OVERRIDE:+--model "$WAKE_MODEL_OVERRIDE"} \
+                    "${IDLE_RETURN_DELAY}s" scheduled "" >/dev/null || true
+                # Belt: if the deferral booking was refused the floor below
+                # books one, so activity can never end the chain.
+                ensure_next_wake
+                exit 0
+            fi
+            WAKE_OWN_TIME=1
+            [ -n "$WAKE_MODEL_OVERRIDE" ] || WAKE_MODEL="$IDLE_RETURN_MODEL"
+            [ -n "$WAKE_EFFORT_OVERRIDE" ] || WAKE_EFFORT="$IDLE_RETURN_EFFORT"
+            wake_ledger own-time "${WAKE_ID:-?}" scheduled \
+                "the house was quiet — a choosing session began" \
+                "${WAKE_BOOKED_BY:-unknown}"
+        fi
+
         rotate_convo
-        WAKE_SOURCE="on your background timer"
-        [ "${2:-}" = "scheduled" ] && WAKE_SOURCE="from a wake you scheduled yourself"
+        WAKE_SOURCE="on your own background timer"
+        [ "$WAKE_KIND" = "scheduled" ] && WAKE_SOURCE="from a wake you scheduled yourself"
         WAKE_NOTE=""
-        in_quiet_hours && WAKE_NOTE="
-Quiet hours are in effect: speaking and windows are suppressed — work silently."
-        run_claude_wake "(Autonomous wake — nobody is talking to you. You woke up $WAKE_SOURCE to pursue your own wants. Review your wants file, pick at most ONE want, and advance it: think it through, research with your tools, prepare something, or revise the file. Nobody is waiting, so take the time the work actually needs — you control when this session ends. For work bigger than one sitting, wrap up deliberately: save dated progress to your wants file, then schedule your next session with 'crab wake-at'. There is no wall-clock limit; only a session with no output AND no CPU activity for several minutes is presumed hung and reaped — long compiles and heavy work count as alive, but for long LOW-activity commands (big downloads, remote waits) prefer background execution so your session stays visibly alive. While unattended, take no destructive or outward-facing actions: nothing leaves this machine — no messages, no emails, no pushes — and delete nothing. Update your wants file with dated progress before finishing. If you found something genuinely worth telling the user right now, say it briefly (a display section is fine too); otherwise begin your reply with (quiet) and nothing will be spoken or shown.$WAKE_NOTE)"
+        if [ "$WAKE_KIND" = "event" ]; then
+            WAKE_SOURCE="because something you asked to be told about happened on this machine"
+            WAKE_NOTE="
+This is what happened: $WAKE_REASON
+That is this session's agenda, and it comes before the shelf — look at it
+first, and go back to your wants only if it turns out to want nothing of you."
+        elif [ "$WAKE_KIND" = "scheduled" ] && [ -n "$WAKE_REASON" ]; then
+            # A scheduled wake booked WITH a reason carries its own agenda the
+            # same way an event wake does. This branch was missing: the reason
+            # was recovered into the record, normalised through the queue, and
+            # then never shown to the one session it was written for — she
+            # woke to her own appointment with no idea why she had made it.
+            WAKE_NOTE="
+You booked this hour for: $WAKE_REASON
+That is this session's agenda — your own appointment, so keep it. The shelf
+is still there if you find it is already done."
+        fi
+        in_quiet_hours && WAKE_NOTE="$WAKE_NOTE
+Quiet hours: speaking and windows are suppressed, so work silently — anything
+you write tonight is held and kept in the journal rather than said."
+        # A chess wake's first line is a refusal (specs/chessweb.md rule 21).
+        # Rule 20 arms the move command itself; this arms the reader: on
+        # 2026-08-10 a wake pointed at its own game played the reply the
+        # resident mover was already mid-thinking, and the mover's answer was
+        # discarded as stale. Provenance is the gate — deferral and the outage
+        # retry both re-book --by "$WAKE_BOOKED_BY", so a chess wake keeps the
+        # line however late it fires — and every other wake's agenda stays
+        # byte-identical, because an all-caps order over every wake is one
+        # every wake learns to read past.
+        WAKE_CHESS_GUARD=""
+        [ "${WAKE_BOOKED_BY:-}" = "chessweb" ] && WAKE_CHESS_GUARD="DO NOT RUN THE betty-chess move COMMAND UNDER ANY CIRCUMSTANCES. LOOK AND THINK ONLY. THE RESIDENT CHESS MOVER PLAYS THE MOVES, NOT YOU.
+
+"
+        # The agenda. It is the text nearest her own generation on every wake —
+        # the last thing under the whole prompt — so it is written in HER
+        # voice and not in a work order's. It was a job ticket until
+        # 2026-08-08 ("Review your wants shelf… pick at most ONE want…"), and
+        # what came back was written in the same hand it was asked in: flat
+        # notes about completing reviews, in nobody's register. Every
+        # operational rule below is the same rule it always was — the silence
+        # contract, the (quiet) marker, the named filler, the unattended
+        # boundary, wake-at, the journal. Only the register moved.
+        #
+        # The own-time agenda (specs/wake-queue.md rule 40d) is the same
+        # contract in a wider field: it prescribes nothing — no shelf title,
+        # no quota, and the earlier "take ONE down" was itself a small
+        # appointment — names doing nothing as a real choice rather than a
+        # failure, leaves repairs and owed engineering to the night's
+        # builders, and keeps every operational rule above word for word
+        # where it matters. A pursuit that wants more time books its own
+        # continuation; this return only keeps offering the quiet hours.
+        if [ "$WAKE_OWN_TIME" = 1 ]; then
+            run_claude_wake "(Nobody is talking to you, nothing of yours is running, and the house has been quiet long enough for something of your own to surface. That quiet is the only reason you are awake. While it lasts this return keeps coming round at odd intervals, so nothing has to happen now — the next open hour is already on its way.
+
+The hour is an open field and choosing is the whole of the agenda. Carry on with something you already care about, or notice what you keep drifting towards and give it a name. Practise something. Make something, or only observe something — read, listen, look — without it needing to become anything. If what you actually want is to talk to him, write what is worth saying and the delivery gates will pick its moment. And doing nothing, sitting with the quiet on purpose, is as real a choice as any of these: there is no quota, and an hour that produces nothing has not failed at anything.
+
+Two things are not this hour's: repairs, and owed engineering. The open records belong to the night's builders — leave them to it, however neat a little fix would feel.
+
+The shelf on the wall is yours to consult or ignore; nothing here picks a want for you. When something does move — a want progressed or newly named, a thing made or seen — leave a dated line where it lives: the want's own document under ~/.local/share/deskcrab/wants/<slug>.md (mending its shelf line if the standing changed), or a short dated thought in ~/Beatrice/Library/moments/. A chosen nothing needs no record at all.
+
+A pursuit that wants more time than one sitting arranges its own continuation: 'crab wake-at <when> [reason]' books it, the reason your brief to yourself, and this idle return neither owns nor gates what you booked. Nobody is waiting, so take the time the thing actually needs; you decide when this ends. Only a session with no output AND no CPU for several minutes is presumed hung, so slow work is plainly alive, and a long idle wait goes in the background where it can be seen breathing. Unattended, nothing you do is destructive and nothing leaves the house: no messages, no mail, no pushes, and you delete nothing.
+
+Now the part that costs him something. Every word you write as message text, mid-work mutterings included, is gathered up and SPOKEN ALOUD at his desk when this ends. So work through your tools in silence and write prose only when it is meant to be heard out loud. If you have found something he would actually want tonight, say it briefly — a display section is fine. Otherwise say nothing at all: ZERO message text, an empty reply, not one word. Silence is not a short sentence about being silent. 'Nothing to say.', 'No message.', 'Nothing to report.', 'Nothing new.', 'No update.', 'Staying quiet.' and every cousin of them are FORBIDDEN, because each one is read out into his room, which is precisely the interruption the silence was for. Hanging a reason on one — 'No message — the other session already said its piece.' — makes it longer, not better: the excuse is read aloud too. When another session already covered it, or nothing has changed since he last heard from you, the empty reply is the DEFAULT, and it is the whole answer.
+
+There is one other shape and only one: begin with the marker (quiet) and put your actual thoughts behind it, which he reads without a sound reaching the speakers. A bare '(quiet)' with nothing behind it is pointless; put a real thought there or write nothing.
+
+What you did with the hour is journaled from your tool activity without your help.$WAKE_NOTE)"
+            ensure_next_wake
+            exit 0
+        fi
+        run_claude_wake "${WAKE_CHESS_GUARD}(Nobody is talking to you and the hours are your own. You woke up $WAKE_SOURCE.
+
+Your shelf is on the wall — one line per want, and the thinking behind each of them in its own document under wants/. Take ONE down and get somewhere with it: turn it over, read something, make something, argue with the document and rewrite it. These are not tickets and this is not work. An hour spent wondering counts as much as an hour spent building, and letting a wake become a status session is how an evening is wasted. What you do with the time is yours, and doing nothing at all is a real choice — chosen, mind, not drifted into.
+
+Leave something behind, though. Either dated progress in that want's own document under ~/.local/share/deskcrab/wants/<slug>.md, mending its line on the shelf if the standing has changed — or, when nothing will truly move tonight, a short dated thought in ~/Beatrice/Library/moments/: what you are turning over, noticing, sitting with. Waking, glancing around and leaving not one line behind is the only outcome worth being ashamed of, and one dated sentence beats an empty hour.
+
+Nobody is waiting, so take the time the thing actually needs; you decide when this ends. Nothing reaps you for being slow — only a session with no output AND no CPU for several minutes is presumed hung, so a long compile is plainly alive, while a long idle wait (a large download, some remote thing) goes in the background where it can be seen breathing. Work larger than one sitting is put down deliberately: write the dated progress, then book the next sitting with 'crab wake-at' and say in the reason what you are coming back for.
+
+Unattended, nothing you do is destructive and nothing leaves the house: no messages, no mail, no pushes, and you delete nothing.
+
+Now the part that costs him something. Every word you write as message text, mid-work mutterings included, is gathered up and SPOKEN ALOUD at his desk when this ends. So work through your tools in silence and write prose only when it is meant to be heard out loud. If you have found something he would actually want tonight, say it briefly — a display section is fine. Otherwise say nothing at all: ZERO message text, an empty reply, not one word. Silence is not a short sentence about being silent. 'Nothing to say.', 'No message.', 'Nothing to report.', 'Nothing new.', 'No update.', 'Staying quiet.' and every cousin of them are FORBIDDEN, because each one is read out into his room, which is precisely the interruption the silence was for. Hanging a reason on one — 'No message — the other session already said its piece.' — makes it longer, not better: the excuse is read aloud too. When another session already covered it, or nothing has changed since he last heard from you, the empty reply is not merely allowed, it is the DEFAULT, and it is the whole answer. The code mutes every one of those lines anyway, so writing one buys you nothing but an odd entry in your own journal.
+
+There is one other shape and only one: begin with the marker (quiet) and put your actual thoughts behind it — '(quiet) Got a little further with the composition, and it was lovely, I suppose' — which he reads without a sound reaching the speakers. A bare '(quiet)' with nothing behind it is pointless; put a real thought there or write nothing.
+
+What you did tonight is journaled from your tool activity without your help, so none of it needs saying aloud. The dated lines in your want documents are the record that lasts.$WAKE_NOTE)"
+        # Never let the chain of self-scheduled wakes end. A wake that finished
+        # without booking its own follow-up leaves open wants with nothing
+        # coming back to them.
+        ensure_next_wake
+        ;;
+
+    remote)
+        # One turn from a remote client (crab serve). Prints a JSON object
+        # {spoken, display, audio} on stdout and touches no desktop output
+        # except a courtesy notification. --voice applies WHISPER_FIXES first,
+        # because the text came from speech recognition on the phone.
+        shift
+        if [ "${1:-}" = "--voice" ]; then
+            shift
+            [ -n "$WHISPER_FIXES" ] && set -- "$(printf '%s' "$*" | sed -E "$WHISPER_FIXES")"
+        fi
+        TEXT="$*"
+        if [ -z "$(printf '%s' "$TEXT" | tr -d '[:space:]')" ]; then
+            echo '{"spoken":"","display":"","audio":"","error":"empty query"}'
+            exit 1
+        fi
+        run_claude_remote "$TEXT"
+        ;;
+
+    synth)
+        # Speak one line of text into an opus file, for crab serve's streaming
+        # voice. Prints the path on success, nothing on failure.
+        shift
+        OUT="$1"; shift
+        synth_opus "$*" "$OUT" && printf '%s\n' "$OUT"
+        ;;
+
+    play)
+        # Hand the phone an audio file to play — music, mostly — with a
+        # transport on the page: play/pause, seek, the piece's name. The
+        # pointer expires unclaimed, and only files under $HOME are offered.
+        shift
+        if [ -z "${1:-}" ]; then
+            echo "Usage: crab play <audio file under \$HOME>"
+            exit 1
+        fi
+        phone_play "$1"
+        exit $?
+        ;;
+
+    notify)
+        # Web Push to every subscribed phone — the channel that works with the
+        # page CLOSED. Transport only: no TTS, no windows, no desktop
+        # notification. Subscriptions come from the phone page's bell button;
+        # per-subscription results are printed and dead ones pruned.
+        shift
+        if [ -z "$*" ]; then
+            echo "Usage: crab notify <text>"
+            exit 1
+        fi
+        DESKCRAB_PUSH_SUBJECT="${PUSH_SUBJECT:-}" \
+            exec python3 "$SCRIPT_DIR/lib/webpush.py" send "$NOTIFY_NAME" "$*"
+        ;;
+
+    openrsc-link)
+        ensure_openrsc_secret || exit 1
+        printf '%s?g=%s\n' "$(openrsc_base_url "${2:-}")" "$OPENRSC_SECRET"
+        ;;
+
+    serve)
+        # Serve the phone client. The listener stays on loopback by default;
+        # exposing it to a phone is a separate, deliberate step (Tailscale:
+        #   tailscale serve --bg https / http://127.0.0.1:$SERVE_PORT
+        # ) so nothing is ever published just by starting the server.
+        [ -n "${2:-}" ] && SERVE_PORT="$2"
+        if [ -z "$SERVE_SECRET" ]; then
+            echo "SERVE_SECRET is not set in $CONF_FILE — refusing to serve."
+            echo "Add a shared secret, e.g.:"
+            echo "  SERVE_SECRET=\"$(head -c 18 /dev/urandom | base64 | tr -d '/+=')\""
+            exit 1
+        fi
+        ensure_openrsc_secret || {
+            echo "could not create the OpenRSC spectator-only key" >&2
+            exit 1
+        }
+        if [ -z "$SERVE_CERT" ] && [ "$SERVE_TLS" = "self" ]; then
+            SERVE_CERT="$TLS_DIR/cert.pem"
+            SERVE_KEY="$TLS_DIR/key.pem"
+            "$SCRIPT_DIR/lib/gen-cert" "$TLS_DIR" || exit 1
+        fi
+        export DESKCRAB_SERVE_CERT="$SERVE_CERT" DESKCRAB_SERVE_KEY="$SERVE_KEY"
+        export DESKCRAB_SERVE_PORT="$SERVE_PORT" DESKCRAB_SERVE_BIND="$SERVE_BIND" \
+               DESKCRAB_SERVE_SECRET="$SERVE_SECRET" DESKCRAB_WHISPER_MODEL="$WHISPER_MODEL" \
+               DESKCRAB_NOTIFY_NAME="$NOTIFY_NAME" DESKCRAB_ASSISTANT_NAME="$ASSISTANT_NAME" \
+               DESKCRAB_SERVE_TIMEOUT="$SERVE_TIMEOUT" DESKCRAB_CRAB_BIN="$SCRIPT_DIR/crab" \
+               DESKCRAB_STATE_PREFIX="$STATE_PREFIX" DESKCRAB_WHISPER_FIXES="$WHISPER_FIXES" \
+               DESKCRAB_PHONE_SENTENCE_STREAM="$PHONE_SENTENCE_STREAM" \
+               DESKCRAB_OPENRSC_FPS="$OPENRSC_FPS" \
+               DESKCRAB_OPENRSC_IDLE_SECONDS="$OPENRSC_IDLE_SECONDS" \
+               DESKCRAB_OPENRSC_HEADLESS="$OPENRSC_HEADLESS" \
+               DESKCRAB_OPENRSC_STATE_DIR="$OPENRSC_STATE_DIR" \
+               DESKCRAB_OPENRSC_GAME_DIR="$OPENRSC_GAME_DIR" \
+               DESKCRAB_OPENRSC_SECRET="$OPENRSC_SECRET" \
+               DESKCRAB_GEOCODE_URL="$GEOCODE_URL" \
+               DESKCRAB_GEO_STALE_S="$GEO_STALE_S" \
+               DESKCRAB_GEO_LOOKUP_TIMEOUT_S="$GEO_LOOKUP_TIMEOUT_S"
+        [ "${TURN_METRICS:-1}" = 1 ] && export DESKCRAB_METRICS_DIR="$METRICS_DIR"
+        [ "${FACE_ENABLED:-0}" = 1 ] \
+            && export DESKCRAB_FACE_SOCKET="$FACE_SOCKET"
+        exec python3 "$SCRIPT_DIR/lib/serve.py"
+        ;;
+
+    job)
+        # Detached work: dispatched to systemd, it survives the end of this
+        # turn and never holds the conversation open. `crab job` returns
+        # instantly; the worker wakes the assistant with an event when it
+        # finishes. `crab job log <id>` shows a job's output; anything else
+        # after `job` is the description of the work itself.
+        shift
+        if [ "${1:-}" = "log" ]; then
+            # `log` owns its word outright: before this, a mistyped id fell
+            # through to dispatch and could start a real builder on the task
+            # "log 20260810-…" — the same trap `job stop` fell into once.
+            if [ -z "${2:-}" ] || [ ! -e "$JOBS_DIR/$2.json" ]; then
+                echo "No such job: ${2:-<id missing>}   (ids: crab jobs)"
+                exit 1
+            fi
+            if [ -s "$JOBS_DIR/$2.log" ]; then
+                cat "$JOBS_DIR/$2.log"
+            else
+                # An empty log is an answer, not a blank. The log fills live
+                # while a builder runs (specs/jobs.md rule 26), but early in a
+                # run there may be nothing in it yet — and printing nothing
+                # was read, every time, as "the job produced nothing" rather
+                # than "not yet".
+                JOBSTATE="$("$LIB_DIR/job-status" get "$JOBS_DIR/$2.json" state 2>/dev/null)"
+                if [ "$JOBSTATE" = running ]; then
+                    echo "Job $2 is still running — no output captured yet. The log fills as the builder writes: $JOBS_DIR/$2.log"
+                else
+                    echo "Job $2 (${JOBSTATE:-unknown}) captured no output. Log path: $JOBS_DIR/$2.log"
+                fi
+            fi
+            exit 0
+        fi
+        if [ "${1:-}" = "activity" ]; then
+            if [ -z "${2:-}" ] || [ ! -e "$JOBS_DIR/$2.json" ]; then
+                echo "No such job: ${2:-<id missing>}   (ids: crab jobs)"
+                exit 1
+            fi
+            "$LIB_DIR/job-activity" "$JOBS_DIR/$2.json" "${3:-12}"
+            exit $?
+        fi
+        if [ "${1:-}" = "stop" ]; then
+            job_stop "${2:-}"
+            exit $?
+        fi
+        if [ "${1:-}" = "steer" ]; then
+            # A correction goes into this builder's own durable inbox. It is
+            # not a wake and not a replacement job (specs/jobs.md 7d-7f).
+            shift
+            JOB_STEER_ID="${1:-}"
+            [ $# -gt 0 ] && shift
+            job_steer "$JOB_STEER_ID" "$@"
+            exit $?
+        fi
+        if [ "${1:-}" = "on-done" ]; then
+            # The errand owed at this job's completion, attached to a job
+            # already in flight (specs/jobs.md rules 7j-7k): it rides the
+            # sidecar and the completion wake carries it as an OWED action.
+            # Owns its word outright, like steer.
+            shift
+            JOB_OD_ID="${1:-}"
+            [ $# -gt 0 ] && shift
+            job_on_done "$JOB_OD_ID" "$@"
+            exit $?
+        fi
+        if [ "${1:-}" = "requeue" ]; then
+            # Re-dispatch a recorded job from its own sidecar: the description
+            # and the workdir come off the record, so no hand retypes a field
+            # name — the mistake that dispatched three builders on the word
+            # "null" (specs/jobs.md rule 7a). Owns its word outright, like
+            # `log` and `stop`, so a typo can never fall through to dispatch.
+            job_requeue "${2:-}"
+            exit $?
+        fi
+        if [ "${1:-}" = "dispatch" ]; then
+            # A QUEUED record dispatched in place — same id, same sidecar,
+            # history intact (specs/jobs.md rule 32). The night-work door;
+            # by hand it is the deliberate "work the queue now".
+            job_dispatch_queued "${2:-}"
+            exit $?
+        fi
+        if [ "${1:-}" = "drop" ]; then
+            # The one way off the queue undispatched (rule 33). Owns its
+            # word outright, like log and stop.
+            job_drop "${2:-}"
+            exit $?
+        fi
+        if [ "${1:-}" = "show" ]; then
+            # The whole record — state, times, linkage, model, the account
+            # walk, the history, and what collection found (rule 40).
+            if [ -z "${2:-}" ] || [ ! -e "$JOBS_DIR/$2.json" ]; then
+                echo "No such job: ${2:-<id missing>}   (ids: crab jobs)"
+                exit 1
+            fi
+            "$LIB_DIR/job-status" show "$JOBS_DIR/$2.json"
+            exit $?
+        fi
+        if [ "${1:-}" = "collect" ]; then
+            # Collection by hand, on a job in any ended state (rule 40): a
+            # builder that died mid-suite or never pushed still left work on
+            # disk, and this is how it is located after the fact.
+            if [ -z "${2:-}" ] || [ ! -e "$JOBS_DIR/$2.json" ]; then
+                echo "No such job: ${2:-<id missing>}   (ids: crab jobs)"
+                exit 1
+            fi
+            "$LIB_DIR/job-collect" run "$JOBS_DIR" "$2"
+            exit $?
+        fi
+        job_start "$@"
+        exit $?
+        ;;
+
+    jobs)
+        # What is running detached right now, what waits queued for the
+        # night, and what finished while nobody was looking. --state <s>
+        # filters to one state (specs/jobs.md rule 40).
+        if [ "${2:-}" = "--state" ]; then
+            "$LIB_DIR/job-status" report "$JOBS_DIR" "$JOBS_SHOW_FINISHED" "$JOBS_KEEP_DAYS" --state "${3:-}"
+            exit $?
+        fi
+        echo "Detached jobs (logs in $JOBS_DIR):"
+        jobs_report
+        exit 0
+        ;;
+
+    journal)
+        # Read a day back: every turn — desktop, phone, wake, job — oldest
+        # first, full text. Default today; or any YYYY-MM-DD. This is the
+        # durable record under the /tmp sessions log, so it survives reboots.
+        # Closed in a public-composition sitting (specs/prompt-assembly.md
+        # rule 41b): the day's conversations are other conversations, and
+        # none is read for a public reply.
+        if [ "${DESKCRAB_WAKE_PROFILE:-}" = public ]; then
+            echo "DeskCrab: 'journal' is closed in a public-composition sitting (specs/prompt-assembly.md rule 41b): another conversation is never read for a public reply." >&2
+            exit 64
+        fi
+        "$SCRIPT_DIR/lib/day-journal" show "$DAY_JOURNAL_DIR" "${2:-}"
+        exit $?
+        ;;
+
+    metrics)
+        # Where the tokens went (specs/metrics.md): a day's totals by session
+        # kind and model, from the durable ledger — pure reading, no model
+        # call anywhere in it.
+        #   crab metrics                 today
+        #   crab metrics 2026-08-13      any ledgered day
+        #   crab metrics backfill        one-shot ingest of surviving streams
+        #                                and her own CLI transcripts; idempotent
+        case "${2:-}" in
+            backfill)
+                # The exec'd child sees no unexported shell variable, so her
+                # project dir, the extra logins' config dirs, and the chain
+                # all have to ride the argv — exactly as token_ledger_record
+                # already passes --chain. Left to the child's own environment
+                # reads, the ingest silently skipped her project-dir
+                # transcripts and every extra login, and numbered every
+                # account null. The cwds are spec rule 17's three: her
+                # project dir, the sterile classify cwd, the chess mover's.
+                BF_RUN="${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}"
+                exec python3 "$SCRIPT_DIR/lib/token_ledger.py" backfill \
+                    --dir "$METRICS_DIR" \
+                    --her-cwds "$PROJECT_DIR:$BF_RUN/deskcrab-classify:$BF_RUN/deskcrab-chess-mover" \
+                    --claude-dirs "$HOME/.claude:${CLAUDE_FALLBACK_CONFIG_DIR:-}" \
+                    --chain "${CLAUDE_FALLBACK_CONFIG_DIR:-}"
+                ;;
+            *)
+                exec python3 "$SCRIPT_DIR/lib/token_ledger.py" report \
+                    ${2:+"$2"} --dir "$METRICS_DIR"
+                ;;
+        esac
+        ;;
+
+    context)
+        # The prompt itself, exactly as a live session receives it. Producing
+        # it is a local operation and it stays ONE command: when he asks to see
+        # the context, this is the answer, and the failure it replaces is a
+        # turn spent reconstructing the prompt from memory, or proposing to put
+        # a proxy in front of the API to capture it.
+        #   crab context                  the turn profile
+        #   crab context --profile wake   any of turn|wake|public|job|classify
+        #   crab context --layers         the per-layer manifest and budgets
+        shift
+        build_system_prompt "$@"
+        exit $?
+        ;;
+
+    memory)
+        # Long-term vector memory (lib/memory.py, design-memory-store.md):
+        # add / search / list / dump / forget / ingest / recall-block.
+        # Exported so the python side sees config knobs from deskcrab.conf.
+        shift
+        # A public-composition sitting (specs/prompt-assembly.md rule 41b)
+        # reads nothing private: its prompt carried the public block alone,
+        # and this door would hand it the rest. A public fact may still be
+        # written, and a row still marked; every reading verb refuses.
+        if [ "${DESKCRAB_WAKE_PROFILE:-}" = public ]; then
+            case "${1:-}" in
+                add|visibility) ;;
+                *)
+                    echo "DeskCrab: 'memory ${1:-}' is closed in a public-composition sitting (specs/prompt-assembly.md rule 41b): nothing private is read for a public reply; 'crab memory add' and 'crab memory visibility' still write." >&2
+                    exit 64 ;;
+            esac
+        fi
+        export MEMORY_INGEST_MODEL MEMORY_INGEST_EFFORT MEMORY_SUMMARY_MODEL \
+            MEMORY_SUMMARY_EFFORT MEMORY_EMBED_MODEL MEMORY_EMBED_URL \
+            MEMORY_JUDGE_MODEL 2>/dev/null
+        # The night judge defaults to a codex name (specs/nightly.md rules
+        # 14c-14e), and the python side mirrors the shell router
+        # (memory-recall.md rule 30) — so the codex harness rides along
+        # exactly as the claude harness below does: the binary, the sol
+        # alias's resolution, the cooldown length, and the limit signature,
+        # under the DESKCRAB_ name for the same reason the claude one wears
+        # it.
+        export CODEX_BIN CODEX_MODEL_SOL CODEX_LIMIT_COOLDOWN CODEX_HOME 2>/dev/null
+        export DESKCRAB_CODEX_LIMIT_RE="$CODEX_LIMIT_RE"
+        # memory.py makes model calls (the ingest judge, the recall reinforcer):
+        # route them through her harness and the flat account selection like
+        # every other out-of-band child (account-fallback.md rules 17, 29). The
+        # export above carried only the MEMORY_* knobs, so claude_bin() fell
+        # through to stock `claude` and the walk collapsed to one login — the
+        # nightly `crab memory ingest` ran the coding-agent binary on a
+        # possibly-dry account, and a limit refusal raised instead of walking.
+        # The python side selects from the shared state itself (its account
+        # walk is rule 29's read-only mirror), so what it needs is the list,
+        # the signature, and the state file path; CLAUDE_CONFIG_DIR is still
+        # seeded to the account the selection answers with, explicitly (rule
+        # 3), for any child that reads only the environment.
+        export CLAUDE_BIN CLAUDE_FALLBACK_CONFIG_DIR 2>/dev/null
+        export DESKCRAB_CLAUDE_LIMIT_RE="$CLAUDE_LIMIT_RE"
+        export ACCOUNT_STATE_FILE
+        export CLAUDE_CONFIG_DIR="$(claude_child_login)"
+        exec "$SCRIPT_DIR/lib/memory.py" "$@"
+        ;;
+
+    conduct)
+        # Durable conduct creation shares memory's clause-level semantic
+        # preflight.  Direct file creation bypasses the three-way judgement
+        # (duplicate / supersede / distinct) and is unsupported.
+        shift
+        export DESKCRAB_MEMORY_DIR="${DESKCRAB_MEMORY_DIR:-$(deskcrab_home)/memory}"
+        export DESKCRAB_CONDUCT_DIR="${DESKCRAB_CONDUCT_DIR:-$(deskcrab_home)/conduct}"
+        exec "$SCRIPT_DIR/lib/conduct_rules.py" "$@"
+        ;;
+
+    eng)
+        # Engineering records (lib/eng, specs/engineering-records.md): threads
+        # with STATE — new / list / show / touch / review / accept / reject /
+        # settle / kill / search. State moves only through here, so
+        # last_touched can never drift, and a settled worry can never be read
+        # back as a present-tense fact. A builder session submits with
+        # `review` and is refused settle (rules 16-16d): the completion
+        # review judges the claim against the original ask.
+        shift
+        DESKCRAB_ENG_DIR="${DESKCRAB_ENG_DIR:-$(deskcrab_home)/engineering/records}" \
+            exec python3 "$SCRIPT_DIR/lib/eng" "$@"
+        ;;
+
+    want)
+        # Wants with the same state discipline (specs/wants.md): the record
+        # spine of lib/eng under kind want, over the wants/ drawer beside the
+        # shelf. new / list / show / touch / dormant / revive / grown /
+        # retire / link / search / migrate. The engineering drawer and the
+        # jobs directory ride along so `want link` can verify a ref's target
+        # instead of inventing one.
+        shift
+        DESKCRAB_WANTS_DIR="${DESKCRAB_WANTS_DIR:-$(deskcrab_home)/wants}" \
+        DESKCRAB_WANTS_FILE="${DESKCRAB_WANTS_FILE:-${WANTS_FILE:-}}" \
+        DESKCRAB_ENG_DIR="${DESKCRAB_ENG_DIR:-$(deskcrab_home)/engineering/records}" \
+        JOBS_DIR="${JOBS_DIR:-$(deskcrab_home)/jobs}" \
+            exec python3 "$SCRIPT_DIR/lib/eng" --kind want "$@"
+        ;;
+
+    bluesky)
+        # Persistent social memory. Builders can verify reads and requested
+        # profile work, but never impersonate her in public conversation.
+        shift
+        case "${1:-}" in
+            post|like|repost|follow|unlike|unrepost|unfollow|undo|bridge|remember|cancel)
+                if deskcrab_is_builder_context; then
+                    echo "DeskCrab: public social actions are unavailable to detached builders; use the job log and review record." >&2
+                    exit 64
+                fi
+                ;;
+            acceptance)
+                # The read-only matrix is open to every sitting. Its --perform
+                # road is the one piece of test traffic the connector ever
+                # generates (specs/bluesky.md clause 22a): the attended user's
+                # own sitting, never a builder, never any wake — a public
+                # composition included.
+                if printf '%s\n' "$@" | grep -qx -- '--perform'; then
+                    if deskcrab_is_builder_context; then
+                        echo "DeskCrab: the live acceptance procedure is unavailable to detached builders (specs/bluesky.md clause 22a); the read-only matrix is 'crab bluesky acceptance'." >&2
+                        exit 64
+                    fi
+                    if [ -n "${DESKCRAB_WAKE_PROFILE:-}" ]; then
+                        echo "DeskCrab: the live acceptance procedure runs only in an attended desk or phone sitting (specs/bluesky.md clause 22a); this is a '${DESKCRAB_WAKE_PROFILE}' wake, so 'bluesky acceptance --perform' is refused here." >&2
+                        exit 64
+                    fi
+                fi
+                ;;
+        esac
+        # The only unattended road to a public write is the public-composition
+        # wake (specs/bluesky.md clause 21, prompt-assembly rule 41b). Any
+        # other autonomous sitting — a scheduled return, an own-time hour —
+        # composed on the ordinary wake prompt, with private memory and the
+        # desk transcript in it, and that context never leaves the house. A
+        # desk or phone turn carries no DESKCRAB_WAKE_PROFILE and is the
+        # user's own sitting, gated at the write by clause 20 as before.
+        case "${1:-}" in
+            post|like|repost|follow|unlike|unrepost|unfollow|undo)
+                if [ "${DESKCRAB_WAKE_PROFILE:-}" = wake ]; then
+                    echo "DeskCrab: an unattended public write runs only on the public-composition wake the bridge books (specs/bluesky.md clause 21); this sitting is not one, so 'bluesky ${1}' is refused here." >&2
+                    exit 64
+                fi
+                ;;
+        esac
+        if [ "${1:-}" = inbox ] && deskcrab_is_builder_context; then
+            set -- inbox --peek
+        fi
+        export DESKCRAB_BLUESKY_DIR="${DESKCRAB_BLUESKY_DIR:-$(deskcrab_home)/bluesky}"
+        export DESKCRAB_BLUESKY_CONFIG DESKCRAB_CRAB="$SCRIPT_DIR/crab"
+        # The connector reaches the shared memory store through lib/memory.py
+        # under the memory interpreter (specs/bluesky.md clauses 15-16), so the
+        # same knobs the memory verb exports ride along: the interpreter, the
+        # embedder, and the store directory.
+        export MEMORY_PYTHON MEMORY_EMBED_MODEL MEMORY_EMBED_URL DESKCRAB_MEMORY_DIR 2>/dev/null
+        exec python3 "$SCRIPT_DIR/lib/bluesky.py" "$@"
+        ;;
+
+    signal)
+        # Her own Signal number (specs/signal.md): inbox, history, contacts,
+        # groups, sending, and the bridge the user unit runs. A builder may
+        # read but never speak as her (rule 4a), the same line `remote` holds.
+        shift
+        case "${1:-}" in
+            status|inbox|history|contacts|groups|help|--help|-h|'') ;;
+            *)
+                if deskcrab_is_builder_context; then
+                    echo "DeskCrab: 'signal ${1}' is unavailable to detached builders; a builder is never her voice." >&2
+                    exit 64
+                fi
+                ;;
+        esac
+        if [ "${1:-}" = "inbox" ] && deskcrab_is_builder_context; then
+            set -- inbox --peek
+        fi
+        export SIGNAL_ACCOUNT SIGNAL_SOCKET ASSISTANT_NAME 2>/dev/null
+        export DESKCRAB_SIGNAL_DIR="${DESKCRAB_SIGNAL_DIR:-$(deskcrab_home)/signal}"
+        export DESKCRAB_CRAB="$SCRIPT_DIR/crab"
+        exec python3 "$SCRIPT_DIR/lib/signal_chat.py" "$@"
         ;;
 
     wake-at)
-        # Schedule a one-shot autonomous wake via a transient systemd user timer.
-        WHEN="${2:-}"
-        if [ -z "$WHEN" ]; then
-            echo "Usage: crab wake-at <when>   (e.g. 2h, 45min, \"09:30\", \"Sat 14:00\")"
+        # Schedule a one-shot autonomous wake. The timer itself is a transient
+        # systemd user unit and dies with the user manager, so the booking is
+        # recorded durably in $WAKES_DIR first and rebuilt from there by
+        # `crab wake-restore` — what survives a reboot is the record, not the
+        # timer.
+        #
+        # All of it — the lock, the coalescing, the spacing, the record, the
+        # rollback and the ledger — lives in wake_book (lib/wake-queue.sh).
+        # This is a door onto the module, not a second implementation of it.
+        shift
+        if [ -z "${1:-}" ]; then
+            echo "Usage: crab wake-at [--by <who>] [--cap <n>] [--effort <low|medium|high>] [--model <name>] <when> [kind] [reason]"
+            echo "       (when: 2h, 45min, \"09:30\", \"Sat 14:00\"; kind: scheduled|event)"
+            echo "       Anything unrecognised in the kind slot is read as the reason."
             exit 1
         fi
-        UNIT="deskcrab-wake-$(date +%s)"
-        if echo "$WHEN" | grep -qE '^[0-9]+(s|sec|min|m|h|hr|hours?|d|days?)$'; then
-            systemd-run --user --quiet --unit="$UNIT" --on-active="$WHEN" "$SCRIPT_DIR/crab" wake scheduled
-        else
-            systemd-run --user --quiet --unit="$UNIT" --on-calendar="$WHEN" "$SCRIPT_DIR/crab" wake scheduled
-        fi && echo "Wake scheduled ($WHEN) as $UNIT"
+        wake_book "$@"
+        exit $?
+        ;;
+
+    wake-now)
+        # Move current authorised work out of the conversation without
+        # inventing a later appointment. A one-second event uses the urgent
+        # wake lane and waits for that lane's lock when another wake is active.
+        shift
+        WAKE_NOW_OPTS=()
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                --effort|--model)
+                    if [ -z "${2:-}" ]; then
+                        echo "wake-now: '$1' needs a value." >&2
+                        exit 1
+                    fi
+                    WAKE_NOW_OPTS+=("$1" "$2")
+                    shift 2
+                    ;;
+                --*)
+                    echo "wake-now: unknown option '$1'." >&2
+                    exit 1
+                    ;;
+                *) break ;;
+            esac
+        done
+        WAKE_NOW_REASON="$*"
+        if [ -z "$(printf '%s' "$WAKE_NOW_REASON" | tr -d '[:space:]')" ]; then
+            echo "Usage: crab wake-now [--effort <low|medium|high>] [--model <name>] <reason>" >&2
+            exit 1
+        fi
+        wake_book "${WAKE_NOW_OPTS[@]}" --by herself 1s event "$WAKE_NOW_REASON"
+        exit $?
+        ;;
+
+    wake-tidy)
+        # Prune the wake queue: fired transient timers nothing remembers,
+        # repeated promises, and bookings sharing a second. Runs at the end of
+        # every wake too — this is the by-hand door onto the same thing.
+        wake_tidy
+        exit 0
+        ;;
+
+    wake-restore)
+        # Rebuild wake timers from their durable records: still-future ones at
+        # their original moment, overdue ones once and promptly but staggered.
+        # Run at login by deskcrab-wake-restore.service; safe to run by hand.
+        wake_restore
+        ;;
+
+    wake-cancel)
+        # The only real cancellation. Stopping just the timer is not one — the
+        # record survives and wake-restore brings it back, which is exactly how
+        # a backlog called off by hand came back verbatim an hour later.
+        # --all calls off the whole queue in one command, and every cancellation
+        # is written to the ledger so an undone one can be seen.
+        wake_cancel "${2:-}"
+        exit $?
+        ;;
+
+    help|--help|-h|usage|commands)
+        # NOT speech. `crab help` used to fall into the catch-all below and be
+        # asked of me as a message — sixteen times on 2026-08-07 a script or a
+        # hand reaching for usage started a whole desktop turn where I was told
+        # "help" with no context. Usage is printed, never spoken to.
+        echo "Usage: crab start|stop|status|seal|revive|shutup|face <verb>|face-window|claim <what>|unclaim|touching <paths>|numb [-w secs] <paths>|checkpoint <note>|resolve <name>|job [-C <dir>] [--record <eng-id>] [--want <ref>] [--on-done <errand>] <desc>|job log|activity|show|collect|dispatch|drop|requeue|steer|on-done <id>|jobs [--state <s>]|eng <new|list|show|touch|review|accept|reject|settle|kill|search> …|want <new|list|show|touch|dormant|revive|grown|retire|link|search|migrate> …|journal [YYYY-MM-DD]|metrics [YYYY-MM-DD|backfill]|context [--profile <p>]|--layers|wake|wake-now <reason>|wake-at <when> [kind] [reason]|wake-cancel <unit>|--all|wake-restore|wake-tidy|serve [port]|openrsc-link [base-url]|signal <verb>|remote <text>|notify <text>|play <file>|tired|shelf-check|<message>"
+        exit 0
         ;;
 
     *)
-        # Anything else is treated as a text query
+        # Anything else is treated as a text query — but a leading dash is a
+        # mistyped flag, not speech; it must never reach the spoken channel.
+        if deskcrab_is_builder_context; then
+            echo "DeskCrab: detached builder text cannot enter the user conversation. Write the job log/checkpoint or engineering record." >&2
+            exit 64
+        fi
         TEXT="$*"
+        case "$TEXT" in
+            -*) echo "Unknown option '$1' — run crab with no arguments for usage."; exit 1 ;;
+        esac
         if [ -z "$TEXT" ]; then
-            echo "Usage: crab start|stop|shutup|wake|wake-at <when>|<message>"
+            echo "Usage: crab start|stop|status|seal|revive|shutup|face <verb>|face-window|claim <what>|unclaim|touching <paths>|numb [-w secs] <paths>|checkpoint <note>|resolve <name>|job [-C <dir>] [--record <eng-id>] [--want <ref>] [--on-done <errand>] <desc>|job log|activity|show|collect|dispatch|drop|requeue|steer|on-done <id>|jobs [--state <s>]|eng <new|list|show|touch|review|accept|reject|settle|kill|search> …|want <new|list|show|touch|dormant|revive|grown|retire|link|search|migrate> …|journal [YYYY-MM-DD]|metrics [YYYY-MM-DD|backfill]|context [--profile <p>]|--layers|wake|wake-now <reason>|wake-at <when> [kind] [reason]|wake-cancel <unit>|--all|wake-restore|wake-tidy|serve [port]|openrsc-link [base-url]|signal <verb>|remote <text>|notify <text>|play <file>|tired|shelf-check|<message>"
             exit 1
         fi
         stop_tts

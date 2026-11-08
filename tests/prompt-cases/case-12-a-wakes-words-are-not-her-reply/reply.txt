@@ -1,0 +1,1 @@
+From the conversation, not from the shelf — the last few turns are what goes in as the embedding query, so it asks the store about whatever you are actually talking about.

@@ -1,0 +1,12 @@
+[Unit]
+Description=Beatrice whole-person portrait activity observer
+After=graphical-session.target deskcrab-face-broker.service
+
+[Service]
+Type=simple
+ExecStart=/home/discordian/Programming/Claude/deskcrab/lib/face-presence
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=default.target

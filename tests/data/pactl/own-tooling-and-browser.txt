@@ -1,0 +1,82 @@
+Source Output #150001
+	Driver: PipeWire
+	Owner Module: n/a
+	Client: 150000
+	Source: 62
+	Sample Specification: float32le 1ch 48000Hz
+	Channel Map: mono
+	Format: pcm, format.sample_format = "\"float32le\""  format.rate = "48000"  format.channels = "1"  format.channel_map = "\"mono\""
+	Corked: no
+	Mute: no
+	Volume: mono: 65536 / 100% / 0.00 dB
+	        balance 0.00
+	Buffer Latency: 0 usec
+	Source Latency: 0 usec
+	Resample method: PipeWire
+	Properties:
+		client.api = "pipewire-pulse"
+		pulse.server.type = "unix"
+		application.name = "whisper-stream"
+		application.icon_name = "whisper-stream"
+		application.process.id = "5151"
+		application.process.user = "user"
+		application.process.host = "desk"
+		application.process.binary = "whisper-stream"
+		application.language = "C.UTF-8"
+		window.x11.display = ":1"
+		application.process.machine_id = "00000000000000000000000000000000"
+		media.name = "whisper-stream"
+		pulse.corked = "false"
+		node.rate = "1/48000"
+		node.latency = "1024/48000"
+		target.object = "62"
+		stream.is-live = "true"
+		node.name = "whisper-stream"
+		node.want-driver = "true"
+		node.autoconnect = "true"
+		media.class = "Stream/Input/Audio"
+		port.group = "stream.0"
+		object.id = "150601"
+		object.serial = "150001"
+		module-stream-restore.id = "source-output-by-application-name:whisper-stream"
+Source Output #140001
+	Driver: PipeWire
+	Owner Module: n/a
+	Client: 140000
+	Source: 62
+	Sample Specification: float32le 1ch 48000Hz
+	Channel Map: mono
+	Format: pcm, format.sample_format = "\"float32le\""  format.rate = "48000"  format.channels = "1"  format.channel_map = "\"mono\""
+	Corked: no
+	Mute: no
+	Volume: mono: 65536 / 100% / 0.00 dB
+	        balance 0.00
+	Buffer Latency: 0 usec
+	Source Latency: 0 usec
+	Resample method: PipeWire
+	Properties:
+		client.api = "pipewire-pulse"
+		pulse.server.type = "unix"
+		application.name = "Firefox"
+		application.icon_name = "firefox"
+		application.process.id = "5151"
+		application.process.user = "user"
+		application.process.host = "desk"
+		application.process.binary = "firefox"
+		application.language = "C.UTF-8"
+		window.x11.display = ":1"
+		application.process.machine_id = "00000000000000000000000000000000"
+		media.name = "AudioCallbackDriver"
+		pulse.corked = "false"
+		node.rate = "1/48000"
+		node.latency = "1024/48000"
+		target.object = "62"
+		stream.is-live = "true"
+		node.name = "Firefox"
+		node.want-driver = "true"
+		node.autoconnect = "true"
+		media.class = "Stream/Input/Audio"
+		port.group = "stream.0"
+		object.id = "140601"
+		object.serial = "140001"
+		module-stream-restore.id = "source-output-by-application-name:Firefox"

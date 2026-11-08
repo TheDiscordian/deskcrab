@@ -1,0 +1,10999 @@
+#!/usr/bin/env python3
+"""game_player.py — learned rules are the primary play path (specs/game-player.md).
+
+The deliberate-play channel's trigger-action table: rules the player's own
+hand wrote down at the moment a play verified, evaluated against the live
+bridge snapshot BEFORE any model reasoning, executed through the bridge's
+one action slot. The evaluation machinery is lib/game_reflex.py's evaluate —
+the same priorities, cooldowns, debounce, one receipted action in flight,
+completion gating and hold override — with this layer's own trigger and action
+vocabulary plugged in. No model call is ever made anywhere in this module.
+
+Stdlib only, plain python3.
+"""
+
+import argparse
+import ctypes
+import fcntl
+import hashlib
+import heapq
+import json
+import os
+import re
+import select
+import subprocess
+import sys
+import time
+import unicodedata
+from pathlib import Path
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import game_reflex  # noqa: E402  (the shared engine; specs/game-player.md rule 2)
+import game_loadout
+import game_decisions
+
+# The closed vocabularies (spec rules 4 and 5). They grow by spec change only.
+TRIGGER_KEYS = ("objective_is", "activity_is", "npc_visible", "object_visible", "bound_visible",
+                "entity_visible",
+                "ground_item_visible", "shop_item_visible", "bank_item_visible",
+                "message_contains", "near_tile",
+                "inventory_has", "inventory_lacks", "inventory_slots_below",
+                "inventory_slots_at_least", "fatigue_below", "fatigue_at_least",
+                "in_combat", "out_of_combat",
+                "bank_open", "bank_closed",
+                "standing_on_object", "standing_on_clear_tile",
+                "opponent_rounds_at_least",
+                "stationary_ms_at_least",
+                "skill_at_least")
+ACTIONS = ("talk-npc", "attack-npc", "interact-npc", "use-item-npc", "cast-npc", "walk", "approach-entity", "follow-player", "retreat", "sidestep", "step-aside", "interact-object", "interact-bound", "click-entity",
+           "click-inventory", "click-shop", "click-bank", "take-ground",
+           "drop-inventory", "use-item-ground", "use-item-item",
+           "use-item-object", "choose-dialogue")
+ENTITY_COLLECTIONS = ("players", "npcs", "objects", "bounds", "ground_items")
+ENTITY_SELECTOR_FIELDS = ("name", "id", "sidx")
+SYSTEM_FEEDBACK_CHANNELS = ("game", "quest", "inventory")
+# Bone burial is irreversible and awards no Prayer XP at full fatigue.  Keep
+# this as a hard action-safety invariant rather than asking every learned rule
+# to remember the same guard.  These are the bone item ids currently present
+# in the OpenRSC definitions and in the learned loot table.
+PRAYER_BONE_ITEM_IDS = frozenset((20, 413, 604, 814))
+FRIEND_STATUS_RE = re.compile(r"^(.+?)\s+has logged\s+(in|out)\s*$", re.IGNORECASE)
+WAIT_CONDITIONS = (
+    "logged_in", "logged_out", "walking", "not_walking", "in_combat",
+    "out_of_combat", "talking_to_npc", "not_talking_to_npc",
+    "right_click_menu_open", "right_click_menu_closed",
+    "ui_panel_open", "ui_panel_closed",
+    "trade_open", "trade_closed", "duel_open", "duel_confirm", "duel_closed",
+    "bank_open", "bank_closed", "shop_open", "shop_closed",
+    "sleeping", "not_sleeping", "fatigue_zero",
+    "action_done",
+)
+WAIT_DEFAULT_S = 15.0
+WAIT_MAX_S = 60.0
+WAIT_SNAPSHOT_FRESH_MS = 2000
+
+# Spec rule 4: a stored near_tile radius below this evaluates as this, and the
+# lint (rule 17) refuses to author one. A trigger names the vicinity while
+# walk verification owns the exact destination.
+NEAR_RADIUS_FLOOR = 2
+
+# Spec rule 7a: a walk's receipt is dispatch, not completion. Verification
+# follows the snapshot until the body stops moving, then compares the settled
+# tile against the TARGET's coordinates within the action's arrive tolerance.
+WALK_ARRIVE_DEFAULT = 1     # Chebyshev tiles
+WALK_SETTLE_S = 1.6         # no position change for this long = stopped
+WALK_TIMEOUT_S = 25.0       # hard ceiling on one walk's verification
+STOP_VERIFY_S = 6.0         # a stop's postcondition: a snapshot with walking false
+TAKE_TIMEOUT_S = 25.0       # a pickup can include the same bounded pathing delay
+TAKE_MISSING_GRACE_S = 0.75 # let inventory follow a just-removed ground entry
+RETREAT_VERIFY_S = 1.25     # one server-round-sized observation before a retry
+# Spec rule 7a: the one-tile sidestep's bounded postcondition observation.
+# Eligibility comes from three observed damage splats on the local player,
+# never elapsed time;
+# after combat ends the body gets an ordinary settle before judgment.
+SIDESTEP_VERIFY_S = 4.0
+SIDESTEP_SETTLE_MAX_S = 5.0
+# WalkRequest opens the escape gate after opponent.getHitsMade() reaches three.
+# The bridge counts the corresponding damage splats on the local player; this
+# layer never reconstructs that server counter from elapsed time.
+SIDESTEP_REQUIRED_ROUNDS = 3
+# A fight causally following our own non-combat NPC interaction (pickpocket,
+# item use, talk) on the same NPC type is PROVOKED retaliation. The action and
+# combat episode identities establish that relation; elapsed time never does.
+PROVOKED_ACTION_TYPES = ("interact-npc", "use-item-npc", "talk-npc")
+# Spec rule 10a: the reflex-fire ledger's presentation bounds. History stays
+# complete in the decision logs; presentation is the newest slice, said so.
+REFLEX_FIRE_PRESENT_MAX = 40
+REFLEX_FIRE_TAIL_BYTES = 512 * 1024
+REFLEX_SUPPRESSION_KINDS = ("conflict-loss", "cooldown-hold",
+                            "route-conflict-hold", "sidestep-pause-hold",
+                            "healing-hold")
+# Spec rule 7a: scenery transitions. The server's own floor arithmetic packs
+# each floor into one 944-tile band of the north-south axis (its Point
+# arithmetic: height = z / 944), so the snapshot's z names the current floor.
+FLOOR_BAND_TILES = 944
+OBJECT_SETTLE_AWAY_TILES = 3  # walked and settled farther than this from the
+                              # target with no evidence = the click missed it
+OBJECT_VANISH_NEAR_TILES = 3  # a still body watching its target vanish = the
+                              # scenery set reloaded (a transition happened)
+PORTAL_JUMP_TILES = 12        # rule 7f's unexplained-transition boundary, reused
+RETREAT_CLEARANCE_TILES = 12  # leaving one combat flag is not clearing a pack
+RETREAT_SAFE_NPC_RADIUS = 8   # Classic aggression is local; leave visible threats behind
+RUNNER_FRESH_MS = 30000     # a heartbeat younger than this (and a live pid) means the
+                            # runner owns evaluation; wide enough to cover one walk's
+                            # verification, and a crashed runner fails the pid check at once
+GAP_STABLE_MS = 750          # moving across tiles is one situation, not one Sol wake per tile
+PLAYER_MESSAGE_SETTLE_MS = 5000  # collect one RuneScape-length chat chain before Sol replies
+REPETITION_WINDOW_MS = 3 * 60 * 1000
+REPETITION_THRESHOLD = 3
+REPETITION_REVIEW_HOLD_MS = 30 * 1000
+ACTIVITY_PERFORMANCE_MIN_MS = 60 * 1000
+ACTIVITY_REVIEW_INTERVAL_MS = 3 * 60 * 1000
+MOVEMENT_TRAIL_MAX_POINTS = 1024
+MOVEMENT_TRAIL_BREAK_DISTANCE = 12
+NAVIGATION_LEG_MAX_TILES = 8  # stay inside the collision map a person can currently see
+NAVIGATION_LEG_MAX_PATH_TILES = 16  # reject a nearby waypoint whose real route is a huge loop
+NAVIGATION_ROUTE_STEP_TILES = 8  # client-grounded prefix of the real destination path
+NAVIGATION_MAX_NONCLOSING_LEGS = 12  # allow real detours, never unbounded wandering
+NAVIGATION_VISITED_MAX = 64
+CLIENT_ROUTE_TIMEOUT_S = 5.0
+NAVIGATION_ATLAS_REFRESH_MS = 60 * 1000
+NAVIGATION_ATLAS_NPC_SITES = 128
+NAVIGATION_ATLAS_STATIC_SITES = 2048
+NAVIGATION_ATLAS_LINKS = 8192
+NAVIGATION_BLOCKER_MARGIN_TILES = 32
+NAVIGATION_BLOCKER_MAX = 4096
+BACKTRACK_DEFAULT_POINTS = 8  # recovery is a recent correction, not a replay of the whole day
+MOVEMENT_CONTRADICTION_LIMIT = 3  # consecutive settles against the request stop re-dispatching
+ROUTE_RULE_NAME = "active-route"
+ROUTE_PRIORITY = -1_000_000  # every learned interaction outranks ordinary travel
+BACKTRACK_RULE_NAME = "active-backtrack"
+BACKTRACK_PRIORITY = 900_000  # deliberate recovery beats routine work; retreat still wins
+FOLLOW_RULE_NAME = "active-follow-player"
+FOLLOW_PRIORITY = 850_000  # an accepted guide beats routine work; escape still wins
+MANUAL_RETREAT_RULE_NAME = "manual-retreat-request"
+MANUAL_RETREAT_PRIORITY = 1_000_000
+RETREAT_TO_EAT_RULE_NAME = "low-health-retreat-to-eat"
+RETREAT_TO_EAT_PRIORITY = 1_100_000
+EAT_HEALTH_FRACTION = 0.5
+
+DEFAULTS = {
+    "stale_ms": 2000,
+    "min_action_interval_ms": 0,
+    "max_actions_per_min": 0,
+    "inflight_timeout_ms": 3000,
+}
+
+EXIT_FIRED = 0
+EXIT_NOT_DONE = 2
+EXIT_NOT_READY = 3
+EXIT_NO_RULE = 4
+EXIT_HELD = 5
+EXIT_PLAYER_MESSAGE = 6
+EXIT_SYSTEM_MESSAGE = 7
+EXIT_SESSION_OVER = 8
+
+# Spec rule 21: a sitting is bounded. Defaults in milliseconds; the entrypoint
+# reads the user's own spelling out of the config and hands them down.
+SESSION_LIMIT_MS = 2 * 60 * 60 * 1000
+SESSION_GRACE_MS = 10 * 60 * 1000
+SESSION_MESSAGE_TOP_UP_MS = 20 * 60 * 1000
+PLAN_MAX_CHARS = 400
+PLAN_REASON_MAX_CHARS = 500
+# Spec rule 11c: how stale the objective's progress record may be before the
+# plan doors refuse a new decision, and how much play may pass between
+# deliberate reflections before verdicts start carrying reflection_due.
+PROGRESS_STALE_MS = int(os.environ.get(
+    "BETTY_OPENRSC_PROGRESS_STALE_MS", str(30 * 60 * 1000)))
+REFLECT_EVERY_MS = int(os.environ.get(
+    "BETTY_OPENRSC_REFLECT_EVERY_MS", str(5 * 60 * 1000)))
+
+EMPTY_TABLE = {"v": 1, "defaults": dict(DEFAULTS), "rules": [], "unfinished": []}
+
+
+def state_dir() -> Path:
+    return game_reflex.state_dir()
+
+
+def game_dir() -> Path:
+    return game_reflex.game_dir()
+
+
+def rules_path() -> Path:
+    return game_dir() / "learned-rules.json"
+
+
+def objective_path() -> Path:
+    return game_dir() / "objective"
+
+
+def plan_path() -> Path:
+    return game_dir() / "plan"
+
+
+def activity_path() -> Path:
+    return game_dir() / "activity"
+
+
+def stop_path() -> Path:
+    return game_dir() / "stop-at.json"
+
+
+def progress_path() -> Path:
+    return game_dir() / "objective-progress.json"
+
+
+def progress_history_path() -> Path:
+    return game_dir() / "objective-progress-history.jsonl"
+
+
+def activity_stats_path() -> Path:
+    return game_dir() / "activity-stats.json"
+
+
+def activity_history_path() -> Path:
+    return game_dir() / "activity-history.jsonl"
+
+
+def reflex_history_path() -> Path:
+    return game_dir() / "reflex-history.jsonl"
+
+
+def retreat_request_path() -> Path:
+    return state_dir() / "retreat-request.json"
+
+
+def take_progress_path() -> Path:
+    return state_dir() / "take-in-progress.json"
+
+
+def action_observation_path() -> Path:
+    return state_dir() / "last-action-observation.json"
+
+
+def action_observation_lock_path() -> Path:
+    return state_dir() / "last-action-observation.lock"
+
+
+class action_observation_lock:
+    """Serialize arming with a waiter's compare-and-update or removal."""
+    def __enter__(self):
+        action_observation_lock_path().parent.mkdir(parents=True, exist_ok=True)
+        self.fh = open(action_observation_lock_path(), "a+")
+        fcntl.flock(self.fh.fileno(), fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        fcntl.flock(self.fh.fileno(), fcntl.LOCK_UN)
+        self.fh.close()
+
+
+def foreign_take_in_progress() -> dict | None:
+    try:
+        progress = json.loads(take_progress_path().read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(progress, dict) or progress.get("v") != 1 \
+            or not isinstance(progress.get("pid"), int) \
+            or not isinstance(progress.get("expires"), int) \
+            or progress["expires"] <= now_ms():
+        try:
+            take_progress_path().unlink()
+        except FileNotFoundError:
+            pass
+        return None
+    return progress if progress["pid"] != os.getpid() else None
+
+
+def movement_progress_path() -> Path:
+    return state_dir() / "movement-in-progress.json"
+
+
+def foreign_movement_in_progress() -> dict | None:
+    """A direct hand's committed recovery walk (rule 7f's retrace). The
+    resident runner must not evaluate around it and cancel the leg midway."""
+    try:
+        progress = json.loads(movement_progress_path().read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(progress, dict) or progress.get("v") != 1 \
+            or not isinstance(progress.get("pid"), int) \
+            or not isinstance(progress.get("expires"), int) \
+            or progress["expires"] <= now_ms():
+        try:
+            movement_progress_path().unlink()
+        except FileNotFoundError:
+            pass
+        return None
+    return progress if progress["pid"] != os.getpid() else None
+
+
+def movement_agrees(start_x: int, start_z: int, leg_x: int, leg_z: int,
+                    settled_x: int, settled_z: int) -> bool:
+    """Did the observed settlement move WITH the request? Coordinate-free:
+    a settled displacement with a positive component along the requested
+    displacement agrees; no movement, or movement with no positive component
+    (opposite or purely sideways), is a contradiction — the click was
+    delivered but something else owned the body (spec rule 7f)."""
+    requested = (leg_x - start_x, leg_z - start_z)
+    observed = (settled_x - start_x, settled_z - start_z)
+    if observed == (0, 0) or requested == (0, 0):
+        return requested == observed
+    return requested[0] * observed[0] + requested[1] * observed[1] > 0
+
+
+def load_retreat_request():
+    try:
+        request = json.loads(retreat_request_path().read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(request, dict) or request.get("v") != 3 \
+            or not isinstance(request.get("expires"), int) \
+            or request["expires"] <= now_ms() \
+            or not isinstance(request.get("combat_id"), int) \
+            or request["combat_id"] < 1 \
+            or not isinstance(request.get("distance"), int) \
+            or not 1 <= request["distance"] <= 10 \
+            or not isinstance(request.get("origin_x"), int) \
+            or not isinstance(request.get("origin_z"), int) \
+            or not isinstance(request.get("clearance"), int) \
+            or not 1 <= request["clearance"] <= 30 \
+            or request.get("dx") not in (-1, 0, 1) \
+            or request.get("dz") not in (-1, 0, 1) \
+            or (request.get("dx") == 0 and request.get("dz") == 0):
+        clear_retreat_request()
+        return None
+    return request
+
+
+def clear_retreat_request() -> None:
+    try:
+        retreat_request_path().unlink()
+    except FileNotFoundError:
+        pass
+
+
+def visible_aggressive_npcs(snap: dict) -> list[dict]:
+    """Visible combat-capable NPCs known through the ordinary client.
+
+    The client cache exposes whether an NPC can be attacked, but not the
+    server's private aggression policy.  Treating every attackable visible
+    NPC as a possible hazard is conservative during an explicit retreat and
+    never consults a server definition file.
+    """
+    return [npc for npc in snap.get("npcs") or []
+            if isinstance(npc, dict) and npc.get("attackable") is True
+            and isinstance(npc.get("x"), int) and isinstance(npc.get("z"), int)]
+
+
+def choose_retreat_direction(snap: dict, fallback_x: int, fallback_z: int,
+                             distance: int = RETREAT_CLEARANCE_TILES) -> tuple[int, int]:
+    """Choose one stable outward direction for the entire escape. Scoring the
+    projected clearance tile against every visible aggressive NPC prevents a
+    five-tile dodge away from one member of a pack from running into another."""
+    px, pz = snap.get("x"), snap.get("z")
+    if not isinstance(px, int) or not isinstance(pz, int):
+        return fallback_x, fallback_z
+    hazards = visible_aggressive_npcs(snap)
+    opponent = snap.get("opponent") or {}
+    if not hazards and isinstance(opponent.get("x"), int) \
+            and isinstance(opponent.get("z"), int):
+        hazards = [{"x": opponent["x"], "z": opponent["z"]}]
+    if not hazards:
+        return fallback_x, fallback_z
+    directions = [(dx, dz) for dx in (-1, 0, 1) for dz in (-1, 0, 1)
+                  if dx != 0 or dz != 0]
+
+    def score(direction):
+        dx, dz = direction
+        tx, tz = px + dx * distance, pz + dz * distance
+        distances = [max(abs(tx - npc["x"]), abs(tz - npc["z"]))
+                     for npc in hazards]
+        # Stable tie-breaks: maximize nearest safety, then total separation,
+        # then respect the caller's fallback rather than changing direction.
+        return (min(distances), sum(distances),
+                int(direction == (fallback_x, fallback_z)), dx, dz)
+
+    return max(directions, key=score)
+
+
+def retreat_has_clearance(snap: dict, request: dict) -> bool:
+    if snap.get("in_combat") is not False:
+        return False
+    px, pz = snap.get("x"), snap.get("z")
+    if not isinstance(px, int) or not isinstance(pz, int):
+        return False
+    moved = max(abs(px - request["origin_x"]), abs(pz - request["origin_z"]))
+    if moved < request["clearance"]:
+        return False
+    return all(max(abs(px - npc["x"]), abs(pz - npc["z"]))
+               >= RETREAT_SAFE_NPC_RADIUS
+               for npc in visible_aggressive_npcs(snap))
+
+
+def retreat_clearance_target(snap: dict, request: dict) -> tuple[int, int]:
+    """An absolute target anchored at the combat origin. Repeated runner
+    passes therefore complete one escape instead of walking another leg on
+    every tick."""
+    return (request["origin_x"] + request["dx"] * request["clearance"],
+            request["origin_z"] + request["dz"] * request["clearance"])
+
+
+# --------------------------------------------------------------------------
+# The one-tile combat break (spec rules 4, 5, 7a, 7b): observed combat episode,
+# provocation evidence, and the sidestep compilation the escape selection
+# substitutes for a generic retreat in provoked, non-aggressive fights.
+# --------------------------------------------------------------------------
+def sidestep_pause_path() -> Path:
+    return game_dir() / "sidestep-pause.json"
+
+
+def load_sidestep_pause(objective: str):
+    try:
+        record = json.loads(sidestep_pause_path().read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(record, dict) or record.get("v") != 1:
+        clear_sidestep_pause()
+        return None
+    # Scoped to the objective that provoked the fight: an objective change
+    # re-arms thieving without carrying a stale pause forward.
+    if (record.get("objective") or None) != (objective or None):
+        return None
+    return record
+
+
+def write_sidestep_pause(record: dict) -> None:
+    game_dir().mkdir(parents=True, exist_ok=True)
+    game_reflex.atomic_write(sidestep_pause_path(),
+                             json.dumps(record) + "\n")
+
+
+def clear_sidestep_pause() -> None:
+    try:
+        sidestep_pause_path().unlink()
+    except FileNotFoundError:
+        pass
+
+
+def sidestep_tile_walkable(snap: dict, px: int, pz: int,
+                           tx: int, tz: int) -> bool:
+    """Collision-reachable adjacency from the snapshot's own terrain topology:
+    the candidate is not a fully blocked cell and no barrier stands on the
+    crossing edge. An absent terrain block means no known obstacle - the
+    compiled walk still carries max_path 1, so the client's collision map
+    re-proves the single step at dispatch."""
+    terrain = snap.get("terrain") or {}
+    for cell in terrain.get("blocked_cells") or []:
+        if isinstance(cell, dict) and cell.get("x") == tx and cell.get("z") == tz:
+            return False
+    for barrier in terrain.get("barriers") or []:
+        if not isinstance(barrier, dict):
+            continue
+        a, b = barrier.get("a"), barrier.get("b")
+        if isinstance(a, list) and isinstance(b, list) \
+                and {tuple(a), tuple(b)} == {(px, pz), (tx, tz)}:
+            return False
+    return True
+
+
+def choose_sidestep_tile(snap: dict, prefer_dx: int, prefer_dz: int):
+    """ONE cardinally adjacent collision-reachable tile: farthest from the
+    visible opponent first, ties broken toward the rule's preferred direction,
+    then a fixed north/east/south/west order. Deterministic and snapshot-only.
+    Tiles the bridge refused earlier in this combat episode (annotated as
+    _sidestep_excluded) are skipped, so a refusal picks a new candidate
+    instead of looping on the same doomed dispatch."""
+    px, pz = snap.get("x"), snap.get("z")
+    if not isinstance(px, int) or not isinstance(pz, int):
+        return None
+    excluded = {tuple(tile) for tile in snap.get("_sidestep_excluded") or []
+                if isinstance(tile, (list, tuple)) and len(tile) == 2}
+    cardinals = [(0, 1), (1, 0), (0, -1), (-1, 0)]
+    opponent = snap.get("opponent") or {}
+    ox, oz = opponent.get("x"), opponent.get("z")
+
+    def score(direction):
+        dx, dz = direction
+        tx, tz = px + dx, pz + dz
+        away = max(abs(tx - ox), abs(tz - oz)) \
+            if isinstance(ox, int) and isinstance(oz, int) else 0
+        return (-away, 0 if (dx, dz) == (prefer_dx, prefer_dz) else 1,
+                cardinals.index(direction))
+
+    for dx, dz in sorted(cardinals, key=score):
+        if (px + dx, pz + dz) in excluded:
+            continue
+        if sidestep_tile_walkable(snap, px, pz, px + dx, pz + dz):
+            return px + dx, pz + dz
+    return None
+
+
+def compile_sidestep_walk(snap: dict, prefer_dx: int, prefer_dz: int):
+    """The compiled one-tile break: a single ordinary walk to the chosen
+    adjacent tile, arrive 0 and max_path 1, carrying the recorded pre-retreat
+    origin for rule 7a's exact-displacement postcondition. Never the bridge's
+    retreat action, and nothing here can widen: the action only compiles in
+    combat, and the one accepted step is what ends combat."""
+    px, pz = snap.get("x"), snap.get("z")
+    if not isinstance(px, int) or not isinstance(pz, int):
+        return None
+    target = choose_sidestep_tile(snap, prefer_dx, prefer_dz)
+    if target is None:
+        return None
+    return {"type": "walk", "x": target[0], "z": target[1], "arrive": 0,
+            "max_path": 1, "sidestep": 1, "origin_x": px, "origin_z": pz}
+
+
+def opponent_npc_type(snap: dict):
+    """The type id of the NPC standing where the client says the fighting
+    opponent stands, or None when that cannot be resolved."""
+    opponent = snap.get("opponent") or {}
+    ox, oz = opponent.get("x"), opponent.get("z")
+    if not isinstance(ox, int) or not isinstance(oz, int):
+        return None
+    for npc in snap.get("npcs") or []:
+        if isinstance(npc, dict) and npc.get("x") == ox and npc.get("z") == oz \
+                and isinstance(npc.get("id"), int):
+            return npc["id"]
+    return None
+
+
+def read_direct_action_record():
+    """The direct doors' armed observation, as provocation evidence: a
+    non-combat NPC action a deliberate hand dispatched outside the runner."""
+    try:
+        observation = json.loads(action_observation_path().read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(observation, dict) \
+            or observation.get("type") not in PROVOKED_ACTION_TYPES:
+        return None
+    fields = dict(field.split("=", 1) for field in observation.get("fields", [])
+                  if isinstance(field, str) and "=" in field)
+    try:
+        npc = int(fields.get("npc", ""))
+    except ValueError:
+        npc = None
+    baseline = observation.get("baseline") or {}
+    if baseline.get("in_combat") is not False:
+        return None
+    return {"id": observation.get("id"), "type": observation["type"],
+            "npc": npc, "awaiting_combat": True}
+
+
+def combat_provocation(est: dict, snap: dict):
+    """Classify a new combat from causal action identity, never elapsed time."""
+    opponent_npc = opponent_npc_type(snap)
+    candidates = [(est.get("last_npc_action"), False),
+                  (read_direct_action_record(), True)]
+    for recent, direct in candidates:
+        if not isinstance(recent, dict) or recent.get("awaiting_combat") is not True:
+            continue
+        if direct and recent.get("id") == est.get("last_direct_provocation_id"):
+            continue
+        if recent.get("type") not in PROVOKED_ACTION_TYPES:
+            continue
+        if opponent_npc is None or recent.get("npc") is None \
+                or recent["npc"] == opponent_npc:
+            return True, (opponent_npc if opponent_npc is not None
+                          else recent.get("npc")), (recent.get("id") if direct else None)
+    return False, opponent_npc, None
+
+
+def track_combat_state(snap: dict, est: dict, now: int) -> None:
+    """Assign each observed combat transition a durable causal episode id."""
+    if snap.get("logged_in") is not True or snap.get("in_combat") is not True:
+        if isinstance(est.get("combat_id"), int):
+            est["last_combat"] = {
+                "id": est["combat_id"],
+                "provoked": bool(est.get("combat_provoked")),
+                "opponent_npc": est.get("combat_opponent_npc"),
+                "origin": est.get("combat_origin"),
+                "sidestep": est.get("combat_sidestep"),
+                "ended_tick": snap.get("tick"),
+            }
+        est["combat_id"] = None
+        est["combat_origin"] = None
+        est["combat_sidestep"] = None
+        est["combat_provoked"] = False
+        est["combat_opponent_npc"] = None
+        return
+    if not isinstance(est.get("combat_id"), int):
+        provoked, opponent_npc, direct_id = combat_provocation(est, snap)
+        est["combat_sequence"] = int(est.get("combat_sequence") or 0) + 1
+        est["combat_id"] = est["combat_sequence"]
+        est["combat_origin"] = {"x": snap.get("x"), "z": snap.get("z")}
+        est["combat_sidestep"] = None
+        est["combat_provoked"] = provoked
+        est["combat_opponent_npc"] = opponent_npc
+        est["last_npc_action"] = None
+        if isinstance(direct_id, int):
+            est["last_direct_provocation_id"] = direct_id
+
+
+def annotate_combat_state(snap: dict, est: dict, now: int) -> None:
+    """Copy the engine-observed combat facts onto the snapshot, where the
+    trigger and compile vocabulary (and replay cases) can read them."""
+    if isinstance(est.get("combat_id"), int) and snap.get("in_combat") is True:
+        snap["_combat_provoked"] = bool(est.get("combat_provoked"))
+        snap["_combat_id"] = est["combat_id"]
+        if est.get("combat_opponent_npc") is not None:
+            snap["_combat_opponent_npc"] = est["combat_opponent_npc"]
+        attempt = est.get("combat_sidestep")
+        if isinstance(attempt, dict) and attempt.get("refused_tiles"):
+            snap["_sidestep_excluded"] = attempt["refused_tiles"]
+
+
+def track_stationary_state(snap: dict, est: dict, now: int) -> None:
+    """Measure how long the player's own tile has been unchanged.
+
+    The server owns this clock and does not publish it: GameStateUpdater's
+    updateTimeouts warns once curTime - getLastMoved() reaches IDLE_TIMER
+    (300000ms by default), cancels an in-progress sleep at that same moment,
+    and force-unregisters with 'Movement time-out' sixty seconds later unless
+    hasMoved() has become true.  The bridge exposes no lastMoved, so the engine
+    observes the only faithful proxy it can: any change of the player's own
+    tile restarts the clock, and so does a logged-out or coordinate-less gap,
+    because a fresh login starts the server's clock over too.
+    """
+    x, z = snap.get("x"), snap.get("z")
+    if snap.get("logged_in") is not True \
+            or isinstance(x, bool) or isinstance(z, bool) \
+            or not isinstance(x, int) or not isinstance(z, int):
+        est["stationary_tile"] = None
+        est["stationary_since"] = None
+        return
+    tile = [x, z]
+    if est.get("stationary_tile") != tile \
+            or isinstance(est.get("stationary_since"), bool) \
+            or not isinstance(est.get("stationary_since"), int):
+        est["stationary_tile"] = tile
+        est["stationary_since"] = now
+
+
+def annotate_stationary_state(snap: dict, est: dict, now: int) -> None:
+    """Copy the observed stationary duration onto the snapshot, where the
+    trigger vocabulary (and replay cases) can read it."""
+    since = est.get("stationary_since")
+    if isinstance(since, int) and not isinstance(since, bool) \
+            and est.get("stationary_tile") == [snap.get("x"), snap.get("z")]:
+        snap["_stationary_ms"] = max(0, now - since)
+
+
+def route_path() -> Path:
+    return game_dir() / "route.json"
+
+
+def movement_trail_path() -> Path:
+    return game_dir() / "movement-trail.json"
+
+
+def backtrack_path() -> Path:
+    return game_dir() / "backtrack.json"
+
+
+def follow_path() -> Path:
+    return game_dir() / "follow.json"
+
+
+def follow_lock_path() -> Path:
+    return game_dir() / "follow.lock"
+
+
+class follow_state_lock:
+    """Serialize direct follow changes with the resident runner's settlement."""
+    def __enter__(self):
+        follow_lock_path().parent.mkdir(parents=True, exist_ok=True)
+        self.fh = open(follow_lock_path(), "a+")
+        fcntl.flock(self.fh.fileno(), fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        fcntl.flock(self.fh.fileno(), fcntl.LOCK_UN)
+        self.fh.close()
+
+
+def navigation_atlas_path() -> Path:
+    return game_dir() / "navigation-atlas.json"
+
+
+def navigation_atlas_lock_path() -> Path:
+    return game_dir() / "navigation-atlas.lock"
+
+
+def session_path() -> Path:
+    return game_dir() / "session.json"
+
+
+def session_lock_path() -> Path:
+    return game_dir() / "session.lock"
+
+
+class session_state_lock:
+    """Serialize session opening, ending, deadline claims, and chat top-ups."""
+    def __enter__(self):
+        session_lock_path().parent.mkdir(parents=True, exist_ok=True)
+        self.fh = open(session_lock_path(), "a+")
+        fcntl.flock(self.fh.fileno(), fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        fcntl.flock(self.fh.fileno(), fcntl.LOCK_UN)
+        self.fh.close()
+
+
+def read_session() -> dict:
+    """The session record, ended or not, or {} when there is none (spec rule
+    21). A file that cannot be read is no session: the clock never invents a
+    deadline out of damage."""
+    try:
+        body = json.loads(session_path().read_text())
+    except (OSError, ValueError):
+        return {}
+    if not isinstance(body, dict) or not body.get("started"):
+        return {}
+    return body
+
+
+def session_state(now: int = None) -> dict:
+    """Where the sitting stands:
+
+    - `none`    — no record at all. Nothing is suppressed: the limit bounds a
+                  sitting that was opened, not the act of playing.
+    - `open`    — inside its limit.
+    - `over`    — past the limit, inside the grace. Wind-down time.
+    - `expired` — past the grace too.
+    - `ended`   — closed, by her hand or the timer's.
+
+    `ended` SUPPRESSES exactly as `over` does, and that is the point: a closed
+    sitting means play has stopped, so a resident runner that outlived the stop
+    (its supervisor can re-raise it) finds the table quiet instead of happily
+    resuming unattended play. Only opening a new sitting lifts it.
+    """
+    s = read_session()
+    if not s:
+        return {"phase": "none"}
+    now = now_ms() if now is None else now
+    limit = int(s.get("limit_ms") or SESSION_LIMIT_MS)
+    grace = int(s.get("grace_ms") or SESSION_GRACE_MS)
+    # A closed sitting is historical state. Its elapsed counter must stop at
+    # the close rather than continuing to grow every time status is read.
+    clock_now = min(now, int(s["ended"])) if s.get("ended") else now
+    elapsed = clock_now - int(s["started"])
+    deadline = int(s["started"]) + limit
+    hard_deadline = deadline + grace
+    out = {"phase": "open", "started": int(s["started"]), "elapsed_ms": elapsed,
+           "limit_ms": limit, "grace_ms": grace,
+           "deadline_ms": deadline, "hard_deadline_ms": hard_deadline,
+           "remaining_ms": max(0, deadline - now),
+           "grace_ms_left": max(0, hard_deadline - now)}
+    if s.get("ended"):
+        out["phase"] = "ended"
+        out["remaining_ms"] = 0
+        out["grace_ms_left"] = 0
+    elif elapsed >= limit + grace:
+        out["phase"] = "expired"
+    elif elapsed >= limit:
+        out["phase"] = "over"
+    return out
+
+
+def tests_path() -> Path:
+    return game_dir() / "learned-rule-tests.json"
+
+
+def queue_path() -> Path:
+    return game_dir() / "outcome-queue.jsonl"
+
+
+def runner_path() -> Path:
+    return state_dir() / "player-runner.json"
+
+
+def player_lock_path() -> Path:
+    return state_dir() / "player-engine.lock"
+
+
+def die(msg: str) -> None:
+    sys.exit(f"game-player: {msg}")
+
+
+def now_ms() -> int:
+    return int(time.time() * 1000)
+
+
+def clock_hms(ms: int) -> str:
+    """The wall-clock time of a stamp, for a report a mind reads."""
+    return time.strftime("%H:%M:%S", time.localtime((ms or 0) / 1000.0))
+
+
+def human_age(ms: int) -> str:
+    """How long ago, said the way a person says it: 12s, 4m11s, 1h03m."""
+    seconds = max(0, int(ms or 0) // 1000)
+    if seconds < 60:
+        return f"{seconds}s"
+    if seconds < 3600:
+        return f"{seconds // 60}m{seconds % 60:02d}s"
+    return f"{seconds // 3600}h{(seconds % 3600) // 60:02d}m"
+
+
+def memory_program() -> Path:
+    """The same durable store door used by betty-openrsc.
+
+    Tests and alternate installs may replace it explicitly; ordinary play
+    resolves the sibling memory.py from this installed DeskCrab tree.
+    """
+    return Path(os.environ.get("BETTY_OPENRSC_MEMORY")
+                or os.environ.get("DESKCRAB_PLAYER_MEMORY")
+                or Path(__file__).with_name("memory.py"))
+
+
+def memory_environment() -> dict:
+    env = os.environ.copy()
+    # Keep hermetic game-player roots hermetic. In the live topology the game
+    # directory is .../deskcrab/game, so this is the established shared store.
+    env.setdefault("DESKCRAB_MEMORY_DIR", str(game_dir().parent / "memory"))
+    return env
+
+
+def recall_activity_memories(activity: str, intended_work: str = "") -> str:
+    """Retrieve preparation/transition lessons at the moment they matter."""
+    program = memory_program()
+    if not program.is_file() or not os.access(program, os.X_OK):
+        return "Memory recall unavailable: the configured memory reader is missing."
+    objective = read_objective() or "none"
+    query = (
+        f"OpenRSC RuneScape decision before choosing activity {activity or 'not yet selected'}. "
+        f"Current objective: {objective}. Current method: {read_plan() or 'none'}. "
+        f"Intended work: {intended_work or activity}. "
+        "Which prior user corrections and remembered lessons apply to this decision? "
+        "What equipment, supplies, destination, "
+        "route, safety checks, unfinished commitments, prior mistakes, and useful "
+        "habits should I apply before beginning?"
+    )
+    argv = [str(program), "recall-block", "--query", query,
+            "--scope", "OpenRSC", "--scope", "RuneScape"]
+    if objective != "none":
+        argv += ["--scope", objective]
+    argv += ["--notes", "8", "--directives", "4", "--episodes", "2",
+             "--max-chars", "5000"]
+    try:
+        result = subprocess.run(
+            argv, text=True, capture_output=True, check=False,
+            timeout=float(os.environ.get("BETTY_OPENRSC_ACTIVITY_RECALL_TIMEOUT", "8")),
+            env=memory_environment())
+    except (OSError, subprocess.TimeoutExpired):
+        return "Memory recall unavailable: retrieval failed or timed out."
+    if result.returncode != 0:
+        return "Memory recall unavailable: the memory reader failed."
+    return result.stdout.strip() or "No relevant memories returned; this does not prove none exist."
+
+
+def load_route():
+    try:
+        route = json.loads(route_path().read_text())
+    except FileNotFoundError:
+        return None
+    except (OSError, json.JSONDecodeError):
+        return {"status": "invalid"}
+    if not isinstance(route, dict) or route.get("v") != 1 \
+            or not isinstance(route.get("x"), int) \
+            or not isinstance(route.get("z"), int) \
+            or not isinstance(route.get("arrive"), int) \
+            or not 0 <= route["arrive"] <= 10 \
+            or not isinstance(route.get("objective"), str) \
+            or route.get("status") not in ("active", "blocked"):
+        return {"status": "invalid"}
+    visited = route.get("visited", [])
+    if not isinstance(visited, list) or len(visited) > NAVIGATION_VISITED_MAX \
+            or any(not isinstance(point, list) or len(point) != 2
+                   or not all(isinstance(value, int) for value in point)
+                   for point in visited):
+        return {"status": "invalid"}
+    nonclosing = route.get("nonclosing_legs", 0)
+    if not isinstance(nonclosing, int) or nonclosing < 0:
+        return {"status": "invalid"}
+    waypoints = route.get("waypoints", [])
+    if not isinstance(waypoints, list) or len(waypoints) > 512 \
+            or any(not isinstance(point, list) or len(point) != 2
+                   or not all(isinstance(value, int) for value in point)
+                   for point in waypoints):
+        return {"status": "invalid"}
+    planned_from = route.get("planned_from")
+    if planned_from is not None \
+            and (not isinstance(planned_from, list) or len(planned_from) != 2
+                 or not all(isinstance(value, int) for value in planned_from)):
+        return {"status": "invalid"}
+    portal = route.get("next_portal")
+    if portal is not None and (not isinstance(portal, dict)
+            or portal.get("kind") not in ("object", "bound")
+            or not all(isinstance(portal.get(key), int)
+                       for key in ("id", "x", "z", "dir"))
+            or not isinstance(portal.get("from"), list)
+            or len(portal["from"]) != 2
+            or not all(isinstance(value, int) for value in portal["from"])):
+        return {"status": "invalid"}
+    return route
+
+
+def save_route(route: dict) -> None:
+    game_dir().mkdir(parents=True, exist_ok=True)
+    game_reflex.atomic_write(route_path(), json.dumps(route, indent=2) + "\n")
+
+
+def clear_route() -> None:
+    try:
+        route_path().unlink()
+    except FileNotFoundError:
+        pass
+
+
+def _normalise_landmark_text(value) -> str:
+    return " ".join(str(value or "").casefold().split())
+
+
+def load_navigation_atlas() -> dict:
+    try:
+        atlas = json.loads(navigation_atlas_path().read_text())
+    except (OSError, json.JSONDecodeError):
+        return {"v": 1, "tiles": {}, "barriers": {}, "entities": {}, "links": {}}
+    if not isinstance(atlas, dict) or atlas.get("v") != 1:
+        return {"v": 1, "tiles": {}, "barriers": {}, "entities": {}, "links": {}}
+    for field in ("tiles", "barriers", "entities", "links"):
+        if not isinstance(atlas.get(field), dict):
+            atlas[field] = {}
+    return atlas
+
+
+def _atlas_refresh(entry: dict, observed_ms: int) -> bool:
+    last_seen = entry.get("last_seen")
+    return not isinstance(last_seen, int) \
+        or observed_ms - last_seen >= NAVIGATION_ATLAS_REFRESH_MS
+
+
+def _atlas_site_key(x: int, z: int, direction) -> str:
+    return f"{x},{z},{direction if isinstance(direction, int) else '-'}"
+
+
+def record_navigation_observation(snap: dict) -> None:
+    """Persist only world facts delivered to this ordinary client.
+
+    The local terrain square comes from the client's collision map; entity
+    names and commands come from the client's cache; locations come from
+    normal packets.  Repeated frames are coalesced to one refresh per minute
+    so the resident observer does not rewrite the atlas every tick.
+    """
+    if snap.get("logged_in") is not True:
+        return
+    px, pz = snap.get("x"), snap.get("z")
+    if not isinstance(px, int) or not isinstance(pz, int):
+        return
+    observed_ms = snap.get("ts") if isinstance(snap.get("ts"), int) else now_ms()
+    game_dir().mkdir(parents=True, exist_ok=True)
+    try:
+        with open(navigation_atlas_lock_path(), "a+") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            atlas = load_navigation_atlas()
+            changed = False
+
+            terrain = snap.get("terrain")
+            if isinstance(terrain, dict) and isinstance(terrain.get("radius"), int):
+                radius = min(12, max(0, terrain["radius"]))
+                blocked = {
+                    (cell.get("x"), cell.get("z")): cell
+                    for cell in terrain.get("blocked_cells") or []
+                    if isinstance(cell, dict) and isinstance(cell.get("x"), int)
+                    and isinstance(cell.get("z"), int)
+                }
+                for x in range(px - radius, px + radius + 1):
+                    for z in range(pz - radius, pz + radius + 1):
+                        cell = blocked.get((x, z))
+                        facts = {
+                            "x": x, "z": z, "blocked": cell is not None,
+                            "projectiles_pass": (
+                                cell.get("projectiles_pass") if cell is not None else True),
+                        }
+                        key = f"{x},{z}"
+                        old = atlas["tiles"].get(key)
+                        if not isinstance(old, dict):
+                            atlas["tiles"][key] = {
+                                **facts, "first_seen": observed_ms,
+                                "last_seen": observed_ms, "sightings": 1,
+                            }
+                            changed = True
+                        elif any(old.get(name) != value for name, value in facts.items()) \
+                                or _atlas_refresh(old, observed_ms):
+                            old.update(facts)
+                            old["last_seen"] = observed_ms
+                            old["sightings"] = int(old.get("sightings", 0)) + 1
+                            changed = True
+
+                for barrier in terrain.get("barriers") or []:
+                    if not isinstance(barrier, dict) \
+                            or not isinstance(barrier.get("a"), list) \
+                            or not isinstance(barrier.get("b"), list) \
+                            or len(barrier["a"]) != 2 or len(barrier["b"]) != 2 \
+                            or not all(isinstance(value, int)
+                                       for value in barrier["a"] + barrier["b"]):
+                        continue
+                    a, b = sorted((barrier["a"], barrier["b"]))
+                    key = f"{a[0]},{a[1]}:{b[0]},{b[1]}"
+                    facts = {"a": a, "b": b,
+                             "projectiles_pass": barrier.get("projectiles_pass") is True}
+                    old = atlas["barriers"].get(key)
+                    if not isinstance(old, dict):
+                        atlas["barriers"][key] = {
+                            **facts, "first_seen": observed_ms,
+                            "last_seen": observed_ms, "sightings": 1,
+                        }
+                        changed = True
+                    elif any(old.get(name) != value for name, value in facts.items()) \
+                            or _atlas_refresh(old, observed_ms):
+                        old.update(facts)
+                        old["last_seen"] = observed_ms
+                        old["sightings"] = int(old.get("sightings", 0)) + 1
+                        changed = True
+
+            for kind, collection in (("npc", "npcs"), ("object", "objects"),
+                                     ("bound", "bounds")):
+                for entity in snap.get(collection) or []:
+                    if not isinstance(entity, dict) \
+                            or not isinstance(entity.get("id"), int) \
+                            or not isinstance(entity.get("x"), int) \
+                            or not isinstance(entity.get("z"), int):
+                        continue
+                    entity_key = f"{kind}:{entity['id']}"
+                    stored = atlas["entities"].get(entity_key)
+                    if not isinstance(stored, dict):
+                        stored = {"kind": kind, "id": entity["id"], "sites": {}}
+                        atlas["entities"][entity_key] = stored
+                        changed = True
+                    metadata = {
+                        "name": str(entity.get("name") or "").strip(),
+                        "description": str(entity.get("description") or "").strip(),
+                    }
+                    if kind == "npc":
+                        metadata.update({"attackable": entity.get("attackable") is True,
+                                         "stats": entity.get("stats") or {}})
+                    else:
+                        metadata.update({
+                            "commands": [str(value or "").strip()
+                                         for value in entity.get("commands") or []][:2],
+                        })
+                    if any(stored.get(name) != value for name, value in metadata.items()):
+                        stored.update(metadata)
+                        changed = True
+                    direction = entity.get("dir")
+                    site_key = _atlas_site_key(entity["x"], entity["z"], direction)
+                    sites = stored.setdefault("sites", {})
+                    site_facts = {"x": entity["x"], "z": entity["z"]}
+                    if isinstance(direction, int):
+                        site_facts["dir"] = direction
+                    if kind != "npc":
+                        site_facts.update({
+                            "blocks_movement": entity.get("blocks_movement") is True,
+                            "projectiles_pass": entity.get("projectiles_pass") is True,
+                        })
+                    old = sites.get(site_key)
+                    if not isinstance(old, dict):
+                        sites[site_key] = {
+                            **site_facts, "first_seen": observed_ms,
+                            "last_seen": observed_ms, "sightings": 1,
+                        }
+                        changed = True
+                    elif any(old.get(name) != value for name, value in site_facts.items()) \
+                            or _atlas_refresh(old, observed_ms):
+                        old.update(site_facts)
+                        old["last_seen"] = observed_ms
+                        old["sightings"] = int(old.get("sightings", 0)) + 1
+                        changed = True
+                    limit = (NAVIGATION_ATLAS_NPC_SITES if kind == "npc"
+                             else NAVIGATION_ATLAS_STATIC_SITES)
+                    if len(sites) > limit:
+                        for remove in sorted(
+                                sites, key=lambda key: sites[key].get("last_seen", 0))[
+                                    :len(sites) - limit]:
+                            del sites[remove]
+                            changed = True
+
+            if changed:
+                atlas["updated_ms"] = observed_ms
+                game_reflex.atomic_write(
+                    navigation_atlas_path(), json.dumps(atlas, indent=2) + "\n")
+    except OSError:
+        # Observation must never prevent the next game action.
+        return
+
+
+def learned_navigation_portals(atlas: dict | None = None) -> list[dict]:
+    """Openable blockers learned from ordinary client packets/cache."""
+    portals = []
+    atlas = load_navigation_atlas() if atlas is None else atlas
+    for entity in atlas["entities"].values():
+        if not isinstance(entity, dict) or entity.get("kind") not in ("object", "bound"):
+            continue
+        commands = {_normalise_landmark_text(value)
+                    for value in entity.get("commands") or []}
+        if "open" not in commands or not isinstance(entity.get("id"), int):
+            continue
+        for site in (entity.get("sites") or {}).values():
+            if not isinstance(site, dict) or site.get("blocks_movement") is not True \
+                    or not isinstance(site.get("x"), int) \
+                    or not isinstance(site.get("z"), int):
+                continue
+            portals.append({"kind": entity["kind"], "id": entity["id"],
+                            "x": site["x"], "z": site["z"],
+                            "dir": site.get("dir", 0)})
+    return sorted(portals, key=lambda item: (
+        item["kind"], item["x"], item["z"], item["id"], item["dir"]))
+
+
+def learned_navigation_blockers(start_x: int, start_z: int, target_x: int,
+                                target_z: int, atlas: dict | None = None) -> list[dict]:
+    """Observed collision geometry relevant to one complete-cache query.
+
+    Static definitions supply footprint and collision type in the client; its
+    packets supply the placement direction that the landscape cache lacks.
+    Bound the transfer to a generous corridor around this route so a mature
+    world atlas cannot make every request grow forever.
+    """
+    atlas = load_navigation_atlas() if atlas is None else atlas
+    low_x = min(start_x, target_x) - NAVIGATION_BLOCKER_MARGIN_TILES
+    high_x = max(start_x, target_x) + NAVIGATION_BLOCKER_MARGIN_TILES
+    low_z = min(start_z, target_z) - NAVIGATION_BLOCKER_MARGIN_TILES
+    high_z = max(start_z, target_z) + NAVIGATION_BLOCKER_MARGIN_TILES
+    blockers = []
+    for entity in atlas["entities"].values():
+        if not isinstance(entity, dict) \
+                or entity.get("kind") not in ("object", "bound") \
+                or not isinstance(entity.get("id"), int):
+            continue
+        for site in (entity.get("sites") or {}).values():
+            if not isinstance(site, dict) or site.get("blocks_movement") is not True \
+                    or not isinstance(site.get("x"), int) \
+                    or not isinstance(site.get("z"), int) \
+                    or not low_x <= site["x"] <= high_x \
+                    or not low_z <= site["z"] <= high_z:
+                continue
+            direction = site.get("dir")
+            last_seen = site.get("last_seen")
+            blockers.append({"kind": entity["kind"], "id": entity["id"],
+                             "x": site["x"], "z": site["z"],
+                             "dir": direction if isinstance(direction, int) else 0,
+                             "last_seen": last_seen if isinstance(last_seen, int) else 0})
+    if len(blockers) > NAVIGATION_BLOCKER_MAX:
+        blockers = sorted(blockers, key=lambda item: (
+            -item["last_seen"], item["kind"], item["x"], item["z"],
+            item["id"], item["dir"]))[:NAVIGATION_BLOCKER_MAX]
+    for blocker in blockers:
+        blocker.pop("last_seen", None)
+    return sorted(blockers, key=lambda item: (
+        item["kind"], item["x"], item["z"], item["id"], item["dir"]))
+
+
+def learned_navigation_passages(start_x: int, start_z: int, target_x: int,
+								target_z: int) -> list[tuple[int, int, int, int]]:
+    """Cardinal edges this body has already walked successfully.
+
+    The complete landscape cache contains the map's original closed scenery.
+    A live door or other dynamic boundary may therefore be passable even when
+    the archive says it is a wall. Only consecutive, one-tile observations are
+    strong enough to override that static edge; jumps and trail breaks are not.
+    """
+    low_x = min(start_x, target_x) - NAVIGATION_BLOCKER_MARGIN_TILES
+    high_x = max(start_x, target_x) + NAVIGATION_BLOCKER_MARGIN_TILES
+    low_z = min(start_z, target_z) - NAVIGATION_BLOCKER_MARGIN_TILES
+    high_z = max(start_z, target_z) + NAVIGATION_BLOCKER_MARGIN_TILES
+    passages = set()
+    previous = None
+    for point in load_movement_trail()["points"]:
+        if point.get("break") is True:
+            previous = None
+            continue
+        x, z = point.get("x"), point.get("z")
+        if not isinstance(x, int) or not isinstance(z, int):
+            previous = None
+            continue
+        if previous is not None:
+            px, pz = previous
+            if abs(x - px) + abs(z - pz) == 1 \
+                    and low_x <= x <= high_x and low_z <= z <= high_z \
+                    and low_x <= px <= high_x and low_z <= pz <= high_z:
+                passages.add((px, pz, x, z) if (px, pz) <= (x, z)
+                             else (x, z, px, pz))
+        previous = (x, z)
+    return sorted(passages)
+
+
+def world_landmark_candidates(query: str, kind: str | None = None) -> list[dict]:
+    """Resolve semantic places from this player's own observation atlas."""
+    wanted = _normalise_landmark_text(query)
+    if not wanted:
+        return []
+    candidates = []
+    for entity in load_navigation_atlas()["entities"].values():
+        if not isinstance(entity, dict) or entity.get("kind") not in ("npc", "object", "bound") \
+                or kind not in (None, entity.get("kind")):
+            continue
+        normal_name = _normalise_landmark_text(entity.get("name", ""))
+        normal_description = _normalise_landmark_text(entity.get("description", ""))
+        name_match = wanted in normal_name
+        description_match = wanted in normal_description
+        if not name_match and not description_match:
+            continue
+        # "To Varrock" describes where a sign points, not where the sign is.
+        # An exact query for the whole inscription may deliberately select the
+        # sign itself; a bare place name must not silently become its location.
+        directional_cue = bool(
+            not name_match and wanted != normal_description
+            and ("sign" in normal_name or normal_description.startswith("to ")))
+        sites = [site for site in (entity.get("sites") or {}).values()
+                 if isinstance(site, dict) and isinstance(site.get("x"), int)
+                 and isinstance(site.get("z"), int)]
+        if entity["kind"] == "npc" and sites:
+            sites = [max(sites, key=lambda site: site.get("last_seen", 0))]
+        commands = entity.get("commands") or []
+        for site in sites:
+            candidates.append({
+                "kind": entity["kind"], "id": entity["id"],
+                "name": entity.get("name") or "?",
+                "description": entity.get("description") or "",
+                "command1": commands[0] if commands else "",
+                "command2": commands[1] if len(commands) > 1 else "",
+                "x": site["x"], "z": site["z"], "dir": site.get("dir"),
+                "first_seen": site.get("first_seen"),
+                "last_seen": site.get("last_seen"),
+                "sightings": site.get("sightings", 1),
+                "match": ("directional-cue" if directional_cue else
+                          "name" if name_match else "description"),
+            })
+    return sorted(candidates, key=lambda item: (
+        item["match"] == "directional-cue", item["kind"],
+        item["name"].casefold(), item["x"], item["z"], item["id"]))
+
+
+def observed_arrival_walkability(target_x: int, target_z: int, arrive: int):
+    """Return False only when the entire requested area is observed blocked.
+
+    Missing tiles are unknown rather than open: the complete client-cache planner
+    remains responsible for terrain this character has not observed yet.
+    """
+    tiles = load_navigation_atlas()["tiles"]
+    saw_unknown = False
+    for x in range(target_x - arrive, target_x + arrive + 1):
+        for z in range(target_z - arrive, target_z + arrive + 1):
+            tile = tiles.get(f"{x},{z}")
+            if not isinstance(tile, dict) or not isinstance(tile.get("blocked"), bool):
+                saw_unknown = True
+            elif tile["blocked"] is False:
+                return True
+    return None if saw_unknown else False
+
+
+def refuse_observed_blocked_destination(target_x: int, target_z: int, arrive: int) -> None:
+    if observed_arrival_walkability(target_x, target_z, arrive) is False:
+        die(f"destination area around ({target_x},{target_z}) is already observed "
+            "as entirely movement-blocked; resolve the intended landmark instead "
+            "of routing toward that coordinate")
+
+
+def _navigation_link_key(start_x: int, start_z: int, end_x: int, end_z: int) -> str:
+    return f"{start_x},{start_z}>{end_x},{end_z}"
+
+
+def record_navigation_link(start_x: int, start_z: int, end_x: int, end_z: int,
+                           landmark: dict | None = None) -> None:
+    """Remember one actually completed client-side walk as a directed edge.
+
+    The activity or objective chooses a destination. A verified ordinary walk
+    between two tiles is game-wide movement evidence and can serve any later
+    activity, while every reuse still passes through live collision checks.
+    """
+    if (start_x, start_z) == (end_x, end_z):
+        return
+    if max(abs(end_x - start_x), abs(end_z - start_z)) \
+            > NAVIGATION_LEG_MAX_PATH_TILES:
+        # Larger settlements can contain an unseen portal transition. Never
+        # promote one of those to an ordinary reusable walk edge.
+        return
+    observed_ms = now_ms()
+    game_dir().mkdir(parents=True, exist_ok=True)
+    try:
+        with open(navigation_atlas_lock_path(), "a+") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            atlas = load_navigation_atlas()
+            key = _navigation_link_key(start_x, start_z, end_x, end_z)
+            old = atlas["links"].get(key)
+            successes = int(old.get("successes", 0)) + 1 \
+                if isinstance(old, dict) else 1
+            link = {
+                "from": [start_x, start_z], "to": [end_x, end_z],
+                "distance": max(abs(end_x - start_x), abs(end_z - start_z)),
+                "successes": successes,
+                "first_success": (old.get("first_success", observed_ms)
+                                  if isinstance(old, dict) else observed_ms),
+                "last_success": observed_ms,
+                "disabled": False,
+            }
+            if isinstance(old, dict) and isinstance(old.get("failures"), int):
+                link["failures"] = old["failures"]
+            if isinstance(landmark, dict) and landmark.get("name"):
+                link["destination"] = {
+                    field: landmark[field]
+                    for field in ("kind", "id", "name", "query")
+                    if field in landmark
+                }
+            atlas["links"][key] = link
+            if len(atlas["links"]) > NAVIGATION_ATLAS_LINKS:
+                removable = sorted(
+                    atlas["links"],
+                    key=lambda item: atlas["links"][item].get("last_success", 0))
+                for item in removable[:len(atlas["links"]) - NAVIGATION_ATLAS_LINKS]:
+                    del atlas["links"][item]
+            atlas["updated_ms"] = observed_ms
+            game_reflex.atomic_write(
+                navigation_atlas_path(), json.dumps(atlas, indent=2) + "\n")
+    except OSError:
+        return
+
+
+def disable_navigation_link(key: str) -> None:
+    """Retire a remembered edge that failed its current live collision check."""
+    if not key:
+        return
+    try:
+        with open(navigation_atlas_lock_path(), "a+") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            atlas = load_navigation_atlas()
+            link = atlas["links"].get(key)
+            if not isinstance(link, dict):
+                return
+            link["disabled"] = True
+            link["failures"] = int(link.get("failures", 0)) + 1
+            link["last_failure"] = now_ms()
+            atlas["updated_ms"] = link["last_failure"]
+            game_reflex.atomic_write(
+                navigation_atlas_path(), json.dumps(atlas, indent=2) + "\n")
+    except OSError:
+        return
+
+
+def verified_navigation_path(start_x: int, start_z: int, target_x: int,
+                             target_z: int, arrive: int) -> list[list]:
+    """Return the cheapest chain of actually completed directed walk edges."""
+    start = (start_x, start_z)
+    adjacency = {}
+    for key, link in load_navigation_atlas()["links"].items():
+        if not isinstance(link, dict) or link.get("disabled") is True \
+                or not isinstance(link.get("from"), list) \
+                or not isinstance(link.get("to"), list) \
+                or len(link["from"]) != 2 or len(link["to"]) != 2 \
+                or not all(isinstance(value, int)
+                           for value in link["from"] + link["to"]):
+            continue
+        origin, destination = tuple(link["from"]), tuple(link["to"])
+        distance = int(link.get("distance") or
+                       max(abs(destination[0] - origin[0]),
+                           abs(destination[1] - origin[1])))
+        if distance <= 0 or distance > NAVIGATION_LEG_MAX_PATH_TILES:
+            continue
+        adjacency.setdefault(origin, []).append((distance, destination, key))
+    if start not in adjacency:
+        return []
+    queue = [(0, start)]
+    best = {start: 0}
+    previous = {}
+    goal = None
+    while queue and len(best) <= NAVIGATION_ATLAS_LINKS:
+        cost, node = heapq.heappop(queue)
+        if cost != best.get(node):
+            continue
+        if max(abs(node[0] - target_x), abs(node[1] - target_z)) <= arrive:
+            goal = node
+            break
+        for distance, destination, key in adjacency.get(node, []):
+            new_cost = cost + distance
+            if new_cost >= best.get(destination, sys.maxsize):
+                continue
+            best[destination] = new_cost
+            previous[destination] = (node, key)
+            heapq.heappush(queue, (new_cost, destination))
+    if goal is None or goal == start:
+        return []
+    path = []
+    node = goal
+    while node != start:
+        origin, key = previous[node]
+        path.append([node[0], node[1], key])
+        node = origin
+    path.reverse()
+    return path
+
+
+def load_movement_trail() -> dict:
+    try:
+        trail = json.loads(movement_trail_path().read_text())
+    except (OSError, json.JSONDecodeError):
+        return {"v": 1, "points": []}
+    points = trail.get("points") if isinstance(trail, dict) else None
+    if not isinstance(trail, dict) or trail.get("v") != 1 \
+            or not isinstance(points, list):
+        return {"v": 1, "points": []}
+    valid = []
+    for point in points[-MOVEMENT_TRAIL_MAX_POINTS:]:
+        if not isinstance(point, dict) \
+                or not isinstance(point.get("x"), int) \
+                or not isinstance(point.get("z"), int) \
+                or not isinstance(point.get("ts"), int):
+            continue
+        valid.append({"x": point["x"], "z": point["z"], "ts": point["ts"],
+                      "break": point.get("break") is True})
+    return {"v": 1, "points": valid}
+
+
+def loop_erase_movement_segment(points: list) -> tuple:
+    """Return the useful connected path after removing observed cycles.
+
+    If a tile is visited again, every point after its earlier occurrence is a
+    branch that returned to where it began. Recovery should retrace the
+    remaining route, not replay that already-observed loop in reverse.
+    """
+    path = []
+    positions = {}
+    for point in points:
+        key = (point["x"], point["z"])
+        previous = positions.get(key)
+        if previous is None:
+            positions[key] = len(path)
+            path.append(point)
+            continue
+        abandoned = path[previous + 1:]
+        for old in abandoned:
+            positions.pop((old["x"], old["z"]), None)
+        path = path[:previous + 1]
+    return path, len(points) - len(path)
+
+
+def record_movement_trail(snap: dict, connected: bool = False) -> None:
+    """Remember actual settled/observed tiles, including direct Sol movement.
+
+    Large jumps are portal boundaries, not walkable edges. Backtracking stops
+    at the near side so a ladder, stair, or door can be handled semantically.
+    """
+    if snap.get("logged_in") is not True:
+        return
+    active_backtrack = load_backtrack()
+    if active_backtrack is not None and active_backtrack.get("status") in ("active", "blocked"):
+        return
+    x, z = snap.get("x"), snap.get("z")
+    if not isinstance(x, int) or not isinstance(z, int):
+        return
+    trail = load_movement_trail()
+    points = trail["points"]
+    if points and points[-1]["x"] == x and points[-1]["z"] == z:
+        return
+    is_break = False
+    if points:
+        distance = max(abs(x - points[-1]["x"]), abs(z - points[-1]["z"]))
+        # A verified ACTIONS walk may cover more than twelve tiles while this
+        # runner is synchronously observing its receipt. That is still a
+        # reversible, connected edge. Unexplained jumps are stair/ladder/
+        # portal boundaries and must never be guessed across as a walk.
+        is_break = not connected and distance > MOVEMENT_TRAIL_BREAK_DISTANCE
+    points.append({"x": x, "z": z, "ts": int(snap.get("ts") or now_ms()),
+                   "break": is_break})
+    trail["points"] = points[-MOVEMENT_TRAIL_MAX_POINTS:]
+    game_dir().mkdir(parents=True, exist_ok=True)
+    game_reflex.atomic_write(movement_trail_path(), json.dumps(trail) + "\n")
+
+
+def rewind_movement_trail(x: int, z: int) -> None:
+    """Make a successful reverse step the new end of known history.
+
+    Without truncation, the next ordinary poll would append the recovered
+    position after the abandoned branch and a later backtrack could walk the
+    same wrong turn forward again.
+    """
+    trail = load_movement_trail()
+    points = trail["points"]
+    match = next((index for index in range(len(points) - 1, -1, -1)
+                  if points[index]["x"] == x and points[index]["z"] == z), None)
+    if match is None:
+        return
+    trail["points"] = points[:match + 1]
+    game_reflex.atomic_write(movement_trail_path(), json.dumps(trail) + "\n")
+
+
+def load_backtrack():
+    try:
+        request = json.loads(backtrack_path().read_text())
+    except FileNotFoundError:
+        return None
+    except (OSError, json.JSONDecodeError):
+        return {"status": "invalid"}
+    points = request.get("points") if isinstance(request, dict) else None
+    if not isinstance(request, dict) or request.get("v") != 1 \
+            or not isinstance(request.get("objective"), str) \
+            or request.get("status") not in ("active", "blocked", "diverged") \
+            or not isinstance(request.get("index"), int) \
+            or not isinstance(points, list) or not points:
+        return {"status": "invalid"}
+    if not 0 <= request["index"] <= len(points):
+        return {"status": "invalid"}
+    if any(not isinstance(point, list) or len(point) != 2
+           or not all(isinstance(value, int) for value in point)
+           for point in points):
+        return {"status": "invalid"}
+    return request
+
+
+def save_backtrack(request: dict) -> None:
+    game_dir().mkdir(parents=True, exist_ok=True)
+    game_reflex.atomic_write(backtrack_path(), json.dumps(request, indent=2) + "\n")
+
+
+def clear_backtrack() -> None:
+    try:
+        backtrack_path().unlink()
+    except FileNotFoundError:
+        pass
+
+
+def load_follow():
+    try:
+        request = json.loads(follow_path().read_text())
+    except FileNotFoundError:
+        return None
+    except (OSError, json.JSONDecodeError):
+        return {"status": "invalid"}
+    if not isinstance(request, dict) or request.get("v") != 1 \
+            or not isinstance(request.get("player"), str) \
+            or not request["player"].strip() or "\n" in request["player"] \
+            or not isinstance(request.get("within"), int) \
+            or not 1 <= request["within"] <= 10 \
+            or not isinstance(request.get("objective"), str) \
+            or request.get("status") not in ("active", "blocked", "cancelling"):
+        return {"status": "invalid"}
+    for key in ("last_x", "last_z"):
+        if key in request and not isinstance(request[key], int):
+            return {"status": "invalid"}
+    # The method binding (spec rule 7g) is optional in the schema so that a
+    # pre-binding record still LOADS — prepare_follow cancels it honestly
+    # instead of this validator quietly calling it invalid.
+    for key in ("plan", "activity", "cancel_reason"):
+        if key in request and not isinstance(request[key], str):
+            return {"status": "invalid"}
+    if "rev" in request and (not isinstance(request["rev"], int)
+                              or request["rev"] < 1):
+        return {"status": "invalid"}
+    return request
+
+
+def save_follow(request: dict) -> None:
+    with follow_state_lock():
+        request.setdefault("rev", 1)
+        game_reflex.atomic_write(follow_path(), json.dumps(request, indent=2) + "\n")
+
+
+def clear_follow() -> None:
+    with follow_state_lock():
+        try:
+            follow_path().unlink()
+        except FileNotFoundError:
+            pass
+
+
+def replace_follow_if_current(expected: dict, replacement: dict | None) -> bool:
+    """Compare and mutate under one cross-process lock.
+
+    `set_ts` is the commitment generation and `rev` is its update generation.
+    A route selection, direct clear, target refresh, or newer follow can
+    therefore win while an older action is in flight without that older
+    settlement resurrecting or rewinding itself afterwards.
+    """
+    with follow_state_lock():
+        current = load_follow()
+        if current is None or current.get("status") == "invalid" \
+                or current.get("set_ts") != expected.get("set_ts") \
+                or current.get("status") != expected.get("status") \
+                or current.get("rev") != expected.get("rev"):
+            return False
+        if replacement is None:
+            try:
+                follow_path().unlink()
+            except FileNotFoundError:
+                return False
+        else:
+            replacement["rev"] = int(current.get("rev") or 0) + 1
+            game_reflex.atomic_write(
+                follow_path(), json.dumps(replacement, indent=2) + "\n")
+        return True
+
+
+def goal_invariants_path() -> Path:
+    return game_dir() / "goal-invariants.json"
+
+
+GOAL_REQUIREMENT_KINDS = ("arrive", "entity", "interface", "inventory_has", "message")
+GOAL_INTERFACES = ("bank", "shop")
+GOAL_ENTITY_COLLECTIONS = ("players", "npcs", "objects", "bounds", "ground_items")
+GOAL_ARRIVE_DEFAULT_TOL = 2
+
+
+def load_goal():
+    try:
+        goal = json.loads(goal_invariants_path().read_text())
+    except FileNotFoundError:
+        return None
+    except (OSError, json.JSONDecodeError):
+        return {"status": "invalid"}
+    if not isinstance(goal, dict) or goal.get("v") != 1 \
+            or not isinstance(goal.get("text"), str) or not goal["text"].strip() \
+            or not isinstance(goal.get("requires"), list) or not goal["requires"]:
+        return {"status": "invalid"}
+    return goal
+
+
+def save_goal(goal: dict) -> None:
+    game_dir().mkdir(parents=True, exist_ok=True)
+    game_reflex.atomic_write(goal_invariants_path(),
+                             json.dumps(goal, indent=2) + "\n")
+
+
+def clear_goal(reason: str) -> bool:
+    goal = load_goal()
+    if goal is None:
+        return False
+    try:
+        goal_invariants_path().unlink()
+    except FileNotFoundError:
+        return False
+    flush_events([{"ts": now_ms(), "kind": "goal-cleared", "reason": reason,
+                   "goal": goal.get("text")}])
+    return True
+
+
+def parse_goal_requirement(pair: str) -> dict:
+    """One --require k=v into a validated requirement (spec rule 7h). The
+    vocabulary is closed; anything else is refused loudly, never stored."""
+    if "=" not in pair:
+        die(f"goal requirement '{pair}' is not KIND=VALUE")
+    kind, value = pair.split("=", 1)
+    kind = kind.strip()
+    if kind == "arrive":
+        parts = value.split(",")
+        if len(parts) not in (2, 3):
+            die(f"arrive takes X,Z[,TOL]: '{value}'")
+        try:
+            numbers = [int(part) for part in parts]
+        except ValueError:
+            die(f"arrive coordinates must be integers: '{value}'")
+        tol = numbers[2] if len(numbers) == 3 else GOAL_ARRIVE_DEFAULT_TOL
+        if not 0 <= tol <= 10:
+            die(f"arrive tolerance must be 0..10: {tol}")
+        return {"kind": "arrive", "x": numbers[0], "z": numbers[1], "tol": tol}
+    if kind == "entity":
+        parts = value.split(":")
+        if len(parts) not in (3, 4):
+            die(f"entity takes collection:field:value[:within]: '{value}'")
+        collection, field, wanted = parts[0], parts[1], parts[2]
+        if collection not in GOAL_ENTITY_COLLECTIONS:
+            die(f"entity collection must be one of {GOAL_ENTITY_COLLECTIONS}: '{collection}'")
+        if field not in ("name", "id", "sidx"):
+            die(f"entity field must be name, id or sidx: '{field}'")
+        if not wanted:
+            die("entity value must be non-empty")
+        requirement = {"kind": "entity", "collection": collection,
+                       "field": field, "value": wanted}
+        if field in ("id", "sidx"):
+            try:
+                requirement["value"] = int(wanted)
+            except ValueError:
+                die(f"entity {field} must be an integer: '{wanted}'")
+        if len(parts) == 4:
+            try:
+                within = int(parts[3])
+            except ValueError:
+                die(f"entity within must be an integer: '{parts[3]}'")
+            if not 1 <= within <= 50:
+                die(f"entity within must be 1..50: {within}")
+            requirement["within"] = within
+        return requirement
+    if kind == "interface":
+        if value not in GOAL_INTERFACES:
+            die(f"interface must be one of {GOAL_INTERFACES}: '{value}'")
+        return {"kind": "interface", "interface": value}
+    if kind == "inventory_has":
+        try:
+            return {"kind": "inventory_has", "item": int(value)}
+        except ValueError:
+            die(f"inventory_has takes an item id: '{value}'")
+    if kind == "message":
+        if not value.strip() or "\n" in value:
+            die("message takes a non-empty single-line fragment")
+        return {"kind": "message", "text": value}
+    die(f"unknown goal requirement kind '{kind}' "
+        f"(the vocabulary is {GOAL_REQUIREMENT_KINDS})")
+
+
+def goal_requirement_met(requirement: dict, snap: dict) -> bool:
+    """Answerable from the snapshot alone, fail-safe like rule 4's triggers:
+    a field the snapshot does not carry makes the requirement false."""
+    kind = requirement.get("kind")
+    px, pz = snap.get("x"), snap.get("z")
+    if kind == "arrive":
+        return isinstance(px, int) and isinstance(pz, int) \
+            and max(abs(px - requirement["x"]),
+                    abs(pz - requirement["z"])) <= requirement["tol"]
+    if kind == "entity":
+        matches = matching_state_entities(snap, requirement)
+        within = requirement.get("within")
+        if within is None:
+            return bool(matches)
+        if not isinstance(px, int) or not isinstance(pz, int):
+            return False
+        return any(max(abs(entity["x"] - px), abs(entity["z"] - pz)) <= within
+                   for entity in matches)
+    if kind == "interface":
+        return snap.get(f"{requirement['interface']}_open") is True
+    if kind == "inventory_has":
+        return inventory_quantity(snap, requirement["item"]) > 0
+    if kind == "message":
+        wanted = requirement["text"].casefold()
+        return any(wanted in str(message.get("text", "")).casefold()
+                   for message in snap.get("messages") or []
+                   if isinstance(message, dict))
+    return False
+
+
+def describe_goal_requirement(requirement: dict) -> str:
+    kind = requirement.get("kind")
+    if kind == "arrive":
+        return f"arrive=({requirement['x']},{requirement['z']})±{requirement['tol']}"
+    if kind == "entity":
+        within = requirement.get("within")
+        suffix = f":within{within}" if within is not None else ""
+        return (f"entity={requirement['collection']}:{requirement['field']}:"
+                f"{requirement['value']}{suffix}")
+    if kind == "interface":
+        return f"interface={requirement['interface']}"
+    if kind == "inventory_has":
+        return f"inventory_has={requirement['item']}"
+    if kind == "message":
+        return f"message={requirement['text']}"
+    return json.dumps(requirement, separators=(",", ":"))
+
+
+def evaluate_goal(goal: dict, snap: dict) -> dict:
+    """All requirements against one snapshot. The shared-resource distinction
+    (spec rule 7h): an open interface plus an unmet place/target requirement is
+    the WRONG copy of a universal resource, never destination success."""
+    met, unmet = [], []
+    for requirement in goal["requires"]:
+        (met if goal_requirement_met(requirement, snap) else unmet) \
+            .append(requirement)
+    shared_resource = any(item.get("kind") == "interface" for item in met) \
+        and any(item.get("kind") in ("arrive", "entity") for item in unmet)
+    return {"met": met, "unmet": unmet, "all_met": not unmet,
+            "shared_resource": shared_resource}
+
+
+def state_entity_matches(entity: dict, field: str, value) -> bool:
+    actual = entity.get(field)
+    if isinstance(value, str):
+        return isinstance(actual, str) and actual.casefold() == value.casefold()
+    return actual == value
+
+
+def matching_state_entities(snap: dict, selector: dict) -> list[dict]:
+    collection = snap.get(selector["collection"]) or []
+    return [entity for entity in collection
+            if isinstance(entity, dict)
+            and state_entity_matches(entity, selector["field"], selector["value"])
+            and isinstance(entity.get("x"), int) and isinstance(entity.get("z"), int)]
+
+
+def nearest_state_entity(snap: dict, selector: dict):
+    px, pz = snap.get("x"), snap.get("z")
+    if not isinstance(px, int) or not isinstance(pz, int):
+        return None
+    candidates = matching_state_entities(snap, selector)
+    if not candidates:
+        return None
+
+    def candidate_key(entity):
+        path = entity.get("path_distance")
+        if isinstance(path, int) and path >= 0:
+            return (0, path, entity.get("sidx", 0), entity["x"], entity["z"])
+        return (1, max(abs(entity["x"] - px), abs(entity["z"] - pz)),
+                abs(entity["x"] - px) + abs(entity["z"] - pz),
+                entity.get("sidx", 0))
+
+    return min(candidates, key=candidate_key)
+
+
+def prepare_follow(snap: dict, objective: str, activity: str):
+    request = load_follow()
+    if request is None or request.get("status") == "invalid":
+        return request, None
+    if request.get("status") == "cancelling":
+        # Already ending; step_once owns the stop's postcondition. Nothing
+        # here may reacquire the target or write the record back to active.
+        return request, None
+    # Spec rule 7g: the follow binds the method that chose it — objective,
+    # plan, and activity — and ends when any of them changes. A record
+    # without the binding predates the rule and cancels on first sight.
+    changed = None
+    for name, recorded, current in (
+            ("objective", request.get("objective"), objective),
+            ("plan", request.get("plan"), read_plan()),
+            ("activity", request.get("activity"), activity)):
+        if not isinstance(recorded, str):
+            changed = (name, "method-binding-missing", recorded, current)
+            break
+        if recorded != current:
+            changed = (name, f"{name}-changed", recorded, current)
+            break
+    if changed is not None:
+        name, reason, recorded, current = changed
+        events = [{"ts": now_ms(), "kind": "follow-cancelled",
+                   "reason": reason, "binding": name,
+                   "player": request["player"],
+                   "from": recorded, "to": current}]
+        if snap.get("logged_in") is True and snap.get("walking") is True:
+            # The native follow or its last walk still owns the body. Keep
+            # the record as a cancelling stub so every pass retries the stop
+            # and nothing — including a racing in-flight leg — refires it.
+            previous = request
+            request = dict(request)
+            request.update({"status": "cancelling", "cancel_reason": reason,
+                            "cancel_ts": now_ms()})
+            if not replace_follow_if_current(previous, request):
+                return load_follow(), None
+            flush_events(events)
+            return request, None
+        if not replace_follow_if_current(request, None):
+            return load_follow(), None
+        events.append({"ts": now_ms(), "kind": "follow-stopped",
+                       "player": request["player"], "reason": reason,
+                       "walking": False,
+                       "x": snap.get("x"), "z": snap.get("z")})
+        flush_events(events)
+        return None, None
+    selector = {"collection": "players", "field": "name", "value": request["player"]}
+    target = nearest_state_entity(snap, selector)
+    if target is not None:
+        previous = dict(request)
+        target_changed = (request.get("last_x"), request.get("last_z")) \
+            != (target["x"], target["z"])
+        request.update({"last_x": target["x"], "last_z": target["z"],
+                        "last_sidx": target.get("sidx"), "last_seen_ts": now_ms()})
+        if target_changed and isinstance(snap.get("x"), int) \
+                and isinstance(snap.get("z"), int):
+            request = {key: value for key, value in request.items()
+                       if key not in ("waypoints", "next_portal")
+                       and not key.startswith("planner_")}
+            request.update({
+                "visited": [[snap["x"], snap["z"]]],
+                "best_distance_sq": navigation_distance_sq(
+                    snap["x"], snap["z"], target["x"], target["z"]),
+                "nonclosing_legs": 0})
+        if request.get("status") == "blocked" and target_changed:
+            request = {key: value for key, value in request.items()
+                       if not key.startswith("blocked_")}
+            request["status"] = "active"
+        if not replace_follow_if_current(previous, request):
+            return load_follow(), target
+    elif request.get("status") == "blocked" \
+            and route_obstacle_signature(snap) != request.get("blocked_signature"):
+        previous = request
+        request = {key: value for key, value in request.items()
+                   if not key.startswith("blocked_")}
+        request["status"] = "active"
+        if not replace_follow_if_current(previous, request):
+            return load_follow(), target
+    return request, target
+
+
+def prepare_backtrack(snap: dict, objective: str):
+    request = load_backtrack()
+    if request is None or request.get("status") == "invalid":
+        return request
+    if request["objective"] != objective:
+        clear_backtrack()
+        flush_events([{"ts": now_ms(), "kind": "backtrack-cancelled",
+                       "reason": "objective-changed", "from": request["objective"],
+                       "to": objective}])
+        return None
+    x, z = snap.get("x"), snap.get("z")
+    changed = False
+    while request["index"] < len(request["points"]) \
+            and request["points"][request["index"]] == [x, z]:
+        rewind_movement_trail(x, z)
+        request["index"] += 1
+        request["status"] = "active"
+        changed = True
+    if request["index"] >= len(request["points"]):
+        clear_backtrack()
+        flush_events([{"ts": now_ms(), "kind": "backtrack-complete",
+                       "x": x, "z": z, "steps": len(request["points"])}])
+        return None
+    if changed:
+        save_backtrack(request)
+    return request
+
+
+def route_distance(x: int, z: int, route: dict) -> int:
+    return max(abs(x - route["x"]), abs(z - route["z"]))
+
+
+def navigation_distance_sq(x: int, z: int, target_x: int, target_z: int) -> int:
+    """Directional progress measure that cannot hide a huge sideways detour."""
+    return (x - target_x) ** 2 + (z - target_z) ** 2
+
+
+def bounded_navigation_leg(x: int, z: int, target_x: int, target_z: int,
+                           limit: int = NAVIGATION_LEG_MAX_TILES) -> tuple:
+    """Return one human-sized step toward a potentially distant destination.
+
+    The OpenRSC client only owns the currently loaded collision region. Sending
+    the far destination directly makes its edge fallback choose and dispatch a
+    regional endpoint before the runner can verify whether that endpoint still
+    represents the intended direction. Keep every autonomous leg local; an
+    unpathable attempted leg then becomes an explicit evidence-gathering point.
+    """
+    dx, dz = target_x - x, target_z - z
+    distance = max(abs(dx), abs(dz))
+    if distance <= limit:
+        return target_x, target_z
+    scale = limit / float(distance)
+    leg_x = x + int(round(dx * scale))
+    leg_z = z + int(round(dz * scale))
+    if leg_x == x and leg_z == z:
+        # Defensive only: distance > limit guarantees one dominant component,
+        # but never let rounding turn a navigation commitment into an idle tick.
+        leg_x += 1 if dx > 0 else -1 if dx < 0 else 0
+        leg_z += 1 if dz > 0 else -1 if dz < 0 else 0
+    return leg_x, leg_z
+
+
+def client_cache_route_plan(start_x: int, start_z: int, target_x: int,
+                            target_z: int, arrive: int) -> dict:
+    """Ask the running client to plan from its own landscape cache.
+
+    The request/result files are a read-only query door separate from the
+    action slot. The game server is neither contacted nor aware of it.
+    """
+    directory = state_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    request_path = directory / "route-request.json"
+    result_path = directory / "route-result.json"
+    lock_path = directory / "route-request.lock"
+    request_id = now_ms() * 1000 + os.getpid() % 1000
+    try:
+        with open(lock_path, "a+") as lock:
+            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            lines = [f"id={request_id}", f"ts={now_ms()}",
+                     f"start_x={start_x}", f"start_z={start_z}",
+                     f"x={target_x}", f"z={target_z}", f"arrive={arrive}"]
+            atlas = load_navigation_atlas()
+            portals = learned_navigation_portals(atlas)
+            if portals:
+                lines.append("learned_portals=" + ";".join(
+                    f"{portal['kind']},{portal['id']},{portal['x']},"
+                    f"{portal['z']},{portal['dir']}" for portal in portals))
+            blockers = learned_navigation_blockers(
+                start_x, start_z, target_x, target_z, atlas)
+            if blockers:
+                lines.append("learned_blockers=" + ";".join(
+                    f"{blocker['kind']},{blocker['id']},{blocker['x']},"
+                    f"{blocker['z']},{blocker['dir']}" for blocker in blockers))
+            passages = learned_navigation_passages(
+                start_x, start_z, target_x, target_z)
+            if passages:
+                lines.append("learned_passages=" + ";".join(
+                    f"{x},{z},{nx},{nz}" for x, z, nx, nz in passages))
+            game_reflex.atomic_write(request_path, "\n".join(lines) + "\n")
+            deadline = time.monotonic() + CLIENT_ROUTE_TIMEOUT_S
+            response = None
+            while time.monotonic() < deadline:
+                try:
+                    envelope = json.loads(result_path.read_text())
+                    if envelope.get("id") == request_id:
+                        response = envelope.get("plan")
+                        break
+                except (OSError, ValueError, AttributeError):
+                    pass
+                time.sleep(0.02)
+    except OSError as exc:
+        return {"status": "error",
+                "reason": f"client-cache-planner-io:{exc.__class__.__name__}"}
+    if response is None:
+        return {"status": "error", "reason": "client-cache-planner-timeout"}
+    if not isinstance(response, dict) \
+            or response.get("status") not in ("ok", "error") \
+            or response.get("source") != "client-cache":
+        return {"status": "error", "reason": "client-cache-planner-invalid-response"}
+    if response["status"] == "error":
+        reason = response.get("reason")
+        return {"status": "error",
+                "reason": reason if isinstance(reason, str) else "client-cache-planner-error"}
+    waypoints = response.get("waypoints")
+    if not isinstance(waypoints, list) or len(waypoints) > 512 \
+            or any(not isinstance(point, list) or len(point) != 2
+                   or not all(isinstance(value, int) for value in point)
+                   for point in waypoints):
+        return {"status": "error", "reason": "client-cache-planner-invalid-waypoints"}
+    portals = response.get("portals", [])
+    if not isinstance(portals, list) or len(portals) > 64 \
+            or any(not isinstance(portal, dict)
+                   or portal.get("kind") not in ("object", "bound")
+                   or not all(isinstance(portal.get(key), int)
+                              for key in ("id", "x", "z", "dir"))
+                   or not isinstance(portal.get("from"), list)
+                   or len(portal["from"]) != 2
+                   or not all(isinstance(value, int) for value in portal["from"])
+                   for portal in portals):
+        return {"status": "error", "reason": "client-cache-planner-invalid-portals"}
+    return {"status": response["status"], "waypoints": waypoints,
+            "steps": response.get("steps"), "expanded": response.get("expanded"),
+            "remaining_cost": response.get("remaining_cost"), "portals": portals}
+
+
+def _observed_closed_portal(snap: dict, portal: dict) -> bool:
+    collection = "objects" if portal.get("kind") == "object" else "bounds"
+    return any(entity.get("id") == portal.get("id")
+               and entity.get("x") == portal.get("x")
+               and entity.get("z") == portal.get("z")
+               and (collection != "bounds" or entity.get("dir") == portal.get("dir"))
+               and entity.get("blocks_movement") is True
+               for entity in snap.get(collection) or [] if isinstance(entity, dict))
+
+
+def distinct_route_portals(portals: list[dict]) -> list[dict]:
+    """Collapse the same wide door appearing on more than one path edge."""
+    distinct = {}
+    for portal in portals:
+        key = tuple(portal.get(field) for field in ("kind", "id", "x", "z", "dir"))
+        distinct.setdefault(key, portal)
+    return list(distinct.values())
+
+
+def semantic_portal_action(portal: dict) -> dict:
+    """The exact loaded portal named by the client-cache path.
+
+    x/z/dir are internal selector guards. Learned interact rules still accept
+    only an object identity; the route/follow planner must never substitute a
+    different nearby gate with the same definition id.
+    """
+    action = {"type": ("interact-object" if portal["kind"] == "object"
+                       else "interact-bound"),
+              "obj": portal["id"], "cmd": 1,
+              "x": portal["x"], "z": portal["z"]}
+    if portal["kind"] == "bound":
+        action["dir"] = portal["dir"]
+    return action
+
+
+def prepare_follow_navigation(request: dict, target: dict | None,
+                              snap: dict) -> tuple[dict | None, dict | None, str | None]:
+    """Return one client-grounded action toward the current/last-seen player.
+
+    The optional follow method is abandoned on planning or causal failure so
+    it can never mask the binding current plan. It does not own a second route
+    file and it never hands a far remembered tile to the live-region walker.
+    """
+    px, pz = snap.get("x"), snap.get("z")
+    tx = target.get("x") if target is not None else request.get("last_x")
+    tz = target.get("z") if target is not None else request.get("last_z")
+    if not all(isinstance(value, int) for value in (px, pz, tx, tz)):
+        return request, None, None
+    if max(abs(px - tx), abs(pz - tz)) <= request["within"]:
+        return request, None, None
+    plan = client_cache_route_plan(px, pz, tx, tz, request["within"])
+    if plan.get("status") != "ok":
+        reason = str(plan.get("reason") or "client-cache-planner-error")
+        replace_follow_if_current(request, None)
+        flush_events([{"ts": now_ms(), "kind": "follow-abandoned",
+                       "player": request["player"], "reason": reason,
+                       "controller": "self", "next": "current-plan"}])
+        return None, None, reason
+    portals = plan.get("portals") or []
+    next_portal = portals[0] if portals else None
+    updated = {key: value for key, value in request.items()
+               if key not in ("waypoints", "next_portal")
+               and not key.startswith("planner_")}
+    updated.update({"planner": "client-cache",
+                    "planner_ts": now_ms(),
+                    "planner_target_x": tx, "planner_target_z": tz,
+                    "waypoints": plan.get("waypoints") or []})
+    if next_portal is not None:
+        updated["next_portal"] = next_portal
+    if not replace_follow_if_current(request, updated):
+        return load_follow(), None, "commitment-replaced"
+    request = updated
+    if next_portal is not None and next_portal.get("from") == [px, pz] \
+            and _observed_closed_portal(snap, next_portal):
+        return request, semantic_portal_action(next_portal), None
+    waypoints = plan.get("waypoints") or []
+    if not waypoints:
+        replace_follow_if_current(request, None)
+        reason = "client-cache-route-empty"
+        flush_events([{"ts": now_ms(), "kind": "follow-abandoned",
+                       "player": request["player"], "reason": reason,
+                       "controller": "self", "next": "current-plan"}])
+        return None, None, reason
+    leg_x, leg_z = waypoints[0]
+    # Spec rule 7e's final-leg narrowing, against this planner's `within`:
+    # an arrival area the body already occupies would no-op into
+    # refused-no-path at the live pathfinder.
+    leg_arrive = 0
+    if len(waypoints) == 1 \
+            and max(abs(px - leg_x), abs(pz - leg_z)) > request["within"]:
+        leg_arrive = request["within"]
+    return request, {"type": "walk", "x": leg_x, "z": leg_z,
+                     "arrive": leg_arrive,
+                     "route_step": NAVIGATION_ROUTE_STEP_TILES,
+                     "max_path": NAVIGATION_LEG_MAX_PATH_TILES}, None
+
+
+def prepare_client_cache_route(route: dict, snap: dict, plan=None) -> tuple[dict, tuple | None]:
+    """Plan the next local leg without replacing the final destination."""
+    px, pz = snap.get("x"), snap.get("z")
+    if not isinstance(px, int) or not isinstance(pz, int):
+        return route, None
+    if plan is None:
+        plan = client_cache_route_plan(
+            px, pz, route["x"], route["z"], route["arrive"])
+    if plan["status"] == "error":
+        blocked = dict(route)
+        blocked.update({"status": "blocked", "blocked_reason": plan["reason"],
+                        "blocked_ts": now_ms(), "planner": "client-cache"})
+        save_route(blocked)
+        return blocked, None
+    waypoints = plan.get("waypoints") or []
+    portals = plan.get("portals") or []
+    distinct_portals = distinct_route_portals(portals)
+    if len(distinct_portals) > 1 and not route.get("landmark") \
+            and not route.get("portal_authorized_reason"):
+        blocked = {key: value for key, value in route.items()
+                   if key != "next_portal"}
+        blocked.update({"status": "blocked",
+                        "blocked_reason": "raw-route-crosses-multiple-portals",
+                        "blocked_ts": now_ms(), "planner": "client-cache",
+                        "planner_status": plan["status"],
+                        "planned_from": [px, pz], "waypoints": waypoints,
+                        "route_portal_count": len(distinct_portals),
+                        "blocked_signature": route_obstacle_signature(snap)})
+        save_route(blocked)
+        return blocked, None
+    next_portal = portals[0] if portals else None
+    if next_portal is not None and next_portal["from"] == [px, pz] \
+            and _observed_closed_portal(snap, next_portal):
+        planned = {key: value for key, value in route.items()
+                   if key != "next_portal" and not key.startswith("blocked_")}
+        planned.update({"status": "active", "planner": "client-cache",
+                        "planner_status": plan["status"],
+                        "planned_from": [px, pz], "waypoints": waypoints,
+                        "next_portal": next_portal,
+                        "planner_steps": plan.get("steps"),
+                        "planner_expanded": plan.get("expanded"),
+                        "planner_ts": now_ms()})
+        save_route(planned)
+        return planned, None
+    if not waypoints:
+        blocked = dict(route)
+        reason = "client-cache-route-empty"
+        blocked.update({"status": "blocked", "blocked_reason": reason,
+                        "blocked_ts": now_ms(), "planner": "client-cache",
+                        "planner_status": plan["status"], "planned_from": [px, pz],
+                        "waypoints": [],
+                        "blocked_signature": route_obstacle_signature(snap)})
+        save_route(blocked)
+        return blocked, None
+    planned = {key: value for key, value in route.items()
+               if key != "next_portal"}
+    planned.update({"status": "active", "planner": "client-cache",
+                    "planner_status": plan["status"], "planned_from": [px, pz],
+                    "waypoints": waypoints, "planner_steps": plan.get("steps"),
+                    "planner_expanded": plan.get("expanded"),
+                    "planner_ts": now_ms()})
+    if next_portal is not None:
+        planned["next_portal"] = next_portal
+    if plan.get("remaining_cost") is not None:
+        planned["planner_remaining_cost"] = plan["remaining_cost"]
+    save_route(planned)
+    return planned, tuple(waypoints[0])
+
+
+def prepare_navigation_route(route: dict, snap: dict) -> tuple[dict, tuple | None]:
+    """Reuse direct evidence, but compare remembered detours with the live map."""
+    px, pz = snap.get("x"), snap.get("z")
+    if isinstance(px, int) and isinstance(pz, int):
+        path = verified_navigation_path(
+            px, pz, route["x"], route["z"], route["arrive"])
+        if path:
+            previous = [px, pz]
+            distance = 0
+            for point in path:
+                distance += max(abs(point[0] - previous[0]),
+                                abs(point[1] - previous[1]))
+                previous = point
+            if distance > route_distance(px, pz, route):
+                plan = client_cache_route_plan(
+                    px, pz, route["x"], route["z"], route["arrive"])
+                steps = plan.get("steps")
+                if plan.get("status") != "ok" or type(steps) is not int or steps < 0:
+                    if plan.get("status") == "ok":
+                        plan = {"status": "error",
+                                "reason": "client-cache-planner-invalid-cost"}
+                    return prepare_client_cache_route(route, snap, plan)
+                use_cache = steps < distance
+                flush_events([{"ts": now_ms(), "kind": "route-cost-comparison",
+                               "x": px, "z": pz,
+                               "target_x": route["x"], "target_z": route["z"],
+                               "verified_distance_lower_bound": distance,
+                               "client_steps": steps,
+                               "selected": "client-cache" if use_cache else "verified-links"}])
+                if use_cache:
+                    return prepare_client_cache_route(route, snap, plan)
+            planned = {key: value for key, value in route.items()
+                       if key != "next_portal" and not key.startswith("blocked_")}
+            planned.update({
+                "status": "active", "planner": "verified-links",
+                "planned_from": [px, pz],
+                "waypoints": [[point[0], point[1]] for point in path],
+                "graph_link": path[0][2], "planner_ts": now_ms(),
+            })
+            save_route(planned)
+            return planned, (path[0][0], path[0][1])
+    return prepare_client_cache_route(route, snap)
+
+
+def route_obstacle_signature(snap: dict) -> str:
+    """Facts whose change can make a locally blocked route worth retrying."""
+    shape = {
+        # Do not include the body tile. A dispatched route leg can continue
+        # settling for one tile after verification classifies it as blocked;
+        # treating that late step as a new obstacle state immediately retries
+        # the same failed strategy and can walk farther away. A changed local
+        # collision scene may make the route viable; otherwise Sol must choose
+        # a correction and explicitly set a new route.
+        "objects": sorted((o.get("id"), o.get("x"), o.get("z"), o.get("dir"))
+                          for o in snap.get("objects") or [] if isinstance(o, dict)),
+        "bounds": sorted((b.get("id"), b.get("x"), b.get("z"), b.get("dir"))
+                         for b in snap.get("bounds") or [] if isinstance(b, dict)),
+    }
+    return json.dumps(shape, sort_keys=True, separators=(",", ":"))
+
+
+def block_route(route: dict, snap: dict, reason: str) -> None:
+    blocked = {key: value for key, value in route.items()
+               if not key.startswith("detour_")}
+    blocked.update({"status": "blocked", "blocked_reason": reason,
+                    "blocked_signature": route_obstacle_signature(snap),
+                    "blocked_ts": now_ms()})
+    save_route(blocked)
+
+
+# --------------------------------------------------------------------------
+# The rule table (spec rule 3): load, validate, save. Same one-gate shape as
+# the reflex table — nothing unvalidated is written or evaluated.
+# --------------------------------------------------------------------------
+def validate_config(cfg: dict) -> None:
+    def bad(msg):
+        raise ValueError(msg)
+
+    if not isinstance(cfg, dict) or "rules" not in cfg:
+        bad("the learned table must be an object with a 'rules' list")
+    defaults = cfg.get("defaults", {})
+    if not isinstance(defaults, dict):
+        bad("'defaults' must be an object")
+    for key in defaults:
+        if key not in DEFAULTS:
+            bad(f"unknown defaults key '{key}' (known: {', '.join(sorted(DEFAULTS))})")
+        if not isinstance(defaults[key], int) or defaults[key] < 0:
+            bad(f"defaults.{key} must be a non-negative integer")
+    if defaults.get("min_action_interval_ms", 0) != 0:
+        bad("defaults.min_action_interval_ms must be 0: observed action "
+            "completion, not a post-action delay, sequences play")
+    if defaults.get("max_actions_per_min", 0) != 0:
+        bad("defaults.max_actions_per_min must be 0 (unlimited): the action "
+            "slot and observed completion bound execution")
+
+    unfinished = cfg.get("unfinished", [])
+    if not isinstance(unfinished, list):
+        bad("'unfinished' must be a list")
+    for entry in unfinished:
+        if not isinstance(entry, dict) or not entry.get("name") or not entry.get("note"):
+            bad("every unfinished entry needs a name and a note")
+
+    if not isinstance(cfg["rules"], list):
+        bad("'rules' must be a list")
+    seen = set()
+    for rule in cfg["rules"]:
+        if not isinstance(rule, dict) or not rule.get("name"):
+            bad("every rule needs a name")
+        name = rule["name"]
+        if not all(c.islower() or c.isdigit() or c == "-" for c in name):
+            bad(f"rule name '{name}' must be lowercase letters, digits and dashes")
+        if name in seen:
+            bad(f"rule name '{name}' appears twice")
+        seen.add(name)
+        where = f"rule '{name}'"
+        for key in ("enabled",):
+            if not isinstance(rule.get(key), bool):
+                bad(f"{where}: {key} must be true or false")
+        if not isinstance(rule.get("priority"), int):
+            bad(f"{where}: priority must be an integer")
+        if not isinstance(rule.get("cooldown_ms"), int) or rule["cooldown_ms"] < 0:
+            bad(f"{where}: cooldown_ms must be a non-negative integer")
+        if not isinstance(rule.get("hold_ticks"), int) or rule["hold_ticks"] < 1:
+            bad(f"{where}: hold_ticks must be an integer >= 1")
+        if "once_per_objective" in rule and not isinstance(rule["once_per_objective"], bool):
+            bad(f"{where}: once_per_objective must be true or false")
+        if "note" in rule and not isinstance(rule["note"], str):
+            bad(f"{where}: note must be a string")
+        extra = set(rule) - {"name", "enabled", "priority", "cooldown_ms",
+                             "hold_ticks", "once_per_objective", "note",
+                             "trigger", "action"}
+        if extra:
+            bad(f"{where}: unknown key(s) {', '.join(sorted(extra))}")
+
+        trig = rule.get("trigger")
+        if not isinstance(trig, dict) or not trig:
+            bad(f"{where}: trigger must be a non-empty object")
+        for key, val in trig.items():
+            if key not in TRIGGER_KEYS:
+                bad(f"{where}: unknown trigger '{key}' "
+                    f"(known: {', '.join(TRIGGER_KEYS)})")
+            if key in ("objective_is", "activity_is"):
+                if not isinstance(val, str) or not val.strip() or "\n" in val:
+                    bad(f"{where}: trigger.{key} must be a non-empty single line")
+            elif key == "message_contains":
+                if not isinstance(val, str) or not val.strip() or "\n" in val:
+                    bad(f"{where}: trigger.message_contains must be a non-empty single line")
+            elif key == "near_tile":
+                if (not isinstance(val, dict)
+                        or not isinstance(val.get("x"), int)
+                        or not isinstance(val.get("z"), int)
+                        or not isinstance(val.get("radius"), int)
+                        or not 0 <= val["radius"] <= 50
+                        or set(val) != {"x", "z", "radius"}):
+                    bad(f"{where}: trigger.near_tile must be "
+                        "{{\"x\":int,\"z\":int,\"radius\":0..50}}")
+            elif key == "entity_visible":
+                if not isinstance(val, dict) \
+                        or set(val) != {"collection", "field", "value"} \
+                        or val.get("collection") not in ENTITY_COLLECTIONS \
+                        or val.get("field") not in ENTITY_SELECTOR_FIELDS \
+                        or not isinstance(val.get("value"), (str, int)) \
+                        or isinstance(val.get("value"), bool) \
+                        or isinstance(val.get("value"), str) and not val["value"].strip():
+                    bad(f"{where}: trigger.entity_visible must be "
+                        "{\"collection\":players|npcs|objects|bounds|ground_items,"
+                        "\"field\":name|id|sidx,\"value\":string|int}")
+            elif key in ("npc_visible", "object_visible", "bound_visible",
+                         "ground_item_visible", "shop_item_visible", "bank_item_visible",
+                         "inventory_has", "inventory_lacks"):
+                if key == "npc_visible" and isinstance(val, list):
+                    # Spec rule 4: the target set — one behaviour over
+                    # interchangeable target types, never a second rule.
+                    if (not val or len(set(val)) != len(val)
+                            or any(isinstance(v, bool) or not isinstance(v, int)
+                                   or v < 0 for v in val)):
+                        bad(f"{where}: trigger.npc_visible list must hold "
+                            "distinct non-negative type ids")
+                elif not isinstance(val, int) or val < 0:
+                    bad(f"{where}: trigger.{key} must be a non-negative type/item id")
+            elif key in ("inventory_slots_below", "inventory_slots_at_least"):
+                if not isinstance(val, int) or not 0 <= val <= 30:
+                    bad(f"{where}: trigger.{key} must be an integer from 0 to 30")
+            elif key == "fatigue_below":
+                if not isinstance(val, int) or isinstance(val, bool) \
+                        or not 1 <= val <= 101:
+                    bad(f"{where}: trigger.fatigue_below must be an integer from 1 to 101")
+            elif key == "fatigue_at_least":
+                if not isinstance(val, int) or isinstance(val, bool) \
+                        or not 1 <= val <= 100:
+                    bad(f"{where}: trigger.fatigue_at_least must be an integer from 1 to 100")
+            elif key in ("in_combat", "out_of_combat",
+                         "bank_open", "bank_closed",
+                         "standing_on_object", "standing_on_clear_tile"):
+                if val is not True:
+                    bad(f"{where}: trigger.{key} must be true when present")
+            elif key == "opponent_rounds_at_least":
+                if not isinstance(val, int) or isinstance(val, bool) \
+                        or not 1 <= val <= 100:
+                    bad(f"{where}: trigger.opponent_rounds_at_least must be "
+                        "an integer 1..100")
+            elif key == "stationary_ms_at_least":
+                if not isinstance(val, int) or isinstance(val, bool) \
+                        or not 1000 <= val <= 300000:
+                    bad(f"{where}: trigger.stationary_ms_at_least must be "
+                        "an integer 1000..300000 milliseconds, at or below the "
+                        "server's 300000ms idle warning")
+            elif key == "skill_at_least":
+                if (not isinstance(val, dict) or set(val) != {"name", "level"}
+                        or not isinstance(val.get("name"), str)
+                        or not val["name"].strip() or "\n" in val["name"]
+                        or isinstance(val.get("level"), bool)
+                        or not isinstance(val.get("level"), int)
+                        or not 1 <= val["level"] <= 99):
+                    bad(f"{where}: trigger.skill_at_least must be "
+                        "{\"name\":<skill>,\"level\":1..99}")
+        if "inventory_has" in trig and "inventory_lacks" in trig \
+                and trig["inventory_has"] == trig["inventory_lacks"]:
+            bad(f"{where}: inventory_has and inventory_lacks name the same id")
+        if "inventory_slots_below" in trig and "inventory_slots_at_least" in trig \
+                and trig["inventory_slots_at_least"] >= trig["inventory_slots_below"]:
+            bad(f"{where}: inventory slot range can never match")
+        if "fatigue_below" in trig and "fatigue_at_least" in trig \
+                and trig["fatigue_at_least"] >= trig["fatigue_below"]:
+            bad(f"{where}: fatigue range can never match")
+        if "standing_on_object" in trig and "standing_on_clear_tile" in trig:
+            bad(f"{where}: the tile is either occupied or clear, never both")
+        if "bank_open" in trig and "bank_closed" in trig:
+            bad(f"{where}: the bank interface is either open or closed, never both")
+
+        action = rule.get("action")
+        if not isinstance(action, dict) or action.get("type") not in ACTIONS:
+            bad(f"{where}: action.type must be one of {', '.join(ACTIONS)}")
+        atype = action["type"]
+        if rule["cooldown_ms"] != 0:
+            bad(f"{where}: cooldown_ms must be 0: use an observed trigger for "
+                "eligibility and an action verifier deadline for failure")
+        if atype == "talk-npc":
+            if set(action) != {"type", "npc"} or not isinstance(action.get("npc"), int):
+                bad(f"{where}: talk-npc takes exactly npc=<type id>")
+        elif atype == "attack-npc":
+            if "within" in action:
+                bad(f"{where}: REFUSED — a distance cap on attack-npc idles the body "
+                    "in sight of its own target. Distance caps on wanting things are "
+                    "forbidden (spec rule 5's cap doctrine); no learned attack ever "
+                    "takes `within`. If a cap ever seems genuinely necessary, STOP "
+                    "and raise it with the user instead of arming it")
+            npc_param = action.get("npc")
+            # An attack target may be one type id or rule 4's interchangeable
+            # target set. Compilation still emits exactly one chosen type id
+            # and sidx, so no list ever crosses the bridge action slot.
+            npc_ok = (isinstance(npc_param, int)
+                      and not isinstance(npc_param, bool) and npc_param >= 0) \
+                or (isinstance(npc_param, list) and npc_param
+                    and len(set(npc_param)) == len(npc_param)
+                    and all(isinstance(v, int) and not isinstance(v, bool)
+                            and v >= 0 for v in npc_param))
+            ranged = action.get("mode") == "ranged"
+            expected = {"type", "npc", "mode", "weapon", "ammo"} if ranged else {"type", "npc"}
+            if set(action) != expected or not npc_ok or (ranged and any(
+                    not isinstance(action.get(key), int) or isinstance(action.get(key), bool)
+                    or action[key] < 0 for key in ("weapon", "ammo"))):
+                bad(f"{where}: attack-npc takes npc=<type id or distinct type ids>; "
+                    "ranged mode additionally requires mode=ranged, weapon and ammo item ids")
+        elif atype == "interact-npc":
+            npc_param = action.get("npc")
+            # Spec rule 5: npc may be one type id or rule 4's target set — a
+            # non-empty list of distinct ids resolved to ONE nearest visible
+            # member at fire time.
+            npc_ok = (isinstance(npc_param, int)
+                      and not isinstance(npc_param, bool) and npc_param >= 0) \
+                or (isinstance(npc_param, list) and npc_param
+                    and len(set(npc_param)) == len(npc_param)
+                    and all(isinstance(v, int) and not isinstance(v, bool)
+                            and v >= 0 for v in npc_param))
+            if not set(action) <= {"type", "npc", "cmd", "within"} or not npc_ok:
+                bad(f"{where}: interact-npc takes npc=<type id or list of "
+                    "distinct type ids> and optionally cmd/within")
+            if "cmd" in action and action["cmd"] not in (1, 2):
+                bad(f"{where}: interact-npc cmd must be 1 or 2 (the def's menu commands)")
+            if "within" in action and (not isinstance(action["within"], int)
+                                        or not 0 <= action["within"] <= 10):
+                bad(f"{where}: interact-npc within must be an integer 0..10")
+        elif atype == "use-item-npc":
+            if not set(action) <= {"type", "item", "npc", "within"} \
+                    or not isinstance(action.get("item"), int) or action["item"] < 0 \
+                    or not isinstance(action.get("npc"), int) or action["npc"] < 0:
+                bad(f"{where}: use-item-npc takes item=<item id>, npc=<type id>, "
+                    "and optionally within")
+            if "within" in action and (not isinstance(action["within"], int)
+                                        or not 0 <= action["within"] <= 10):
+                bad(f"{where}: use-item-npc within must be an integer 0..10")
+        elif atype == "cast-npc":
+            if not set(action) <= {"type", "spell", "npc", "within", "stationary",
+                                   "require_clear_shot", "require_melee_unreachable"} \
+                    or not isinstance(action.get("spell"), int) or action["spell"] < 0 \
+                    or not isinstance(action.get("npc"), int) or action["npc"] < 0:
+                bad(f"{where}: cast-npc takes spell=<spell id>, npc=<type id>, "
+                    "and optional within/stationary/terrain guards")
+            if "within" in action and (not isinstance(action["within"], int)
+                                        or not 0 <= action["within"] <= 10):
+                bad(f"{where}: cast-npc within must be an integer 0..10")
+            for guard in ("stationary", "require_clear_shot",
+                          "require_melee_unreachable"):
+                if guard in action and (not isinstance(action[guard], int)
+                                        or isinstance(action[guard], bool)
+                                        or action[guard] not in (0, 1)):
+                    bad(f"{where}: cast-npc {guard} must be 0 or 1")
+        elif atype == "walk":
+            if not set(action) <= {"type", "x", "z", "arrive"} \
+                    or not isinstance(action.get("x"), int) \
+                    or not isinstance(action.get("z"), int):
+                bad(f"{where}: walk takes integer x and z (and optionally arrive)")
+            if "arrive" in action and (not isinstance(action["arrive"], int)
+                                       or not 0 <= action["arrive"] <= 10):
+                bad(f"{where}: walk arrive must be an integer 0..10")
+        elif atype == "approach-entity":
+            if set(action) != {"type", "collection", "field", "value", "within"} \
+                    or action.get("collection") not in ENTITY_COLLECTIONS \
+                    or action.get("field") not in ENTITY_SELECTOR_FIELDS \
+                    or not isinstance(action.get("value"), (str, int)) \
+                    or isinstance(action.get("value"), bool) \
+                    or isinstance(action.get("value"), str) and not action["value"].strip() \
+                    or not isinstance(action.get("within"), int) \
+                    or not 1 <= action["within"] <= 10:
+                bad(f"{where}: approach-entity takes collection, field, value, "
+                    "and within=1..10")
+        elif atype == "follow-player":
+            if set(action) != {"type", "name", "within"} \
+                    or not isinstance(action.get("name"), str) \
+                    or not action["name"].strip() or "\n" in action["name"] \
+                    or not isinstance(action.get("within"), int) \
+                    or not 1 <= action["within"] <= 10:
+                bad(f"{where}: follow-player takes a non-empty player name and "
+                    "within=1..10")
+        elif atype == "retreat":
+            if set(action) - {"type", "distance", "dx", "dz"}:
+                bad(f"{where}: retreat takes only optional distance/dx/dz")
+            distance = action.get("distance", 5)
+            dx, dz = action.get("dx", 0), action.get("dz", 1)
+            if not isinstance(distance, int) or not 1 <= distance <= 10:
+                bad(f"{where}: retreat distance must be an integer 1..10")
+            if dx not in (-1, 0, 1) or dz not in (-1, 0, 1) or (dx == 0 and dz == 0):
+                bad(f"{where}: retreat dx/dz must be -1, 0, or 1 and not both zero")
+        elif atype == "sidestep":
+            if set(action) - {"type", "dx", "dz"}:
+                bad(f"{where}: sidestep takes only an optional preferred dx/dz")
+            dx, dz = action.get("dx", 0), action.get("dz", 1)
+            if dx not in (-1, 0, 1) or dz not in (-1, 0, 1) or (dx == 0 and dz == 0):
+                bad(f"{where}: sidestep dx/dz must be -1, 0, or 1 and not both zero")
+        elif atype == "step-aside":
+            if set(action) - {"type", "dx", "dz"}:
+                bad(f"{where}: step-aside takes only an optional preferred dx/dz")
+            dx, dz = action.get("dx", 0), action.get("dz", 1)
+            if dx not in (-1, 0, 1) or dz not in (-1, 0, 1) or (dx == 0 and dz == 0):
+                bad(f"{where}: step-aside dx/dz must be -1, 0, or 1 and not both zero")
+        elif atype in ("interact-object", "interact-bound"):
+            if not set(action) <= {"type", "obj", "cmd"} \
+                    or not isinstance(action.get("obj"), int) or action["obj"] < 0:
+                bad(f"{where}: {atype} takes obj=<type id> and optionally cmd")
+            if "cmd" in action and action["cmd"] not in (1, 2):
+                bad(f"{where}: {atype} cmd must be 1 or 2 (the def's menu commands)")
+        elif atype == "click-entity":
+            if set(action) - {"type", "kind", "entity", "button"} \
+                    or action.get("kind") not in ("npc", "object", "bound") \
+                    or not isinstance(action.get("entity"), int) \
+                    or action["entity"] < 0:
+                bad(f"{where}: click-entity takes kind=npc|object|bound and "
+                    "entity=<type id>, with optional button")
+            if "button" in action and action["button"] not in (1, 2, 3):
+                bad(f"{where}: click-entity button must be 1, 2, or 3")
+        elif atype in ("click-inventory", "click-shop", "click-bank"):
+            allowed = {"type", "item", "button"}
+            if atype == "click-inventory":
+                allowed.add("batch")
+            if set(action) - allowed \
+                    or not isinstance(action.get("item"), int) \
+                    or action["item"] < 0:
+                bad(f"{where}: {atype} takes item=<item id>, "
+                    "with optional button"
+                    + (" and batch=all" if atype == "click-inventory" else ""))
+            if "button" in action and action["button"] not in (1, 2, 3):
+                bad(f"{where}: {atype} button must be 1, 2, or 3")
+            if "batch" in action:
+                if atype != "click-inventory" or action["batch"] != "all":
+                    bad(f"{where}: only click-inventory supports batch=all")
+                if trig.get("inventory_has") != action["item"]:
+                    bad(f"{where}: click-inventory batch=all requires an "
+                        "inventory_has trigger for the same item")
+                if trig.get("out_of_combat") is not True:
+                    bad(f"{where}: click-inventory batch=all requires "
+                        "out_of_combat=true; the batch pauses during combat")
+        elif atype == "take-ground":
+            if "within" in action:
+                bad(f"{where}: REFUSED — a distance cap on take-ground strands wanted "
+                    "loot on the ground. Distance caps on wanting things are forbidden "
+                    "(spec rule 5's cap doctrine); wanted loot is wanted at ANY "
+                    "distance, and the body walks to it. If a cap ever seems genuinely "
+                    "necessary, STOP and raise it with the user instead of arming it")
+            if set(action) != {"type", "item"} \
+                    or not isinstance(action.get("item"), int) \
+                    or action["item"] < 0:
+                bad(f"{where}: take-ground takes exactly item=<item id>")
+        elif atype == "drop-inventory":
+            # One atomic release of one held item, the mirror of take-ground.
+            # The quantity is the server's business (its Drop X option is
+            # disabled); a rule that wants more asks again from the durable
+            # held-item trigger, exactly as the loot rules re-acquire.
+            if set(action) != {"type", "item"} \
+                    or not isinstance(action.get("item"), int) \
+                    or isinstance(action["item"], bool) or action["item"] < 0:
+                bad(f"{where}: drop-inventory takes exactly item=<item id>")
+        elif atype == "choose-dialogue":
+            # The open option-menu door: the game asks a question (an NPC
+            # reply list, or a skill's "What would you like to make?") and
+            # this answers ONE named option. Only the option text crosses
+            # the bridge; no index, no pointer, no screen coordinate.
+            if set(action) != {"type", "text"} \
+                    or not isinstance(action.get("text"), str) \
+                    or not action["text"].strip() or "\n" in action["text"]:
+                bad(f"{where}: choose-dialogue takes exactly "
+                    "text=<option text fragment>")
+        elif atype == "use-item-item":
+            # The held-pair door: a knife against logs, a chisel against a
+            # gem.  Both ids are held identities; no slot, selection phase or
+            # pointer is ever authored, and the compile refuses a pair the
+            # live inventory cannot satisfy rather than dispatching it.
+            if set(action) != {"type", "item", "target"} \
+                    or not isinstance(action.get("item"), int) \
+                    or isinstance(action["item"], bool) or action["item"] < 0 \
+                    or not isinstance(action.get("target"), int) \
+                    or isinstance(action["target"], bool) or action["target"] < 0:
+                bad(f"{where}: use-item-item takes exactly item=<held item id> "
+                    "and target=<held item id>")
+        elif atype == "use-item-object":
+            # The held-item-on-scenery door: raw shrimp against a Range, an
+            # ore against a furnace.  Both halves are identities the snapshot
+            # already publishes - a held item id and an object TYPE id whose
+            # nearest loaded placement is resolved at fire time - so no slot,
+            # selection phase, pointer or remembered tile is ever authored.
+            # No `within`: the client walks to the scenery it was told to use
+            # the item on, exactly as interact-object does, and a cap here
+            # would only idle the body in sight of its own range.
+            if set(action) != {"type", "item", "obj"} \
+                    or not isinstance(action.get("item"), int) \
+                    or isinstance(action["item"], bool) or action["item"] < 0 \
+                    or not isinstance(action.get("obj"), int) \
+                    or isinstance(action["obj"], bool) or action["obj"] < 0:
+                bad(f"{where}: use-item-object takes exactly item=<held item id> "
+                    "and obj=<object type id>")
+        elif atype == "use-item-ground":
+            # The held-item-on-ground-pile door: firemaking's tinderbox on the
+            # logs that had to be put down first. item is held, ground is the
+            # pile's item id, and the pile is chosen the way take-ground
+            # chooses one — nearest REACHABLE by collision path.
+            if not set(action) <= {"type", "item", "ground", "within",
+                                   "require_clear_tile"} \
+                    or not isinstance(action.get("item"), int) \
+                    or isinstance(action["item"], bool) or action["item"] < 0 \
+                    or not isinstance(action.get("ground"), int) \
+                    or isinstance(action["ground"], bool) or action["ground"] < 0:
+                bad(f"{where}: use-item-ground takes item=<held item id>, "
+                    "ground=<ground item id>, and optionally within "
+                    "and require_clear_tile")
+            if "within" in action and (not isinstance(action["within"], int)
+                                        or isinstance(action["within"], bool)
+                                        or not 0 <= action["within"] <= 10):
+                bad(f"{where}: use-item-ground within must be an integer 0..10")
+            # The scenery guard, the shape cast-npc's terrain guards already
+            # use: an opt-in relation the pile itself must satisfy, not a
+            # skill-specific exception buried in the generic chooser.
+            if "require_clear_tile" in action \
+                    and action["require_clear_tile"] not in (0, 1):
+                bad(f"{where}: use-item-ground require_clear_tile must be 0 or 1")
+
+
+def load_config() -> dict:
+    path = rules_path()
+    if not path.exists():
+        die(f"no learned table at {path} — run `game_player.py init` first")
+    try:
+        cfg = json.loads(path.read_text())
+    except json.JSONDecodeError as e:
+        die(f"learned table {path} is not valid JSON: {e}")
+    # One-way schema migration: the old wall-clock spelling represented the
+    # same fixed combat cadence.  Convert it before validation and persist the
+    # semantic trigger so no live reflex can continue to expose milliseconds.
+    migrated = []
+    defaults = cfg.get("defaults") if isinstance(cfg, dict) else None
+    if isinstance(defaults, dict):
+        if defaults.get("min_action_interval_ms") != 0:
+            defaults["min_action_interval_ms"] = 0
+            migrated.append("defaults.min_action_interval_ms")
+        if defaults.get("max_actions_per_min") != 0:
+            defaults["max_actions_per_min"] = 0
+            migrated.append("defaults.max_actions_per_min")
+    for rule in cfg.get("rules", []) if isinstance(cfg, dict) else []:
+        if isinstance(rule, dict) and isinstance(rule.get("cooldown_ms"), int) \
+                and rule["cooldown_ms"] != 0:
+            rule["cooldown_ms"] = 0
+            migrated.append(f"{rule.get('name')}.cooldown_ms")
+        trigger = rule.get("trigger") if isinstance(rule, dict) else None
+        if not isinstance(trigger, dict) or "in_combat_for_ms" not in trigger:
+            continue
+        value = trigger.pop("in_combat_for_ms")
+        if not isinstance(value, int) or isinstance(value, bool) or value < 1:
+            die(f"learned table {path}: rule '{rule.get('name')}' has an invalid "
+                "legacy combat-age trigger")
+        action_type = (rule.get("action") or {}).get("type")
+        if action_type not in ("retreat", "sidestep"):
+            die(f"learned table {path}: rule '{rule.get('name')}' used a legacy "
+                "combat-age trigger for a non-escape action; replace it with "
+                "an observed structured trigger")
+        # Every legacy escape-age rule approximated the same server lock.
+        # Migrate that intent, not the known-bad 5900/6000 ms delay.
+        rounds = SIDESTEP_REQUIRED_ROUNDS
+        trigger["opponent_rounds_at_least"] = max(
+            rounds, trigger.get("opponent_rounds_at_least", 0))
+        migrated.append(rule.get("name"))
+    try:
+        validate_config(cfg)
+    except ValueError as e:
+        die(f"learned table {path}: {e}")
+    if migrated:
+        game_reflex.atomic_write(path, json.dumps(cfg, indent=2) + "\n")
+    cfg.setdefault("unfinished", [])
+    return cfg
+
+
+def save_config(cfg: dict) -> None:
+    validate_config(cfg)
+    game_reflex.atomic_write(rules_path(), json.dumps(cfg, indent=2) + "\n")
+
+
+def config_defaults(cfg: dict) -> dict:
+    merged = dict(DEFAULTS)
+    merged.update(cfg.get("defaults", {}))
+    return merged
+
+
+def read_objective() -> str:
+    try:
+        return objective_path().read_text().strip()
+    except OSError:
+        return ""
+
+
+def read_plan() -> str:
+    try:
+        return plan_path().read_text().strip()
+    except OSError:
+        return ""
+
+
+def read_activity() -> str:
+    try:
+        return activity_path().read_text().strip()
+    except OSError:
+        return ""
+
+
+# --------------------------------------------------------------------------
+# The declared stop ceiling (spec rule 11d): a stopping level named out loud
+# becomes structure the trigger layer, the runner and the activity door all
+# test, instead of prose nothing enforces. Fail closed in the fatigue_below
+# shape: an unreadable record or an unreadable skill never permits the play
+# the ceiling was set to stop.
+# --------------------------------------------------------------------------
+STOP_THEN_KINDS = ("clear", "halt", "switch")
+
+
+def load_stop():
+    """('none'|'cleared'|'armed'|'invalid', record-or-None).
+
+    'none' is the store where no stop was ever declared; 'cleared' is the
+    explicit tombstone `stop-at --clear` writes. 'invalid' is a file that
+    exists but cannot be trusted — unreadable, wrong shape, missing fields —
+    and both the trigger layer and the activity door fail closed on it."""
+    try:
+        raw = stop_path().read_text()
+    except FileNotFoundError:
+        return "none", None
+    except OSError:
+        return "invalid", None
+    try:
+        record = json.loads(raw)
+    except (ValueError, TypeError):
+        return "invalid", None
+    if not isinstance(record, dict) or record.get("v") != 1:
+        return "invalid", None
+    if record.get("cleared") is True:
+        return "cleared", record
+    then = record.get("then")
+    if not isinstance(record.get("skill"), str) or not record["skill"].strip() \
+            or "\n" in record["skill"] \
+            or isinstance(record.get("level"), bool) \
+            or not isinstance(record.get("level"), int) \
+            or not 1 <= record["level"] <= 99 \
+            or not isinstance(record.get("activity"), str) \
+            or not record["activity"].strip() or "\n" in record["activity"] \
+            or not isinstance(then, dict) \
+            or then.get("kind") not in STOP_THEN_KINDS:
+        return "invalid", record
+    if then["kind"] == "switch" \
+            and (not isinstance(then.get("activity"), str)
+                 or not then["activity"].strip() or "\n" in then["activity"]
+                 or then["activity"].strip() == record["activity"].strip()):
+        return "invalid", record
+    return "armed", record
+
+
+def stop_skill_level(record: dict, snap: dict):
+    """The snapshot's base level for the stop's skill, or None unread — the
+    same read skill_at_least makes, so the ceiling and the eligibility floor
+    can never disagree about what a level is."""
+    want = record["skill"].strip().casefold()
+    level = next(
+        (s.get("level") for s in snap.get("skills") or []
+         if isinstance(s, dict)
+         and str(s.get("name", "")).strip().casefold() == want),
+        None)
+    if isinstance(level, bool) or not isinstance(level, int):
+        return None
+    return level
+
+
+def stop_then_text(record: dict) -> str:
+    then = record.get("then") or {}
+    if then.get("kind") == "switch":
+        return f"switch:{then.get('activity')}"
+    return str(then.get("kind"))
+
+
+def stop_closure(verdict: str, record, activity_name: str, snap: dict):
+    """Why the stop store closes this activity against this snapshot, or
+    None when it permits. Spec rule 11d: an invalid record closes every
+    activity; an armed record closes its governed activity at the ceiling
+    or whenever the declared skill cannot be read."""
+    if verdict == "invalid":
+        return {"why": "stop-record-invalid", "file": str(stop_path())}
+    if verdict != "armed" or record["activity"] != activity_name:
+        return None
+    level = stop_skill_level(record, snap)
+    if level is None:
+        return {"why": "stop-skill-unread", "skill": record["skill"],
+                "ceiling": record["level"], "then": stop_then_text(record)}
+    if level >= record["level"]:
+        return {"why": "stop-reached", "level": level,
+                "skill": record["skill"], "ceiling": record["level"],
+                "then": stop_then_text(record)}
+    return None
+
+
+def snapshot_skills(snap: dict) -> dict:
+    """Skill id -> the grounded cumulative XP currently published by the client."""
+    found = {}
+    for skill in snap.get("skills") or []:
+        if not isinstance(skill, dict) or not isinstance(skill.get("id"), int) \
+                or not isinstance(skill.get("xp"), int):
+            continue
+        found[str(skill["id"])] = {
+            "id": skill["id"],
+            "name": str(skill.get("name") or f"skill-{skill['id']}")[:64],
+            "level": skill.get("level") if isinstance(skill.get("level"), int) else None,
+            "xp": skill["xp"],
+        }
+    return found
+
+
+def skills_ready(skills: dict) -> bool:
+    """Login briefly exposes zero-filled client arrays. A real RSC skill table
+    always has at least one positive base level, even for a new character."""
+    return any(isinstance(skill.get("level"), int) and skill["level"] > 0
+               for skill in skills.values())
+
+
+def load_activity_stats() -> dict:
+    try:
+        body = json.loads(activity_stats_path().read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    return body if isinstance(body, dict) else {}
+
+
+def clear_activity_stats() -> None:
+    try:
+        activity_stats_path().unlink()
+    except FileNotFoundError:
+        pass
+
+
+def load_jsonl(path: Path) -> list:
+    records = []
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        return records
+    for line in lines:
+        try:
+            record = json.loads(line)
+        except (ValueError, TypeError):
+            continue
+        if isinstance(record, dict):
+            records.append(record)
+    return records
+
+
+def append_jsonl(path: Path, record: dict) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a") as fh:
+        fh.write(json.dumps(record, separators=(",", ":")) + "\n")
+
+
+def rule_behavior(rule: dict | None) -> dict | None:
+    """The executable part of a reflex, excluding prose provenance."""
+    if not isinstance(rule, dict):
+        return None
+    return {key: rule.get(key) for key in (
+        "enabled", "priority", "cooldown_ms", "hold_ticks",
+        "once_per_objective", "trigger", "action") if key in rule}
+
+
+def rule_behavior_hash(rule: dict) -> str:
+    body = json.dumps(rule_behavior(rule), sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(body.encode()).hexdigest()[:16]
+
+
+def rule_scope_applies(rule: dict, objective: str, activity: str) -> bool:
+    trig = rule.get("trigger") or {}
+    return (not trig.get("objective_is") or trig.get("objective_is") == objective) \
+        and (not trig.get("activity_is") or trig.get("activity_is") == activity)
+
+
+def activity_rule_snapshot(cfg: dict, objective: str, activity: str) -> list:
+    """Compact executable rule set that could affect one activity iteration."""
+    rules = []
+    for rule in cfg.get("rules") or []:
+        if not rule.get("enabled") or not rule_scope_applies(rule, objective, activity):
+            continue
+        trig = rule.get("trigger") or {}
+        rules.append({
+            "name": rule.get("name"),
+            "behavior": rule_behavior_hash(rule),
+            "activity_scope": trig.get("activity_is"),
+            "objective_scope": trig.get("objective_is"),
+            "action": (rule.get("action") or {}).get("type"),
+            "priority": rule.get("priority"),
+            "cooldown_ms": rule.get("cooldown_ms"),
+        })
+    return sorted(rules, key=lambda item: str(item.get("name")))
+
+
+def current_config_or_empty() -> dict:
+    try:
+        cfg = json.loads(rules_path().read_text())
+        validate_config(cfg)
+        cfg.setdefault("unfinished", [])
+        return cfg
+    except (OSError, ValueError, json.JSONDecodeError):
+        return dict(EMPTY_TABLE, defaults=dict(DEFAULTS), rules=[], unfinished=[])
+
+
+def next_activity_iteration(activity: str) -> int:
+    return 1 + sum(1 for record in load_jsonl(activity_history_path())
+                   if record.get("activity") == activity)
+
+
+def activity_metrics_from_stats(stats: dict, ended_ms=None) -> dict:
+    if not stats:
+        return {}
+    end = ended_ms if isinstance(ended_ms, int) else now_ms()
+    started = stats.get("started_ms", end)
+    elapsed = max(1, end - started) if isinstance(started, int) else 1
+    baseline = stats.get("baseline_xp") or {}
+    current = stats.get("last_xp") or {}
+    names = stats.get("skill_names") or {}
+    last_by_id = {str(v.get("id")): v for v in stats.get("last_action_xp") or []
+                  if isinstance(v, dict)}
+    skills = []
+    for key, value in current.items():
+        start_xp = baseline.get(key)
+        if not isinstance(start_xp, int) or not isinstance(value, int) or value <= start_xp:
+            continue
+        gained = value - start_xp
+        item = {"id": int(key), "name": names.get(key, f"skill-{key}"),
+                "gained": gained,
+                "xp_per_hour": round(gained * 3600000 / elapsed)}
+        if key in last_by_id and isinstance(last_by_id[key].get("xp"), int):
+            item["last_action_xp"] = last_by_id[key]["xp"]
+        skills.append(item)
+    return {
+        "activity": stats.get("activity"),
+        "objective": stats.get("objective"),
+        "iteration": stats.get("iteration"),
+        "started_ms": started,
+        "elapsed_ms": elapsed,
+        "reason": stats.get("reason"),
+        "rule_set": stats.get("rule_set") or [],
+        "rule_set_hash": stats.get("rule_set_hash"),
+        "skills": skills,
+    }
+
+
+def activity_history_summary(activity: str, current: dict = None) -> dict:
+    rows = [row for row in load_jsonl(activity_history_path())
+            if row.get("activity") == activity]
+    eligible = [row for row in rows
+                if isinstance(row.get("elapsed_ms"), int)
+                and row["elapsed_ms"] >= ACTIVITY_PERFORMANCE_MIN_MS]
+    best = {}
+    for row in eligible:
+        for skill in row.get("skills") or []:
+            rate = skill.get("xp_per_hour")
+            key = str(skill.get("id"))
+            if not isinstance(rate, int) or rate <= 0:
+                continue
+            if key not in best or rate > best[key]["xp_per_hour"]:
+                best[key] = {**skill, "iteration": row.get("iteration"),
+                             "elapsed_ms": row.get("elapsed_ms")}
+    comparison = []
+    if current and current.get("elapsed_ms", 0) >= ACTIVITY_PERFORMANCE_MIN_MS:
+        for skill in current.get("skills") or []:
+            prior = best.get(str(skill.get("id")))
+            if prior:
+                comparison.append({"id": skill.get("id"), "name": skill.get("name"),
+                                   "xp_per_hour": skill.get("xp_per_hour"),
+                                   "best_xp_per_hour": prior["xp_per_hour"],
+                                   "delta": skill.get("xp_per_hour", 0)
+                                            - prior["xp_per_hour"],
+                                   "best_iteration": prior.get("iteration")})
+    return {"activity": activity, "iterations": len(rows),
+            "latest": rows[-1] if rows else None,
+            "best": list(best.values()), "comparison": comparison}
+
+
+def reusable_rule_candidates(cfg: dict, activity: str, objective: str,
+                             snap: dict, limit=8) -> list:
+    """Rank old activity-scoped reflexes worth considering as templates.
+
+    These are suggestions, never executable rewrites: the background author
+    still needs grounded evidence and the normal test gate before copying one.
+    """
+    tokens = set(re.findall(r"[a-z0-9]+", activity.lower()))
+    candidates = []
+    trigger_fn = make_trigger_fn(objective, activity)
+    for rule in cfg.get("rules") or []:
+        trig = rule.get("trigger") or {}
+        source = trig.get("activity_is")
+        action = rule.get("action") or {}
+        if not source or source == activity or rule.get("once_per_objective") \
+                or action.get("type") in ("walk", "retreat"):
+            continue
+        other = {key: value for key, value in trig.items()
+                 if key not in ("activity_is", "objective_is")}
+        try:
+            live_match = bool(trigger_fn(other, snap, {}))
+        except Exception:
+            live_match = False
+        haystack = " ".join((str(rule.get("name") or ""), source,
+                             str(rule.get("note") or ""))).lower()
+        overlap = sum(1 for token in tokens if token in haystack)
+        if not live_match and not overlap:
+            continue
+        score = (50 if live_match else 0) + overlap * 20 \
+            + (6 if trig.get("objective_is") == objective else 0) \
+            + (2 if rule.get("enabled") else 0)
+        candidates.append({
+            "name": rule.get("name"), "source_activity": source,
+            "objective_scope": trig.get("objective_is"),
+            "enabled": bool(rule.get("enabled")), "score": score,
+            "live_non_scope_match": live_match,
+            "trigger_template": other, "action": action,
+            "note": str(rule.get("note") or "")[:240],
+        })
+    candidates.sort(key=lambda item: (-item["score"], str(item.get("name"))))
+    return candidates[:limit]
+
+
+def activity_briefing(cfg: dict, activity: str, snap: dict) -> dict:
+    objective = read_objective()
+    eligible = activity_rule_snapshot(cfg, objective, activity)
+    excluded = []
+    for rule in cfg.get("rules") or []:
+        trig = rule.get("trigger") or {}
+        if trig.get("activity_is") != activity:
+            continue
+        reasons = []
+        if not rule.get("enabled"):
+            reasons.append("disabled")
+        if trig.get("objective_is") and trig["objective_is"] != objective:
+            reasons.append(f"requires objective {trig['objective_is']}")
+        if reasons:
+            excluded.append({"name": rule.get("name"), "reasons": reasons})
+    return {
+        "activity": activity, "objective": objective or None,
+        "current_rules": [item["name"] for item in eligible],
+        "activity_rules": [item for item in eligible if item["activity_scope"]],
+        "global_rules": [item for item in eligible if not item["activity_scope"]],
+        "excluded_activity_rules": excluded,
+        "reuse_candidates": reusable_rule_candidates(
+            cfg, activity, objective, snap),
+        "history": activity_history_summary(activity),
+    }
+
+
+def start_activity_stats(activity: str, snap: dict, started_ms=None,
+                         reason="selected", cfg: dict = None) -> dict:
+    """Start one comparable activity/reflex iteration from grounded XP."""
+    skills = snapshot_skills(snap)
+    if not activity or not skills_ready(skills):
+        return {}
+    started = started_ms if isinstance(started_ms, int) else now_ms()
+    cfg = cfg or current_config_or_empty()
+    objective = read_objective()
+    rule_set = activity_rule_snapshot(cfg, objective, activity)
+    stats = {
+        "v": 3,
+        "activity": activity,
+        "objective": objective or None,
+        "iteration": next_activity_iteration(activity),
+        "reason": reason,
+        "started_ms": started,
+        "baseline_ready": True,
+        "baseline_xp": {key: val["xp"] for key, val in skills.items()},
+        "last_xp": {key: val["xp"] for key, val in skills.items()},
+        "skill_names": {key: val["name"] for key, val in skills.items()},
+        "last_action_xp": [],
+        "updated_ms": started,
+        "last_review_ms": started,
+        "last_review_gained": 0,
+        "rule_set": rule_set,
+        "rule_set_hash": hashlib.sha256(json.dumps(
+            rule_set, sort_keys=True, separators=(",", ":")).encode()).hexdigest()[:16],
+    }
+    game_reflex.atomic_write(activity_stats_path(), json.dumps(stats, indent=2) + "\n")
+    return stats
+
+
+def refresh_activity_stats(snap: dict, activity: str) -> dict:
+    """Observe XP drops without inventing an action from chat or screen state.
+
+    OpenRSC changes cumulative XP once for each XP-bearing game action. The
+    resident 150ms observer records each positive delta as that action's XP;
+    the longer-lived baseline remains tied to the selected activity.
+    """
+    if not activity:
+        return {}
+    skills = snapshot_skills(snap)
+    stats = load_activity_stats()
+    if stats.get("activity") != activity or not stats.get("baseline_xp"):
+        return start_activity_stats(activity, snap)
+    if not skills_ready(skills):
+        return stats
+    # A pre-v2 baseline has no proof it was not captured from the zero-filled
+    # login placeholder. Establish it honestly from this first ready frame.
+    if stats.get("baseline_ready") is not True:
+        return start_activity_stats(activity, snap)
+
+    previous = stats.get("last_xp") if isinstance(stats.get("last_xp"), dict) else {}
+    changes = []
+    for key, skill in skills.items():
+        old = previous.get(key)
+        if isinstance(old, int) and skill["xp"] > old:
+            changes.append({"id": skill["id"], "name": skill["name"],
+                            "xp": skill["xp"] - old})
+    current = {key: val["xp"] for key, val in skills.items()}
+    names = {key: val["name"] for key, val in skills.items()}
+    if current != previous or names != stats.get("skill_names"):
+        stats["last_xp"] = current
+        stats["skill_names"] = names
+        stats["updated_ms"] = now_ms()
+        if changes:
+            stats["last_action_xp"] = changes
+            stats["last_action_ms"] = snap.get("ts") if isinstance(snap.get("ts"), int) \
+                else stats["updated_ms"]
+        game_reflex.atomic_write(activity_stats_path(), json.dumps(stats, indent=2) + "\n")
+    return stats
+
+
+def activity_metrics(snap: dict, activity: str) -> dict:
+    stats = refresh_activity_stats(snap, activity)
+    if not stats:
+        return {}
+    return activity_metrics_from_stats(stats)
+
+
+def activity_xp_metrics_text(metrics: dict) -> str:
+    parts = []
+    for skill in metrics.get("skills") or []:
+        fields = []
+        if skill.get("last_action_xp", 0) > 0:
+            fields.append(f"+{skill['last_action_xp']}/action")
+        fields.extend((f"+{skill['gained']}_total", f"{skill['xp_per_hour']}/hr"))
+        parts.append(f"{skill['name']}:" + ",".join(fields))
+    return ";".join(parts)
+
+
+def activity_xp_text(snap: dict, activity: str) -> str:
+    return activity_xp_metrics_text(activity_metrics(snap, activity))
+
+
+def activity_comparison_text(metrics: dict) -> str:
+    if not metrics or metrics.get("elapsed_ms", 0) < ACTIVITY_PERFORMANCE_MIN_MS:
+        return ""
+    comparison = activity_history_summary(
+        metrics.get("activity") or "", metrics).get("comparison") or []
+    return ";".join(
+        f"{item['name']}:{item['xp_per_hour']}/hr_vs_best_"
+        f"{item['best_xp_per_hour']}/hr,delta={item['delta']:+d}"
+        for item in comparison)
+
+
+def finish_activity_iteration(reason: str, snap: dict = None,
+                              queue_review=True) -> dict:
+    stats = load_activity_stats()
+    if not stats:
+        return {}
+    activity = stats.get("activity") or ""
+    if snap and activity and stats.get("activity") == activity \
+            and skills_ready(snapshot_skills(snap)):
+        stats = refresh_activity_stats(snap, activity)
+    ended = now_ms()
+    record = {"v": 1, "kind": "activity-iteration", "ended_ms": ended,
+              "end_reason": reason,
+              **activity_metrics_from_stats(stats, ended)}
+    prior = activity_history_summary(activity, record)
+    record["comparison"] = prior.get("comparison") or []
+    record["performance_eligible"] = (
+        record.get("elapsed_ms", 0) >= ACTIVITY_PERFORMANCE_MIN_MS
+        and any(skill.get("gained", 0) > 0 for skill in record.get("skills") or []))
+    append_jsonl(activity_history_path(), record)
+    if queue_review:
+        append_outcome({
+            "ts": ended, "kind": "activity-iteration",
+            "activity": activity or None, "objective": record.get("objective"),
+            "iteration": record.get("iteration"), "end_reason": reason,
+            "performance": {key: record.get(key) for key in
+                            ("elapsed_ms", "skills", "comparison",
+                             "performance_eligible", "rule_set_hash")},
+            "rules": record.get("rule_set") or [],
+        })
+    clear_activity_stats()
+    return record
+
+
+def maybe_queue_activity_checkpoint(metrics: dict, cfg: dict,
+                                    objective: str, activity: str) -> None:
+    if not metrics or metrics.get("elapsed_ms", 0) < ACTIVITY_REVIEW_INTERVAL_MS \
+            or not metrics.get("skills"):
+        return
+    stats = load_activity_stats()
+    now = now_ms()
+    total = sum(skill.get("gained", 0) for skill in metrics.get("skills") or [])
+    if now - stats.get("last_review_ms", stats.get("started_ms", now)) \
+            < ACTIVITY_REVIEW_INTERVAL_MS \
+            or total <= stats.get("last_review_gained", 0):
+        return
+    stats["last_review_ms"] = now
+    stats["last_review_gained"] = total
+    game_reflex.atomic_write(activity_stats_path(), json.dumps(stats, indent=2) + "\n")
+    append_outcome({
+        "ts": now, "kind": "activity-checkpoint", "activity": activity,
+        "objective": objective or None, "iteration": metrics.get("iteration"),
+        "performance": metrics,
+        "comparison": activity_history_summary(activity, metrics).get("comparison") or [],
+        "rules": activity_rule_snapshot(cfg, objective, activity),
+    })
+
+
+# --------------------------------------------------------------------------
+# Engine state (spec rules 1 and 9): the reflex engine's counters plus the
+# once-per-objective marks, in this layer's own file. The action id sequence
+# is seeded from the clock at first creation so the shared receipt channel
+# can never confuse this engine's ids with the reflex engine's small ones.
+# --------------------------------------------------------------------------
+def load_player_state() -> dict:
+    path = state_dir() / "player-engine-state.json"
+    try:
+        est = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        est = {}
+    est.setdefault("action_seq", now_ms())
+    est.setdefault("fired", {})
+    est.setdefault("streak", {})
+    est.setdefault("blocked", {})
+    est.setdefault("inflight", None)
+    est.setdefault("last_game_ms", 0)
+    est.setdefault("window", [])
+    est.setdefault("last_tick", -1)
+    est.setdefault("was_stale", False)
+    est.setdefault("was_out", False)
+    est.setdefault("was_held", False)
+    est.setdefault("objective_fired", {})   # "rule\tobjective" -> epoch ms
+    est.setdefault("seen_message_ids", [])
+    est.setdefault("pending_messages", [])
+    est.setdefault("message_settle_until", 0)
+    est.setdefault("seen_system_message_ids", [])
+    est.setdefault("pending_system_messages", [])
+    est.setdefault("seen_friend_status_ids", [])
+    est.setdefault("pending_friend_status", [])
+    est.setdefault("session_top_up_message_ids", [])
+    est.setdefault("recent_repetitions", [])
+    est.setdefault("reported_repetitions", {})
+    est.setdefault("repetition_holds", [])
+    est.setdefault("combat_sequence", 0)
+    if "combat_id" not in est:
+        # One-way state migration: preserve an active legacy episode without
+        # preserving its old timestamp semantics.
+        if isinstance(est.get("combat_since"), int):
+            est["combat_sequence"] = max(0, int(est["combat_sequence"])) + 1
+            est["combat_id"] = est["combat_sequence"]
+        else:
+            est["combat_id"] = None
+    est.pop("combat_since", None)
+    est.setdefault("combat_origin", None)
+    est.setdefault("combat_sidestep", None)
+    est.setdefault("combat_provoked", False)
+    est.setdefault("combat_opponent_npc", None)
+    est.setdefault("last_combat", None)
+    est.setdefault("last_npc_action", None)
+    est.setdefault("last_direct_provocation_id", None)
+    est.setdefault("stationary_tile", None)
+    est.setdefault("stationary_since", None)
+    est.setdefault("healing_hold", None)
+    # One explicit semantic batch may outlive the transient condition that
+    # started it. Each member is still a separately dispatched and observed
+    # game action; this record preserves the all-items postcondition between
+    # runner passes and across a safe pause such as combat or full fatigue.
+    est.setdefault("action_batch", None)
+    return est
+
+
+def save_player_state(est: dict) -> None:
+    est = {k: v for k, v in est.items() if not k.startswith("_")}
+    game_reflex.atomic_write(state_dir() / "player-engine-state.json",
+                             json.dumps(est) + "\n")
+
+
+def flush_events(events: list) -> None:
+    if not events:
+        return
+    path = state_dir() / "player-decisions.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a") as fh:
+        for event in events:
+            fh.write(json.dumps(event, separators=(",", ":")) + "\n")
+
+
+class player_state_lock:
+    """Cross-process guard for the runner and deliberate reply command."""
+    def __enter__(self):
+        player_lock_path().parent.mkdir(parents=True, exist_ok=True)
+        self.fh = open(player_lock_path(), "a+")
+        fcntl.flock(self.fh.fileno(), fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        fcntl.flock(self.fh.fileno(), fcntl.LOCK_UN)
+        self.fh.close()
+
+
+def capture_player_messages(snap: dict, est: dict, events: list) -> int:
+    """Copy new incoming local/private messages into the existing engine state."""
+    seen = set(est.get("seen_message_ids") or [])
+    pending = est.get("pending_messages") or []
+    captured = 0
+    captured_at = now_ms()
+    for message in snap.get("messages") or []:
+        if not isinstance(message, dict):
+            continue
+        message_id = message.get("id")
+        channel = message.get("channel")
+        if not isinstance(message_id, int) or message_id in seen \
+                or message.get("incoming") is not True \
+                or channel not in ("local", "private"):
+            continue
+        sender, text = message.get("sender"), message.get("text")
+        if not isinstance(sender, str) or not sender.strip() \
+                or not isinstance(text, str) or not text.strip():
+            continue
+        item = {"id": message_id, "channel": channel,
+                "sender": sender, "text": text, "captured_ts": captured_at}
+        pending.append(item)
+        seen.add(message_id)
+        captured += 1
+        events.append({"ts": now_ms(), "kind": "player-message-received", **item})
+    est["pending_messages"] = sorted(pending, key=lambda m: m["id"])
+    est["seen_message_ids"] = sorted(seen)[-500:]
+    if captured:
+        est["message_settle_until"] = captured_at + PLAYER_MESSAGE_SETTLE_MS
+    return captured
+
+
+def top_up_session_from_player_messages(snap: dict, est: dict,
+                                        events: list) -> dict:
+    """Give a live sitting twenty playable minutes after genuine player chat.
+
+    Conversation capture and timer credit have separate id ledgers. That is
+    intentional: a long-lived runner from the previous code generation may
+    already have captured the conversation before a new model-facing `play`
+    loads this feature. Pending messages therefore remain enough evidence to
+    grant the top-up exactly once after a hot upgrade.
+    """
+    credited = set(est.get("session_top_up_message_ids") or [])
+    messages = []
+    sources = list(snap.get("messages") or []) + list(est.get("pending_messages") or [])
+    for message in sources:
+        if not isinstance(message, dict) or message.get("incoming") is not True \
+                or message.get("channel") not in ("local", "private"):
+            continue
+        message_id = message.get("id")
+        if not isinstance(message_id, int) or message_id in credited:
+            continue
+        sender = str(message.get("sender") or "").strip()
+        text = str(message.get("text") or "").strip()
+        if not sender or not text:
+            continue
+        credited.add(message_id)
+        messages.append({"id": message_id, "sender": sender[:80],
+                         "channel": message.get("channel")})
+    est["session_top_up_message_ids"] = sorted(credited)[-500:]
+    if not messages:
+        return {}
+
+    now = now_ms()
+    with session_state_lock():
+        session = read_session()
+        if not session or session.get("ended"):
+            return {}
+        started = int(session["started"])
+        old_limit = int(session.get("limit_ms") or SESSION_LIMIT_MS)
+        old_deadline = started + old_limit
+        remaining = old_deadline - now
+        if remaining >= SESSION_MESSAGE_TOP_UP_MS:
+            return {}
+        new_deadline = now + SESSION_MESSAGE_TOP_UP_MS
+        session["limit_ms"] = new_deadline - started
+        session["last_message_top_up"] = {
+            "at": now, "message_ids": [item["id"] for item in messages],
+            "senders": sorted({item["sender"] for item in messages}),
+        }
+        game_reflex.atomic_write(session_path(), json.dumps(session) + "\n")
+
+    event = {
+        "ts": now, "kind": "session-message-top-up",
+        "message_ids": [item["id"] for item in messages],
+        "senders": sorted({item["sender"] for item in messages}),
+        "remaining_before_ms": max(0, remaining),
+        "old_deadline_ms": old_deadline,
+        "new_deadline_ms": new_deadline,
+        "play_minutes": SESSION_MESSAGE_TOP_UP_MS // 60000,
+    }
+    events.append(event)
+    est["last_session_top_up"] = event
+    return event
+
+
+def message_batch_session_renewal(est: dict, batch: list) -> str:
+    """Name an automatic renewal belonging to the pending chat verdict.
+
+    The resident runner usually credits the message before the model-facing
+    `play` call reads its heartbeat, so the immediate return value from the
+    top-up function is not a reliable notification channel. The durable
+    engine-state event is. Tie it to message ids so an old renewal is never
+    presented alongside an unrelated later conversation.
+    """
+    renewal = est.get("last_session_top_up") or {}
+    renewed_ids = set(renewal.get("message_ids") or [])
+    batch_ids = {item.get("id") for item in batch if isinstance(item, dict)}
+    if not renewed_ids.intersection(batch_ids):
+        return ""
+    minutes = renewal.get("play_minutes") or SESSION_MESSAGE_TOP_UP_MS // 60000
+    return f"{minutes}m-cancel-wind-down"
+
+
+def capture_friend_status(snap: dict, est: dict, events: list) -> int:
+    """Keep authoritative friend login/logout transitions until Sol sees them.
+
+    The client emits this channel only for an actual status transition, not
+    while loading the initial friend list. It therefore needs no inference
+    from nearby players and cannot announce everyone at login.
+    """
+    seen = set(est.get("seen_friend_status_ids") or [])
+    pending = est.get("pending_friend_status") or []
+    captured = 0
+    captured_at = now_ms()
+    for message in snap.get("messages") or []:
+        if not isinstance(message, dict) or message.get("channel") != "friend-status":
+            continue
+        message_id = message.get("id")
+        text = " ".join(str(message.get("text", "")).split())
+        if not isinstance(message_id, int) or message_id in seen:
+            continue
+        match = FRIEND_STATUS_RE.fullmatch(text)
+        if not match or not match.group(1).strip():
+            # Remember the id even when a future server wording is unknown;
+            # repeated snapshots must not keep reparsing one malformed event.
+            seen.add(message_id)
+            continue
+        item = {
+            "id": message_id,
+            "name": match.group(1).strip()[:80],
+            "status": "online" if match.group(2).casefold() == "in" else "offline",
+            "text": text[:240],
+            "captured_ts": captured_at,
+        }
+        pending.append(item)
+        seen.add(message_id)
+        captured += 1
+        events.append({"ts": captured_at, "kind": "friend-status-received", **item})
+    est["pending_friend_status"] = sorted(pending, key=lambda item: item["id"])[-20:]
+    est["seen_friend_status_ids"] = sorted(seen)[-500:]
+    return captured
+
+
+def pending_friend_status(est: dict) -> list:
+    return sorted((item for item in est.get("pending_friend_status") or []
+                   if isinstance(item, dict) and isinstance(item.get("id"), int)),
+                  key=lambda item: item["id"])
+
+
+def friend_status_text(items: list) -> str:
+    return json.dumps([
+        {"id": item["id"], "name": item.get("name"), "status": item.get("status")}
+        for item in items
+    ], separators=(",", ":"), ensure_ascii=False)
+
+
+def acknowledge_friend_status(items: list) -> None:
+    """A model-facing `play` printed these exact events; retire only those ids."""
+    ids = {item.get("id") for item in items if isinstance(item, dict)}
+    if not ids:
+        return
+    with player_state_lock():
+        est = load_player_state()
+        est["pending_friend_status"] = [
+            item for item in est.get("pending_friend_status") or []
+            if not isinstance(item, dict) or item.get("id") not in ids
+        ]
+        save_player_state(est)
+
+
+def pending_message_batch(est: dict) -> list:
+    """The oldest sender/channel conversation, including its full pending chain."""
+    pending = sorted(est.get("pending_messages") or [], key=lambda m: m["id"])
+    if not pending:
+        return []
+    first = pending[0]
+    sender = str(first.get("sender", "")).casefold()
+    channel = first.get("channel")
+    return [m for m in pending
+            if m.get("channel") == channel
+            and str(m.get("sender", "")).casefold() == sender]
+
+
+def pending_message_burst(batch: list, now: int = None) -> str:
+    """The settled chain, each line carrying when it actually arrived.
+
+    Words are read long after they are said here: the settle window closes,
+    the chosen activity keeps running through it, and the reply is written
+    at the end of whatever the player was doing. The received time and the
+    age ride with the text so the answer is written against the real gap.
+    """
+    now = now_ms() if now is None else now
+    items = []
+    for message in batch:
+        entry = {"id": message["id"], "text": message["text"]}
+        received = message.get("captured_ts")
+        if isinstance(received, int):
+            entry["received"] = clock_hms(received)
+            entry["age"] = human_age(now - received)
+        items.append(entry)
+    return json.dumps(items, separators=(",", ":"), ensure_ascii=False)
+
+
+def message_time_fields(message: dict, now: int = None) -> dict:
+    """`now`, `received` and `age` for the message a verdict names."""
+    now = now_ms() if now is None else now
+    fields = {"now": clock_hms(now)}
+    received = (message or {}).get("captured_ts")
+    if isinstance(received, int):
+        fields["received"] = clock_hms(received)
+        fields["age"] = human_age(now - received)
+    return fields
+
+
+def oldest_pending_message(est: dict):
+    batch = pending_message_batch(est)
+    # Replying to the newest id clears every older message in this same
+    # sender/channel chain, while a different player's burst remains pending.
+    return batch[-1] if batch else None
+
+
+def is_idle_movement_warning(message: dict) -> bool:
+    """The server's blue idle warning, tolerant of wording variants."""
+    if not isinstance(message, dict) or message.get("channel") != "game":
+        return False
+    text = " ".join(str(message.get("text", "")).casefold().split())
+    standing = "standing here for" in text or "standing still for" in text
+    return standing and (" min" in text or "minute" in text) and "move" in text
+
+
+def capture_urgent_system_messages(snap: dict, est: dict, events: list) -> None:
+    """Persist the idle warning until a changed player tile proves movement."""
+    px, pz = snap.get("x"), snap.get("z")
+    pending = est.get("pending_system_messages") or []
+    still_pending = []
+    for message in pending:
+        if isinstance(px, int) and isinstance(pz, int) \
+                and (px != message.get("x") or pz != message.get("z")):
+            events.append({"ts": now_ms(), "kind": "system-message-handled",
+                           "id": message.get("id"), "reason": "player-moved",
+                           "x": px, "z": pz})
+        else:
+            still_pending.append(message)
+    pending = still_pending
+
+    seen = set(est.get("seen_system_message_ids") or [])
+    for message in snap.get("messages") or []:
+        if not is_idle_movement_warning(message):
+            continue
+        message_id = message.get("id")
+        text = message.get("text")
+        if not isinstance(message_id, int) or message_id in seen \
+                or not isinstance(text, str) or not isinstance(px, int) \
+                or not isinstance(pz, int):
+            continue
+        item = {"id": message_id, "channel": message.get("channel", "game"),
+                "text": text, "x": px, "z": pz}
+        pending.append(item)
+        seen.add(message_id)
+        events.append({"ts": now_ms(), "kind": "system-message-received", **item})
+    est["pending_system_messages"] = sorted(pending, key=lambda m: m["id"])
+    est["seen_system_message_ids"] = sorted(seen)[-500:]
+
+
+def oldest_pending_system_message(est: dict):
+    pending = est.get("pending_system_messages") or []
+    return min(pending, key=lambda m: m["id"]) if pending else None
+
+
+def latest_system_feedback(snap: dict):
+    """Latest fresh non-player game text, compact enough for a play verdict.
+
+    Bridge message ids carry their wall-clock millisecond in the high digits.
+    Old retained messages are history, not causal evidence for the current
+    action or location, and must not be presented to Sol as current feedback.
+    """
+    snap_ts = snap.get("ts")
+    for message in reversed(snap.get("messages") or []):
+        if not isinstance(message, dict) \
+                or message.get("channel") not in SYSTEM_FEEDBACK_CHANNELS:
+            continue
+        message_id = message.get("id")
+        if isinstance(snap_ts, int) and isinstance(message_id, int) \
+                and message_id >= 1_000_000_000_000 \
+                and snap_ts - message_id // 1000 > 10_000:
+            continue
+        text = " ".join(str(message.get("text", "")).split())
+        if text:
+            return text[:240]
+    return None
+
+
+def retreat_lock_feedback(snap: dict) -> bool:
+    """The server's authoritative refusal. If it is still in the current
+    snapshot while combat remains active, merely waiting cannot clear combat:
+    a later retreat request is still required."""
+    needle = "can't retreat during the first 3 rounds of combat"
+    return any(
+        isinstance(message, dict)
+        and needle in str(message.get("text", "")).casefold()
+        for message in snap.get("messages") or []
+    )
+
+
+def record_wait_failure(condition: str, verdict: str, snap: dict, timeout=None) -> None:
+    record = {"ts": now_ms(), "kind": "wait-failure", "condition": condition,
+              "status": verdict, "objective": read_objective() or None,
+              "activity": read_activity() or None, "snap": snap_brief(snap)}
+    if timeout is not None:
+        record["timeout"] = timeout
+    append_outcome(record)
+    flush_events([{k: v for k, v in record.items() if k != "snap"}])
+
+
+# --------------------------------------------------------------------------
+# State waiting (spec rule 7d): one ACTIONS snapshot path, no timed polling.
+# Atomic snapshot writes arrive as inotify move/create events. A hard deadline
+# is mandatory so a missing transition can never strand the playing hand.
+# --------------------------------------------------------------------------
+class SnapshotChangeWatch:
+    IN_CLOSE_WRITE = 0x00000008
+    IN_MOVED_TO = 0x00000080
+    IN_CREATE = 0x00000100
+    MASK = IN_CLOSE_WRITE | IN_MOVED_TO | IN_CREATE
+
+    def __enter__(self):
+        state_dir().mkdir(parents=True, exist_ok=True)
+        self.libc = ctypes.CDLL(None, use_errno=True)
+        self.libc.inotify_init1.argtypes = [ctypes.c_int]
+        self.libc.inotify_init1.restype = ctypes.c_int
+        self.libc.inotify_add_watch.argtypes = [ctypes.c_int, ctypes.c_char_p,
+                                                ctypes.c_uint32]
+        self.libc.inotify_add_watch.restype = ctypes.c_int
+        self.fd = self.libc.inotify_init1(os.O_CLOEXEC | os.O_NONBLOCK)
+        if self.fd < 0:
+            err = ctypes.get_errno()
+            die(f"cannot watch ACTIONS state: {os.strerror(err)}")
+        wd = self.libc.inotify_add_watch(
+            self.fd, os.fsencode(str(state_dir())), self.MASK)
+        if wd < 0:
+            err = ctypes.get_errno()
+            os.close(self.fd)
+            die(f"cannot watch ACTIONS state directory: {os.strerror(err)}")
+        self.poller = select.poll()
+        self.poller.register(self.fd, select.POLLIN)
+        return self
+
+    def wait(self, seconds: float) -> None:
+        timeout_ms = max(1, int(seconds * 1000))
+        if self.poller.poll(timeout_ms):
+            try:
+                os.read(self.fd, 65536)
+            except BlockingIOError:
+                pass
+
+    def __exit__(self, exc_type, exc, tb):
+        os.close(self.fd)
+
+
+def normalise_wait_condition(value: str) -> str:
+    condition = value.strip().casefold().replace("-", "_")
+    if condition not in WAIT_CONDITIONS:
+        die(f"unknown wait condition '{value}' (known: {', '.join(WAIT_CONDITIONS)})")
+    return condition
+
+
+def wait_condition_met(condition: str, snap: dict) -> bool:
+    if not isinstance(snap, dict) or not isinstance(snap.get("ts"), int) \
+            or now_ms() - snap["ts"] > WAIT_SNAPSHOT_FRESH_MS:
+        return False
+    logged_in = snap.get("logged_in") is True
+    if condition == "logged_in":
+        return logged_in
+    if condition == "logged_out":
+        return snap.get("logged_in") is False
+    if not logged_in:
+        return False
+    if condition == "walking":
+        return snap.get("walking") is True
+    if condition == "not_walking":
+        return snap.get("walking") is False
+    if condition == "in_combat":
+        return snap.get("in_combat") is True
+    if condition == "out_of_combat":
+        return snap.get("in_combat") is False
+    if condition == "talking_to_npc":
+        return snap.get("talking_to_npc") is True
+    if condition == "not_talking_to_npc":
+        return snap.get("talking_to_npc") is False
+    if condition == "right_click_menu_open":
+        return snap.get("right_click_menu_open") is True
+    if condition == "right_click_menu_closed":
+        return snap.get("right_click_menu_open") is False
+    if condition == "ui_panel_open":
+        return snap.get("ui_panel_open") is True
+    if condition == "ui_panel_closed":
+        return snap.get("ui_panel_open") is False
+    if condition in ("bank_open", "bank_closed", "shop_open", "shop_closed"):
+        interface, state = condition.split("_", 1)
+        return snap.get(f"{interface}_open") is (state == "open")
+    if condition == "trade_open":
+        return snap.get("trade_open") is True
+    if condition == "trade_closed":
+        return snap.get("trade_open") is False
+    if condition == "duel_open":
+        return snap.get("duel_open") is True
+    if condition == "duel_confirm":
+        duel = snap.get("duel")
+        return isinstance(duel, dict) and duel.get("stage") == "confirm"
+    if condition == "duel_closed":
+        return snap.get("duel_open") is False
+    if condition == "sleeping":
+        return snap.get("sleeping") is True
+    if condition == "not_sleeping":
+        return snap.get("sleeping") is False
+    if condition == "fatigue_zero":
+        return snap.get("fatigue") == 0
+    return False
+
+
+def wait_state_brief(snap: dict) -> str:
+    if not isinstance(snap, dict):
+        return "none"
+    parts = []
+    for key in ("logged_in", "walking", "in_combat", "talking_to_npc",
+                "right_click_menu_open", "ui_panel_open", "ui_panel",
+                "trade_open", "duel_open", "bank_open", "shop_open", "sleeping", "fatigue"):
+        value = snap.get(key)
+        if isinstance(value, bool):
+            value = str(value).lower()
+        parts.append(f"{key}:{value}")
+    return ",".join(parts)
+
+
+def _inventory_totals(snap: dict) -> dict:
+    totals = {}
+    for entry in snap.get("inventory") or []:
+        if not isinstance(entry, dict) or not isinstance(entry.get("id"), int):
+            continue
+        count = entry.get("count", entry.get("amount", 1))
+        if not isinstance(count, int):
+            continue
+        key = str(entry["id"])
+        current = totals.setdefault(key, {"count": 0, "name": ""})
+        current["count"] += count
+        if entry.get("name"):
+            current["name"] = " ".join(str(entry["name"]).split())[:80]
+    return totals
+
+
+def _trade_offer_totals(snap: dict) -> dict:
+    trade = snap.get("trade")
+    if not isinstance(trade, dict):
+        return {}
+    totals = {}
+    for entry in trade.get("my_offer") or []:
+        if not isinstance(entry, dict) or not isinstance(entry.get("id"), int):
+            continue
+        count = entry.get("count", entry.get("amount", 1))
+        if not isinstance(count, int):
+            continue
+        key = str(entry["id"])
+        current = totals.setdefault(key, {"count": 0, "name": ""})
+        current["count"] += count
+        if entry.get("name"):
+            current["name"] = " ".join(str(entry["name"]).split())[:80]
+    return totals
+
+
+def _ground_totals(snap: dict) -> dict:
+    """Visible ground stock keyed by exact identity and tile: "id@x,z" -> count.
+
+    The drop and use-on-ground verifiers compare piles at one tile, so the
+    key carries the tile rather than aggregating an item across the room."""
+    totals = {}
+    for entry in snap.get("ground_items") or []:
+        if not isinstance(entry, dict) or not isinstance(entry.get("id"), int) \
+                or not isinstance(entry.get("x"), int) \
+                or not isinstance(entry.get("z"), int):
+            continue
+        key = f"{entry['id']}@{entry['x']},{entry['z']}"
+        totals[key] = totals.get(key, 0) + 1
+    return totals
+
+
+def _skill_totals(snap: dict) -> dict:
+    totals = {}
+    for skill in snap.get("skills") or []:
+        if not isinstance(skill, dict) or not isinstance(skill.get("id"), int) \
+                or not isinstance(skill.get("xp"), int):
+            continue
+        totals[str(skill["id"])] = {
+            "xp": skill["xp"],
+            "name": " ".join(str(skill.get("name") or f"skill-{skill['id']}").split())[:80],
+        }
+    return totals
+
+
+def _message_ids(snap: dict) -> list:
+    return [message["id"] for message in snap.get("messages") or []
+            if isinstance(message, dict) and isinstance(message.get("id"), int)]
+
+
+def _spell_rune_ids(snap: dict, spell_id: int) -> list:
+    spell = next((entry for entry in snap.get("spells") or []
+                  if isinstance(entry, dict) and entry.get("id") == spell_id), None)
+    if spell is None:
+        return []
+    return [rune["id"] for rune in spell.get("runes") or []
+            if isinstance(rune, dict) and isinstance(rune.get("id"), int)]
+
+
+def floor_band(z):
+    """The floor the north-south coordinate encodes (spec rule 7a).
+
+    The server's own Point arithmetic packs each floor into one 944-tile band
+    (height = z / 944); the snapshot's z therefore names the current floor
+    without any new bridge field."""
+    if isinstance(z, int) and z >= 0:
+        return z // FLOOR_BAND_TILES
+    return None
+
+
+def observed_object_command(snap: dict, fields: dict) -> str:
+    """Capture the exact target's rendered definition command, not its name."""
+    try:
+        obj, x, z = (int(fields[key]) for key in ("obj", "x", "z"))
+        cmd = int(fields.get("cmd", 1))
+    except (KeyError, ValueError, TypeError):
+        return ""
+    target = next((o for o in snap.get("objects") or []
+                   if isinstance(o, dict) and (o.get("id"), o.get("x"), o.get("z"))
+                   == (obj, x, z)), {})
+    commands = target.get("commands") or []
+    return str(commands[cmd - 1]).strip().casefold() if 1 <= cmd <= len(commands) else ""
+
+
+def make_action_observation(action_id: int, action_type: str, fields: list,
+                            snap: dict, sent_ts: int = None) -> dict:
+    parsed = dict(field.split("=", 1) for field in fields
+                  if isinstance(field, str) and "=" in field)
+    try:
+        spell_id = int(parsed.get("spell", ""))
+    except ValueError:
+        spell_id = -1
+    return {
+        "v": 1, "id": action_id, "type": action_type,
+        "sent_ts": sent_ts if isinstance(sent_ts, int) else now_ms(),
+        "fields": list(fields),
+        "baseline": {
+            "ts": snap.get("ts"), "tick": snap.get("tick"),
+            "x": snap.get("x"), "z": snap.get("z"),
+            "walking": snap.get("walking"),
+            "object_command": observed_object_command(snap, parsed)
+            if action_type == "interact-object" else "",
+            "in_combat": snap.get("in_combat"),
+            "opponent": snap.get("opponent"),
+            "talking_to_npc": snap.get("talking_to_npc"),
+            "dialogue_open": snap.get("dialogue_open"),
+            "dialogue_options": snap.get("dialogue_options"),
+            "right_click_menu_open": snap.get("right_click_menu_open"),
+            "ui_panel_open": snap.get("ui_panel_open"),
+            "ui_panel": snap.get("ui_panel"),
+            "selected_inventory_item": snap.get("selected_inventory_item"),
+            "trade_open": snap.get("trade_open"),
+            "trade_stage": snap["trade"].get("stage")
+            if isinstance(snap.get("trade"), dict) else None,
+            "trade_partner": snap["trade"].get("partner")
+            if isinstance(snap.get("trade"), dict) else None,
+            "trade_my_accepted": snap["trade"].get("my_accepted")
+            if isinstance(snap.get("trade"), dict) else None,
+            "trade_my_offer": _trade_offer_totals(snap),
+            "duel_open": snap.get("duel_open"),
+            "duel_stage": snap["duel"].get("stage")
+            if isinstance(snap.get("duel"), dict) else None,
+            "bank_open": snap.get("bank_open"),
+            "shop_open": snap.get("shop_open"),
+            "sleeping": snap.get("sleeping"),
+            "inventory": _inventory_totals(snap),
+            "ground_items": _ground_totals(snap),
+            "skills": _skill_totals(snap),
+            "message_ids": _message_ids(snap),
+            "spell_runes": _spell_rune_ids(snap, spell_id),
+        },
+    }
+
+
+def cmd_action_arm(args):
+    """Remember the state immediately before a direct bridge action.
+
+    This is an internal door used by orsc-headless.sh. It gives a later
+    `wait-until action_done` the causal baseline that an after-the-fact wait
+    cannot reconstruct.
+    """
+    snap = game_reflex.read_snapshot() or {}
+    fields = dict(field.split('=', 1) for field in args.fields if '=' in field)
+    try:
+        game_decisions.check(args.type, int(fields.get('item', -1)), snap)
+    except ValueError as exc:
+        die(str(exc))
+    observation = make_action_observation(args.id, args.type, list(args.fields), snap)
+    state_dir().mkdir(parents=True, exist_ok=True)
+    with action_observation_lock():
+        game_reflex.atomic_write(action_observation_path(), json.dumps(observation) + "\n")
+    report("action-armed", id=args.id, type=args.type)
+
+
+def load_action_observation():
+    try:
+        observation = json.loads(action_observation_path().read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(observation, dict) or observation.get("v") != 1 \
+            or not isinstance(observation.get("id"), int) \
+            or not isinstance(observation.get("type"), str) \
+            or not isinstance(observation.get("sent_ts"), int) \
+            or not isinstance(observation.get("baseline"), dict):
+        return None
+    return observation
+
+
+def same_action_observation(left: dict, right: dict) -> bool:
+    """Whether two records name the same dispatch, not merely the same type."""
+    return isinstance(left, dict) and isinstance(right, dict) \
+        and left.get("id") == right.get("id") \
+        and left.get("sent_ts") == right.get("sent_ts")
+
+
+def settle_action_observation(observation: dict, remove: bool = False) -> bool:
+    """Compare-and-update one armed action without clobbering a newer dispatch."""
+    with action_observation_lock():
+        current = load_action_observation()
+        if not same_action_observation(current, observation):
+            return False
+        if remove:
+            try:
+                action_observation_path().unlink()
+            except FileNotFoundError:
+                pass
+        else:
+            game_reflex.atomic_write(
+                action_observation_path(), json.dumps(observation) + "\n")
+        return True
+
+
+def action_completion(observation: dict, snap: dict, context: dict = None):
+    """Return grounded postcondition details, or None while still unresolved.
+
+    `context` is the awaiting loop's memory across polls (currently whether
+    any polled snapshot showed the body walking); a caller replaying a single
+    captured snapshot may omit it."""
+    if not isinstance(snap, dict) or snap.get("logged_in") is not True \
+            or not isinstance(snap.get("ts"), int) \
+            or now_ms() - snap["ts"] > WAIT_SNAPSHOT_FRESH_MS:
+        return None
+    before = observation["baseline"]
+    newer = snap.get("tick") != before.get("tick") \
+        or (isinstance(before.get("ts"), int) and snap["ts"] > before["ts"])
+    if not newer:
+        return None
+
+    inventory_changes = []
+    changed_item_ids = set()
+    current_inventory = _inventory_totals(snap)
+    old_inventory = before.get("inventory") or {}
+    for item in sorted(set(old_inventory) | set(current_inventory), key=int):
+        old = (old_inventory.get(item) or {}).get("count", 0)
+        new = (current_inventory.get(item) or {}).get("count", 0)
+        if new == old:
+            continue
+        name = (current_inventory.get(item) or old_inventory.get(item) or {}).get("name") or item
+        inventory_changes.append(f"{name}({item}):{new - old:+d}")
+        changed_item_ids.add(item)
+
+    xp_changes = []
+    changed_skill_ids = set()
+    current_skills = _skill_totals(snap)
+    old_skills = before.get("skills") or {}
+    for skill in sorted(set(old_skills) & set(current_skills), key=int):
+        old = (old_skills.get(skill) or {}).get("xp")
+        new = (current_skills.get(skill) or {}).get("xp")
+        if not isinstance(old, int) or not isinstance(new, int) or new == old:
+            continue
+        name = (current_skills.get(skill) or {}).get("name") or skill
+        xp_changes.append(f"{name}:{new - old:+d}")
+        changed_skill_ids.add(skill)
+
+    old_message_ids = set(before.get("message_ids") or [])
+    new_messages = [message for message in snap.get("messages") or []
+                    if isinstance(message, dict)
+                    and isinstance(message.get("id"), int)
+                    and message["id"] not in old_message_ids
+                    and message.get("channel") in SYSTEM_FEEDBACK_CHANNELS
+                    and str(message.get("text", "")).strip()]
+    if observation["type"] == "choose-dialogue":
+        new_messages = [m for m in new_messages
+                        if not str(m.get("sender") or "").strip()]
+    message = " ".join(str(new_messages[-1].get("text", "")).split())[:240] \
+        if new_messages else ""
+
+    ui_changes = []
+    for key in ("talking_to_npc", "right_click_menu_open", "trade_open",
+                "duel_open", "bank_open", "shop_open", "sleeping"):
+        if isinstance(snap.get(key), bool) and snap.get(key) != before.get(key):
+            ui_changes.append(f"{key}:{str(snap[key]).lower()}")
+    live_duel_stage = snap["duel"].get("stage") \
+        if isinstance(snap.get("duel"), dict) else None
+    if live_duel_stage != before.get("duel_stage"):
+        ui_changes.append(f"duel_stage:{live_duel_stage or 'closed'}")
+    moved = isinstance(snap.get("x"), int) and isinstance(snap.get("z"), int) \
+        and (snap.get("x"), snap.get("z")) != (before.get("x"), before.get("z"))
+    movement_done = observation["type"] in ("walk", "retreat") \
+        and moved and snap.get("walking") is False
+
+    failure = bool(message) and any(needle in message.casefold() for needle in (
+        "nothing interesting happens", "you can't", "you cannot", "unable to",
+        "not enough", "not high enough", "you need", "reagents", "spell fails",
+        "can't reach", "cannot reach", "clear shot",
+        # Firemaking's held-pair answer: carried logs are refused, the game
+        # itself routes play to the drop-then-light-on-ground sequence.
+        "put the logs down",
+    ))
+    completed = bool(inventory_changes or xp_changes or message
+                     or ui_changes or movement_done)
+    fields = dict(field.split("=", 1) for field in observation.get("fields", [])
+                  if isinstance(field, str) and "=" in field)
+    if observation["type"] == "choose-dialogue":
+        # The option echo and disappearing question acknowledge our packet,
+        # not the server's response. Releasing here can let a bank opener
+        # re-talk in the false gap immediately before the bank reply arrives.
+        if context is not None and snap.get("dialogue_open") is False:
+            context["saw_dialogue_closed"] = True
+        next_menu = snap.get("dialogue_open") is True and bool(
+            snap.get("dialogue_options")) and (
+                snap.get("dialogue_options") != before.get("dialogue_options")
+                or bool(context and context.get("saw_dialogue_closed")))
+        response_ui = [f"{key}:true" for key in ("bank_open", "shop_open")
+                       if snap.get(key) is True and before.get(key) is not True]
+        if next_menu:
+            response_ui.append("dialogue-response-menu:true")
+        ui_changes = response_ui
+        completed = bool(inventory_changes or xp_changes or message or response_ui)
+        options = before.get("dialogue_options") or []
+        production_menu = bool(options) and all(
+            isinstance(option, str) and option.strip().casefold().startswith("make ")
+            for option in options)
+        if production_menu:
+            input_fell = any(
+                (current_inventory.get(key) or {}).get("count", 0)
+                < (old_inventory.get(key) or {}).get("count", 0)
+                for key in old_inventory)
+            product_grew = any(
+                (current_inventory.get(key) or {}).get("count", 0)
+                > (old_inventory.get(key) or {}).get("count", 0)
+                for key in current_inventory)
+            completed = bool(failure or (input_fell and product_grew
+                                         and snap.get("dialogue_open") is False))
+    if observation["type"] == "click-inventory":
+        try:
+            selected = int(fields.get("item", ""))
+        except ValueError:
+            selected = -1
+        selected_now = snap.get("selected_inventory_item") == selected \
+            and before.get("selected_inventory_item") != selected
+        menu_opened = snap.get("right_click_menu_open") is True \
+            and before.get("right_click_menu_open") is not True
+        if selected_now:
+            ui_changes.append(f"selected_inventory_item:{selected}")
+        if fields.get("batch") == "all":
+            # A batch member completes only when the selected item count
+            # actually falls. XP or a success line may arrive first and is
+            # useful evidence, but cannot authorize the next member by itself.
+            selected_key = str(selected)
+            old_selected = (old_inventory.get(selected_key) or {}).get("count", 0)
+            new_selected = (current_inventory.get(selected_key) or {}).get("count", 0)
+            completed = bool(new_selected < old_selected or failure)
+        else:
+            completed = bool(selected_now or menu_opened or inventory_changes
+                             or xp_changes or message or failure)
+    if observation["type"] == "click-entity":
+        for key in ("walking", "in_combat"):
+            if isinstance(snap.get(key), bool) and snap.get(key) != before.get(key):
+                ui_changes.append(f"{key}:{str(snap[key]).lower()}")
+        completed = bool(inventory_changes or xp_changes or message
+                         or ui_changes or moved or failure)
+    if observation["type"] == "attack-npc":
+        combat_started = snap.get("in_combat") is True \
+            and before.get("in_combat") is not True
+        opponent_acquired = snap.get("opponent") is not None \
+            and snap.get("opponent") != before.get("opponent")
+        combat_skill_ids = {
+            skill_id for skill_id, skill in current_skills.items()
+            if str(skill.get("name", "")).casefold()
+            in {"attack", "defense", "strength", "hits", "ranged"}
+        }
+        combat_xp = bool(changed_skill_ids & combat_skill_ids)
+        if combat_started:
+            ui_changes.append("in_combat:true")
+        if opponent_acquired:
+            ui_changes.append("opponent:acquired")
+        completed = bool(combat_started or opponent_acquired or combat_xp or failure)
+        if fields.get("mode") == "ranged":
+            try:
+                weapon, ammo, npc, sidx = (int(fields[key]) for key in
+                                            ("weapon", "ammo", "npc", "sidx"))
+            except (KeyError, ValueError, TypeError):
+                return None
+            equipped = any(isinstance(item, dict) and item.get("id") == weapon
+                           and item.get("equipped") is True for item in snap.get("inventory") or [])
+            ammo_before = (old_inventory.get(str(ammo)) or {}).get("count", 0)
+            ammo_now = (current_inventory.get(str(ammo)) or {}).get("count", 0)
+            ranged_xp = any(current_skills[key].get("name", "").casefold() == "ranged"
+                            for key in changed_skill_ids)
+            released = isinstance(snap.get("npcs"), list) and snap.get("npcs_truncated") is False \
+                and not any(isinstance(entity, dict) and entity.get("sidx") == sidx
+                            and entity.get("id") == npc for entity in snap["npcs"])
+            failure = bool(failure or snap.get("in_combat") is True or not equipped or ammo_now <= 0)
+            completed = bool(failure or (released and (ammo_now < ammo_before or ranged_xp)))
+            if released and completed and not failure:
+                ui_changes.append("ranged-target:released")
+    if observation["type"] == "use-item-object":
+        # Pane/menu changes were the old two-click race, not evidence that the
+        # server used the selected item. A furnace's start line also precedes
+        # the bar. Ground success in its input changing or XP; only explicit
+        # failure feedback may terminate it without either delta.
+        completed = bool(fields.get("item") in changed_item_ids
+                         or xp_changes or failure)
+    if observation["type"] == "use-item-item":
+        # Production may require a server question first (knife on logs).
+        # That question hands control to choose-dialogue, not another pair
+        # dispatch. A context menu or pointer-selection change proves nothing.
+        server_menu = snap.get("dialogue_open") is True \
+            and before.get("dialogue_open") is not True \
+            and bool(snap.get("dialogue_options"))
+        if server_menu:
+            ui_changes.append("dialogue-menu-opened:true")
+        # A prior production answer may release on input removal before
+        # its output/XP packets arrive. Those late packets do not prove this
+        # newly dispatched pair ran; require one of THIS pair's inputs lost.
+        input_used = any(
+            (current_inventory.get(key) or {}).get("count", 0)
+            < (old_inventory.get(key) or {}).get("count", 0)
+            for key in (fields.get("item"), fields.get("target"))
+            if key is not None)
+        completed = bool(input_used or server_menu or failure)
+    if observation["type"] == "drop-inventory":
+        # The client prints its local "Dropping ..." line at packet time,
+        # before the server has moved anything, so a message alone is never
+        # completion. Spec rule 7a requires BOTH grounded deltas from one
+        # newer snapshot: the held count falling AND the matching ground
+        # pile at the body's tile appearing or growing. Explicit refusal
+        # feedback alone ends it failed.
+        item_key = str(fields.get("item", ""))
+        old_held = (old_inventory.get(item_key) or {}).get("count", 0)
+        new_held = (current_inventory.get(item_key) or {}).get("count", 0)
+        held_fell = new_held < old_held
+        old_ground = before.get("ground_items") or {}
+        new_ground = _ground_totals(snap)
+        here_key = f"{item_key}@{snap.get('x')},{snap.get('z')}"
+        pile_grew = new_ground.get(here_key, 0) > old_ground.get(here_key, 0)
+        if held_fell and pile_grew:
+            ui_changes.append(
+                f"ground-pile:{here_key}:"
+                f"{old_ground.get(here_key, 0)}->{new_ground.get(here_key, 0)}")
+        completed = bool((held_fell and pile_grew) or failure)
+    if observation["type"] == "use-item-ground":
+        # Success is the TARGETED pile shrinking at its exact tile (a lit
+        # pile leaves ground_items as the fire scenery replaces it) or an
+        # XP delta. The server's "You attempt to light the logs" line is
+        # observation, never completion; its "You fail to light a fire" is
+        # explicit failure the generic needles do not carry.
+        target_key = (f"{fields.get('ground', '')}@"
+                      f"{fields.get('x', '')},{fields.get('z', '')}")
+        old_ground = before.get("ground_items") or {}
+        new_ground = _ground_totals(snap)
+        pile_fell = new_ground.get(target_key, 0) < old_ground.get(target_key, 0)
+        failed_line = any(
+            "fail to light" in str(entry.get("text", "")).casefold()
+            for entry in new_messages)
+        if pile_fell:
+            ui_changes.append(
+                f"ground-pile:{target_key}:"
+                f"{old_ground.get(target_key, 0)}->{new_ground.get(target_key, 0)}")
+        failure = bool(failure or failed_line)
+        completed = bool(pile_fell or xp_changes or failure)
+    trade_give = None
+    trade_stage = None
+    if observation["type"] in ("trade-offer", "trade-remove"):
+        try:
+            item = int(fields.get("item", ""))
+            amount = int(fields.get("amount", ""))
+        except ValueError:
+            item = amount = -1
+        item_key = str(item)
+        before_offer = before.get("trade_my_offer") or {}
+        current_offer = _trade_offer_totals(snap)
+        old_count = (before_offer.get(item_key) or {}).get("count", 0)
+        current_count = (current_offer.get(item_key) or {}).get("count", 0)
+        expected = old_count + amount \
+            if observation["type"] == "trade-offer" else old_count - amount
+        trade = snap.get("trade")
+        same_offer = isinstance(trade, dict) \
+            and trade.get("stage") == "offer" \
+            and trade.get("partner") == before.get("trade_partner")
+        exact_change = item >= 0 and amount > 0 and expected >= 0 \
+            and same_offer and current_count == expected
+        if exact_change:
+            name = (current_offer.get(item_key)
+                    or before_offer.get(item_key) or {}).get("name") or f"item-{item}"
+            trade_give = f"id={item} {name} x{current_count}"
+            ui_changes.append(f"trade-give:{item}:{old_count}->{current_count}")
+        completed = bool(exact_change or failure)
+    if observation["type"] == "trade-accept":
+        wanted_stage = fields.get("stage")
+        trade = snap.get("trade")
+        same_partner = isinstance(trade, dict) \
+            and trade.get("partner") == before.get("trade_partner")
+        offer_accepted = wanted_stage == "offer" and same_partner \
+            and (trade.get("stage") == "confirm"
+                 or trade.get("my_accepted") is True)
+        completed_feedback = "trade completed" in message.casefold()
+        confirm_completed = wanted_stage == "confirm" \
+            and not isinstance(trade, dict) and completed_feedback
+        trade_failed = failure or (bool(message) and any(
+            needle in message.casefold() for needle in (
+                "trade declined", "trade cancelled", "trade canceled",
+                "other player declined",
+            )))
+        if offer_accepted:
+            live_stage = trade.get("stage")
+            trade_stage = f"offer->{live_stage or 'accepted'}"
+            ui_changes.append(f"trade-stage:{trade_stage}")
+        if confirm_completed:
+            trade_stage = "confirm->closed"
+            ui_changes.append("trade-stage:confirm->closed")
+        failure = trade_failed
+        completed = bool(offer_accepted or confirm_completed or trade_failed)
+    if observation["type"] == "interact-object":
+        # Spec rule 7a: a scenery action's walk is only the approach, never
+        # the result. The floor-band arithmetic (the server's own z / 944) is
+        # the transition witness for ladders and stairs; a still body watching
+        # its target vanish is a scenery reload; an unexplained twelve-tile
+        # settled jump with no walking observed is a portal. A body that
+        # WALKED and settled away from the target with none of that evidence
+        # is the grounded failure — dispatch was never a climb.
+        band_before = floor_band(before.get("z"))
+        band_now = floor_band(snap.get("z"))
+        band_changed = band_before is not None and band_now is not None \
+            and band_now != band_before
+        if band_changed:
+            ui_changes.append(f"floor:{band_before}->{band_now}")
+        try:
+            target_x = int(fields.get("x", ""))
+            target_z = int(fields.get("z", ""))
+            target_obj = int(fields.get("obj", ""))
+        except ValueError:
+            target_x = target_z = target_obj = None
+        px, pz = snap.get("x"), snap.get("z")
+        bx, bz = before.get("x"), before.get("z")
+        here = isinstance(px, int) and isinstance(pz, int)
+        settled = snap.get("walking") is False
+        saw_walking = bool(context and context.get("saw_walking"))
+        displacement = max(abs(px - bx), abs(pz - bz)) \
+            if here and isinstance(bx, int) and isinstance(bz, int) else None
+        portal_jump = settled and not band_changed and not saw_walking \
+            and displacement is not None and displacement >= PORTAL_JUMP_TILES
+        if portal_jump:
+            ui_changes.append(f"portal-jump:({bx},{bz})->({px},{pz})")
+        vanished = False
+        settled_distance = None
+        if target_x is not None and here:
+            target_present = any(
+                isinstance(entity, dict) and entity.get("id") == target_obj
+                and entity.get("x") == target_x and entity.get("z") == target_z
+                for entity in snap.get("objects") or [])
+            settled_distance = max(abs(px - target_x), abs(pz - target_z))
+            vanished = settled and not target_present and not band_changed \
+                and not portal_jump and displacement is not None \
+                and displacement <= OBJECT_VANISH_NEAR_TILES
+            if vanished:
+                ui_changes.append(f"scenery-reloaded:obj-{target_obj}-gone")
+        settled_away = settled and saw_walking and not band_changed \
+            and not vanished and not failure \
+            and not (inventory_changes or xp_changes or message or ui_changes) \
+            and settled_distance is not None \
+            and settled_distance > OBJECT_SETTLE_AWAY_TILES
+        if settled_away:
+            failure = True
+            ui_changes.append(
+                f"settled-away:({px},{pz})-target:({target_x},{target_z})"
+                f"-distance:{settled_distance}")
+        completed = bool(inventory_changes or xp_changes or message
+                         or ui_changes or failure)
+    if observation["type"] == "interact-object" and before.get("object_command") == "chop":
+        # The swing and even the success line precede the full result. Waiting
+        # for both deltas prevents the next chop from consuming late XP as its
+        # own completion or dispatching against the just-felled tree.
+        gained_item = any(
+            (current_inventory.get(key) or {}).get("count", 0)
+            > (old_inventory.get(key) or {}).get("count", 0)
+            for key in current_inventory)
+        gained_woodcut_xp = any(
+            str(skill.get("name", "")).casefold() in ("woodcut", "woodcutting")
+            and skill.get("xp", 0) > (old_skills.get(key) or {}).get("xp", skill.get("xp", 0))
+            for key, skill in current_skills.items())
+        failed_chop = any(
+            any(needle in str(entry.get("text", "")).casefold()
+                for needle in ("fail to hit the tree", "too tired to cut the tree"))
+            for entry in new_messages)
+        failure = bool(failure or failed_chop)
+        # Normal trees have 100% fell chance (ObjectWoodcutting.xml ids 0/1).
+        # Their scenery packet may trail both XP and inventory updates.
+        target_released = target_obj not in (0, 1) or (isinstance(snap.get("objects"), list) and not any(
+            isinstance(entity, dict) and entity.get("id") == target_obj
+            and entity.get("x") == target_x and entity.get("z") == target_z
+            for entity in snap["objects"]))
+        completed = bool(failure or (gained_item and gained_woodcut_xp and target_released))
+    if observation["type"] == "cast-npc":
+        rune_ids = {str(item) for item in before.get("spell_runes") or []}
+        magic_ids = {skill_id for skill_id, skill in current_skills.items()
+                     if str(skill.get("name", "")).casefold() == "magic"}
+        spell_message = bool(message) and any(needle in message.casefold() for needle in (
+            "spell", "reagent", "magic ability", "you need to wait",
+        ))
+        completed = bool(changed_item_ids & rune_ids
+                         or changed_skill_ids & magic_ids
+                         or spell_message or failure)
+    if not completed:
+        return None
+    return {
+        "result": "failed" if failure else "done",
+        "inventory": ",".join(inventory_changes) or None,
+        "xp": ",".join(xp_changes) or None,
+        "message": message or None,
+        "state": ",".join(ui_changes) or ("movement-settled" if movement_done else None),
+        "trade_give": trade_give,
+        "trade_stage": trade_stage,
+    }
+
+
+def await_action_completion(observation: dict, timeout: float):
+    deadline = time.monotonic() + timeout
+    latest = None
+    # The loop's memory across polls: whether the body was ever observed
+    # walking. It separates a pedestrian settle-away from a portal's
+    # instantaneous jump (spec rule 7a's scenery transitions).
+    saved_context = observation.get("wait_context")
+    context = {
+        "saw_walking": bool(isinstance(saved_context, dict)
+                            and saved_context.get("saw_walking")),
+        "saw_dialogue_closed": bool(isinstance(saved_context, dict)
+                                    and saved_context.get("saw_dialogue_closed")),
+    }
+    observation["wait_context"] = context
+    with SnapshotChangeWatch() as watch:
+        while True:
+            latest = game_reflex.read_snapshot()
+            if isinstance(latest, dict) and latest.get("walking") is True:
+                context["saw_walking"] = True
+            refresh_observation_heartbeat(observation)
+            completion = action_completion(observation, latest, context)
+            if completion is not None:
+                return completion, latest
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return None, latest
+            watch.wait(remaining)
+
+
+def cmd_wait_action_done(args):
+    observation = load_action_observation()
+    if observation is None:
+        report("action-unarmed", next="perform-one-bridge-action-first")
+        sys.exit(EXIT_NOT_READY)
+    if now_ms() - observation["sent_ts"] > WAIT_MAX_S * 1000:
+        settle_action_observation(observation, remove=True)
+        report("action-unarmed", reason="expired",
+               next="perform-one-bridge-action-first")
+        sys.exit(EXIT_NOT_READY)
+    completion, latest = await_action_completion(observation, args.timeout)
+    if completion is not None:
+        settle_action_observation(observation, remove=True)
+        report("action-done", id=observation["id"], type=observation["type"],
+               **completion)
+        return
+    # A short wait can end midway through a legitimate approach. Preserve the
+    # fact that walking was observed so a subsequent waiter does not call the
+    # eventual distant pedestrian stop an instantaneous portal. The
+    # compare-and-update leaves a newer action's observation untouched.
+    settle_action_observation(observation)
+    record_wait_failure("action_done", "timeout", latest or {}, args.timeout)
+    report("action-timeout", id=observation["id"],
+           type=observation["type"], timeout=f"{args.timeout:g}",
+           state=wait_state_brief(latest))
+    sys.exit(EXIT_NOT_DONE)
+
+
+def cmd_wait_until(args):
+    condition = normalise_wait_condition(args.condition)
+    if not 0 < args.timeout <= WAIT_MAX_S:
+        die(f"wait timeout must be greater than 0 and no more than {WAIT_MAX_S:g} seconds")
+    if condition == "action_done":
+        return cmd_wait_action_done(args)
+    deadline = time.monotonic() + args.timeout
+    latest = None
+    with SnapshotChangeWatch() as watch:
+        baseline = game_reflex.read_snapshot()
+        baseline_tick = baseline.get("tick") if isinstance(baseline, dict) else None
+        baseline_ts = baseline.get("ts") if isinstance(baseline, dict) else None
+        # Immediately after a dialogue click, the first replacement can still
+        # describe the gap before the server's reply. A negative dialogue wait
+        # that began in that gap must observe dialogue start before it is
+        # allowed to observe dialogue end.
+        dialogue_observed = (
+            condition == "not_talking_to_npc"
+            and isinstance(baseline, dict)
+            and baseline.get("talking_to_npc") is True
+        )
+        # `wait until` is level-triggered: if the fresh current state already
+        # holds, the transition may have completed while this process was
+        # starting. The dialogue-end condition is the one deliberate edge:
+        # false before an NPC reply is the dispatch gap, not proof of ending.
+        if condition != "not_talking_to_npc" \
+                and wait_condition_met(condition, baseline):
+            report("condition-met", condition=condition,
+                   tick=baseline.get("tick"), x=baseline.get("x"), z=baseline.get("z"))
+            return
+        if condition == "out_of_combat" and isinstance(baseline, dict) \
+                and baseline.get("in_combat") is True \
+                and retreat_lock_feedback(baseline):
+            record_wait_failure(condition, "needs-retreat-action", baseline)
+            report("condition-needs-action", condition=condition,
+                   reason="retreat-locked", next="retreat")
+            sys.exit(EXIT_NOT_DONE)
+        while True:
+            latest = game_reflex.read_snapshot()
+            newer = isinstance(latest, dict) and (
+                baseline is None
+                or latest.get("tick") != baseline_tick
+                or (isinstance(latest.get("ts"), int)
+                    and isinstance(baseline_ts, int) and latest["ts"] > baseline_ts)
+            )
+            if newer and condition == "not_talking_to_npc" \
+                    and isinstance(latest, dict) \
+                    and latest.get("talking_to_npc") is True:
+                dialogue_observed = True
+            phase_ready = condition != "not_talking_to_npc" or dialogue_observed
+            if newer and phase_ready and wait_condition_met(condition, latest):
+                report("condition-met", condition=condition,
+                       tick=latest.get("tick"), x=latest.get("x"), z=latest.get("z"))
+                return
+            if condition == "out_of_combat" and newer \
+                    and isinstance(latest, dict) \
+                    and latest.get("in_combat") is True \
+                    and retreat_lock_feedback(latest):
+                record_wait_failure(condition, "needs-retreat-action", latest)
+                report("condition-needs-action", condition=condition,
+                       reason="retreat-locked", next="retreat")
+                sys.exit(EXIT_NOT_DONE)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                record_wait_failure(condition, "timeout", latest or {}, args.timeout)
+                report("condition-timeout", condition=condition,
+                       timeout=f"{args.timeout:g}", state=wait_state_brief(latest))
+                sys.exit(EXIT_NOT_DONE)
+            watch.wait(remaining)
+
+
+def cmd_sidestep_pause(args):
+    """Spec rule 7a: show or deliberately clear the standing sidestep pause.
+    Clearing is the re-arming door after the anomaly has been diagnosed."""
+    objective = read_objective()
+    pause = load_sidestep_pause(objective)
+    if getattr(args, "clear", False):
+        if pause is None and not sidestep_pause_path().exists():
+            report("sidestep-pause-none")
+            return
+        clear_sidestep_pause()
+        flush_events([{"ts": now_ms(), "kind": "sidestep-pause-cleared",
+                       "objective": objective or None}])
+        report("sidestep-pause-cleared", objective=objective or None)
+        return
+    if pause is None:
+        report("sidestep-pause-none")
+        return
+    origin = pause.get("origin") or {}
+    target = pause.get("target") or {}
+    settled = pause.get("settled") or {}
+    report("sidestep-pause", status=pause.get("status"),
+           rule=pause.get("rule"), npc=pause.get("npc"),
+           origin=(f"({origin.get('x')},{origin.get('z')})"
+                   if origin else None),
+           target=(f"({target.get('x')},{target.get('z')})"
+                   if target else None),
+           settled=(f"({settled.get('x')},{settled.get('z')})"
+                    if settled else None),
+           moved=pause.get("moved"), ts=pause.get("ts"),
+           feedback=pause.get("feedback"),
+           next="play sidestep-pause --clear")
+    sys.exit(EXIT_NOT_DONE)
+
+
+def cmd_retreat(args):
+    """One bounded escape commitment. The resident runner owns it when
+    present; otherwise this process uses the identical rules-first step path.
+    A momentary out-of-combat snapshot is only the midpoint: completion also
+    requires verified distance from the combat origin and nearby aggressors."""
+    if not 0 < args.timeout <= 30:
+        die("retreat timeout must be greater than 0 and no more than 30 seconds")
+    if not 1 <= args.distance <= 10:
+        die("retreat distance must be an integer 1..10")
+    if args.dx not in (-1, 0, 1) or args.dz not in (-1, 0, 1) \
+            or (args.dx == 0 and args.dz == 0):
+        die("retreat dx/dz must be -1, 0, or 1 and not both zero")
+    if (state_dir() / "hold").exists():
+        report("retreat-held", reason="maintenance-hold")
+        sys.exit(EXIT_HELD)
+    snap = game_reflex.read_snapshot()
+    if not isinstance(snap, dict) or snap.get("logged_in") is not True \
+            or now_ms() - snap.get("ts", 0) > WAIT_SNAPSHOT_FRESH_MS \
+            or not isinstance(snap.get("x"), int) \
+            or not isinstance(snap.get("z"), int):
+        report("retreat-not-ready", state=wait_state_brief(snap))
+        sys.exit(EXIT_NOT_READY)
+    if snap.get("in_combat") is False:
+        clear_retreat_request()
+        report("retreated", status="already-safe", x=snap.get("x"), z=snap.get("z"))
+        return
+
+    with player_state_lock():
+        combat_state = load_player_state()
+        track_combat_state(snap, combat_state, now_ms())
+        save_player_state(combat_state)
+    combat_id = combat_state.get("combat_id")
+    if not isinstance(combat_id, int):
+        report("retreat-not-ready", reason="combat-episode-unobserved")
+        sys.exit(EXIT_NOT_READY)
+    dx, dz = choose_retreat_direction(snap, args.dx, args.dz)
+    expires = now_ms() + int(args.timeout * 1000)
+    request = {"v": 3, "requested": now_ms(), "expires": expires,
+               "combat_id": combat_id,
+               "distance": args.distance, "dx": dx, "dz": dz,
+               "origin_x": snap["x"], "origin_z": snap["z"],
+               "clearance": RETREAT_CLEARANCE_TILES}
+    game_reflex.atomic_write(retreat_request_path(), json.dumps(request) + "\n")
+    cfg = load_config()
+    wait_ms = config_defaults(cfg)["inflight_timeout_ms"]
+    deadline = time.monotonic() + args.timeout
+    latest = snap
+    with SnapshotChangeWatch() as watch:
+        while True:
+            latest = game_reflex.read_snapshot() or latest
+            if latest.get("logged_in") is not True:
+                clear_retreat_request()
+                report("retreat-unverified", reason="logged-out")
+                sys.exit(EXIT_NOT_READY)
+            if retreat_has_clearance(latest, request):
+                clear_retreat_request()
+                report("retreated", status="clear", tick=latest.get("tick"),
+                       x=latest.get("x"), z=latest.get("z"),
+                       origin=f"({request['origin_x']},{request['origin_z']})",
+                       clearance=request["clearance"])
+                return
+            if latest.get("in_combat") is False:
+                # A provoked, non-aggressive fight was broken by its one-tile
+                # step (spec 7b): the 12-tile clearance leg must not follow.
+                last = load_player_state().get("last_combat") or {}
+                if last.get("provoked") is True \
+                        and last.get("id") == request["combat_id"]:
+                    clear_retreat_request()
+                    report("retreated", status="one-tile-clear",
+                           tick=latest.get("tick"),
+                           x=latest.get("x"), z=latest.get("z"),
+                           origin=f"({request['origin_x']},{request['origin_z']})")
+                    return
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                clear_retreat_request()
+                record_wait_failure("out_of_combat", "retreat-timeout", latest,
+                                    args.timeout)
+                lx, lz = latest.get("x"), latest.get("z")
+                moved = max(abs(lx - request["origin_x"]),
+                            abs(lz - request["origin_z"])) \
+                    if isinstance(lx, int) and isinstance(lz, int) else "unknown"
+                report("retreat-timeout", timeout=f"{args.timeout:g}",
+                       moved=moved,
+                       feedback=latest_system_feedback(latest),
+                       state=wait_state_brief(latest))
+                sys.exit(EXIT_NOT_DONE)
+            # A live runner sees retreat-request.json and gives it precedence
+            # over chat and ordinary activity. Without one, use exactly the
+            # same evaluation locally—never a second ad-hoc action loop.
+            if read_live_runner() is None:
+                step_once(cfg, read_objective(), read_activity(), wait_ms)
+            else:
+                watch.wait(min(remaining, 0.5))
+
+
+def cmd_take(args):
+    """Take one wanted visible item and keep routine play from cancelling the
+    walk. Completion requires both the targeted ground entry to decrease and
+    the matching inventory quantity to increase."""
+    cfg = load_config()
+    defaults = config_defaults(cfg)
+    snap = game_reflex.read_snapshot()
+    if not isinstance(snap, dict) or snap.get("logged_in") is not True \
+            or now_ms() - snap.get("ts", 0) > WAIT_SNAPSHOT_FRESH_MS:
+        report("take-not-ready", item=args.item, state=wait_state_brief(snap))
+        sys.exit(EXIT_NOT_READY)
+    if (state_dir() / "hold").exists():
+        report("take-held", item=args.item, reason="maintenance-hold")
+        sys.exit(EXIT_HELD)
+    if snap.get("in_combat") is True:
+        report("take-needs-retreat", item=args.item,
+               reason="combat-blocks-pickup", next="retreat")
+        sys.exit(EXIT_NOT_DONE)
+    matches = [entry for entry in snap.get("ground_items") or []
+               if isinstance(entry, dict) and entry.get("id") == args.item
+               and isinstance(entry.get("x"), int) and isinstance(entry.get("z"), int)]
+    if not matches:
+        report("take-not-visible", item=args.item)
+        sys.exit(EXIT_NOT_DONE)
+    px, pz = snap.get("x"), snap.get("z")
+    reachable = [entry for entry in matches if entry.get("reachable") is not False]
+    if not reachable:
+        door_entry = next((entry for entry in matches
+                           if isinstance(entry.get("door"), dict)), None)
+        if door_entry is not None:
+            door = door_entry["door"]
+            next_action = "bound-{x}-{z}-{dir}-{id}-{cmd}".format(**door)
+            report("take-needs-door", item=args.item,
+                   x=door_entry["x"], z=door_entry["z"],
+                   door=door.get("name") or door.get("id"),
+                   door_x=door.get("x"), door_z=door.get("z"),
+                   door_dir=door.get("dir"), door_cmd=door.get("cmd"),
+                   next=next_action)
+        else:
+            report("take-unreachable", item=args.item,
+                   reason="collision-path-unavailable", next="choose-other-work")
+        sys.exit(EXIT_NOT_DONE)
+
+    def route_key(entry):
+        distance = entry.get("path_distance")
+        if isinstance(distance, int) and distance >= 0:
+            return (0, distance)
+        return (1, max(abs(entry["x"] - px), abs(entry["z"] - pz)))
+
+    target = min(reachable, key=route_key)
+    action = {"type": "take-ground", "item": args.item,
+              "x": target["x"], "z": target["z"]}
+    before_inventory = inventory_quantity(snap, args.item)
+    before_ground = ground_quantity_at(snap, args.item, target["x"], target["z"])
+    progress = {"v": 1, "pid": os.getpid(), "started": now_ms(),
+                "expires": now_ms() + int((TAKE_TIMEOUT_S + 5) * 1000),
+                "item": args.item, "x": target["x"], "z": target["z"]}
+    game_reflex.atomic_write(take_progress_path(), json.dumps(progress) + "\n")
+    status = "no-receipt"
+    final_x = final_z = None
+    gained = 0
+    action_id = None
+    try:
+        with player_state_lock():
+            if (state_dir() / "action.json").exists():
+                report("take-not-ready", item=args.item, reason="slot-busy")
+                sys.exit(EXIT_NOT_READY)
+            est = load_player_state()
+            est["action_seq"] += 1
+            action_id = est["action_seq"]
+            sent_at = now_ms()
+            est["inflight"] = {"id": action_id, "ts": sent_at}
+            save_player_state(est)
+            emit_player_action("action.json", action, action_id, sent_at)
+
+        deadline = time.monotonic() + defaults["inflight_timeout_ms"] / 1000.0
+        receipt_path = state_dir() / "receipt.json"
+        with SnapshotChangeWatch() as watch:
+            while time.monotonic() < deadline:
+                try:
+                    receipt = json.loads(receipt_path.read_text())
+                except (OSError, json.JSONDecodeError):
+                    receipt = None
+                if receipt and receipt.get("id") == action_id:
+                    status = receipt.get("status", "no-status")
+                    try:
+                        receipt_path.unlink()
+                    except OSError:
+                        pass
+                    break
+                watch.wait(max(0.01, min(0.25, deadline - time.monotonic())))
+        if status == "done":
+            status, final_x, final_z, gained = verify_take_ground(
+                args.item, target["x"], target["z"],
+                before_inventory, before_ground)
+    finally:
+        with player_state_lock():
+            est = load_player_state()
+            if action_id is not None and (est.get("inflight") or {}).get("id") == action_id:
+                est["inflight"] = None
+                save_player_state(est)
+        try:
+            take_progress_path().unlink()
+        except FileNotFoundError:
+            pass
+
+    record = {"ts": now_ms(), "kind": "manual-take", "id": action_id,
+              "action": action, "status": status, "gained": gained,
+              "settled": {"x": final_x, "z": final_z}}
+    append_outcome(record)
+    flush_events([record])
+    report("taken", id=action_id, item=args.item, status=status,
+           x=final_x, z=final_z, gained=gained)
+    if status != "done":
+        sys.exit(EXIT_NOT_DONE)
+
+
+def cmd_retrace(args):
+    """One movement request whose postcondition is squared-distance progress
+    toward one CHOSEN previously occupied tile (spec rule 7f). A receipt is
+    dispatch; the settled snapshot's distance to the chosen tile is the only
+    thing that can call this progress."""
+    cfg = load_config()
+    defaults = config_defaults(cfg)
+    target_x, target_z = args.x, args.z
+    snap = game_reflex.read_snapshot()
+    if not isinstance(snap, dict) or snap.get("logged_in") is not True \
+            or now_ms() - snap.get("ts", 0) > WAIT_SNAPSHOT_FRESH_MS \
+            or not isinstance(snap.get("x"), int) \
+            or not isinstance(snap.get("z"), int):
+        report("retrace-not-ready", target_x=target_x, target_z=target_z,
+               state=wait_state_brief(snap))
+        sys.exit(EXIT_NOT_READY)
+    if (state_dir() / "hold").exists():
+        report("retrace-held", reason="maintenance-hold")
+        sys.exit(EXIT_HELD)
+    if snap.get("in_combat") is True:
+        report("retrace-needs-retreat", reason="combat-owns-movement",
+               next="retreat")
+        sys.exit(EXIT_NOT_DONE)
+
+    trail_points = load_movement_trail()["points"]
+    if not any(point.get("x") == target_x and point.get("z") == target_z
+               for point in trail_points):
+        recent = ",".join(f"({p['x']},{p['z']})" for p in trail_points[-8:])
+        report("retrace-not-prior-tile", target_x=target_x, target_z=target_z,
+               recent_trail=recent or None,
+               reason="recovery-targets-come-from-observed-evidence")
+        sys.exit(EXIT_NOT_DONE)
+
+    route = load_route()
+    if route is not None:
+        report("retrace-conflicts-route",
+               route_status=route.get("status"),
+               route_x=route.get("x"), route_z=route.get("z"),
+               reason="the-explicit-route-is-the-movement-commitment",
+               next="route-completes-or-route-clear-deliberately")
+        sys.exit(EXIT_NOT_DONE)
+    backtrack = load_backtrack()
+    if backtrack is not None and backtrack.get("status") in (
+            "active", "blocked", "invalid"):
+        report("retrace-conflicts-backtrack",
+               backtrack_status=backtrack.get("status"),
+               next="backtrack-status-or-backtrack-clear")
+        sys.exit(EXIT_NOT_DONE)
+    if backtrack is not None and backtrack.get("status") == "diverged":
+        clear_backtrack()
+        flush_events([{"ts": now_ms(), "kind": "backtrack-replaced-by-retrace",
+                       "target_x": target_x, "target_z": target_z,
+                       "contradictions": backtrack.get("contradictions")}])
+
+    start_x, start_z = snap["x"], snap["z"]
+    d2_before = navigation_distance_sq(start_x, start_z, target_x, target_z)
+    if max(abs(start_x - target_x), abs(start_z - target_z)) <= args.arrive:
+        rewind_movement_trail(target_x, target_z)
+        report("done", target_x=target_x, target_z=target_z,
+               x=start_x, z=start_z, d2=f"{d2_before}->{d2_before}")
+        return
+
+    leg_x, leg_z = bounded_navigation_leg(start_x, start_z, target_x, target_z)
+    leg_arrive = args.arrive if (leg_x, leg_z) == (target_x, target_z) else 0
+    progress = {"v": 1, "pid": os.getpid(), "started": now_ms(),
+                "expires": now_ms() + int((WALK_TIMEOUT_S + 5) * 1000),
+                "x": start_x, "z": start_z,
+                "target_x": target_x, "target_z": target_z,
+                "leg_x": leg_x, "leg_z": leg_z}
+    game_reflex.atomic_write(movement_progress_path(),
+                             json.dumps(progress) + "\n")
+    action = {"type": "walk", "x": leg_x, "z": leg_z, "arrive": leg_arrive}
+    status = "no-receipt"
+    final_x = final_z = None
+    action_id = None
+    try:
+        with player_state_lock():
+            if (state_dir() / "action.json").exists():
+                report("retrace-not-ready", reason="slot-busy")
+                sys.exit(EXIT_NOT_READY)
+            est = load_player_state()
+            est["action_seq"] += 1
+            action_id = est["action_seq"]
+            sent_at = now_ms()
+            est["inflight"] = {"id": action_id, "ts": sent_at}
+            save_player_state(est)
+            emit_player_action("action.json", action, action_id, sent_at)
+
+        deadline = time.monotonic() + defaults["inflight_timeout_ms"] / 1000.0
+        receipt_path = state_dir() / "receipt.json"
+        with SnapshotChangeWatch() as watch:
+            while time.monotonic() < deadline:
+                try:
+                    receipt = json.loads(receipt_path.read_text())
+                except (OSError, json.JSONDecodeError):
+                    receipt = None
+                if receipt and receipt.get("id") == action_id:
+                    status = receipt.get("status", "no-status")
+                    try:
+                        receipt_path.unlink()
+                    except OSError:
+                        pass
+                    break
+                watch.wait(max(0.01, min(0.25, deadline - time.monotonic())))
+        if status == "done":
+            status, final_x, final_z = verify_walk(leg_x, leg_z, leg_arrive)
+    finally:
+        with player_state_lock():
+            est = load_player_state()
+            if action_id is not None \
+                    and (est.get("inflight") or {}).get("id") == action_id:
+                est["inflight"] = None
+                save_player_state(est)
+        try:
+            movement_progress_path().unlink()
+        except FileNotFoundError:
+            pass
+
+    if final_x is None or final_z is None:
+        record = {"ts": now_ms(), "kind": "manual-retrace", "id": action_id,
+                  "target": {"x": target_x, "z": target_z},
+                  "leg": {"x": leg_x, "z": leg_z},
+                  "start": {"x": start_x, "z": start_z},
+                  "status": status, "d2_before": d2_before}
+        append_outcome(record)
+        flush_events([record])
+        report("retrace-not-dispatched", id=action_id, status=status,
+               target_x=target_x, target_z=target_z)
+        sys.exit(EXIT_NOT_DONE)
+
+    # The settled snapshot may already be beyond the leg endpoint; measure the
+    # postcondition against the CHOSEN tile, never the receipt or the leg.
+    latest = game_reflex.read_snapshot() or {}
+    if isinstance(latest.get("x"), int) and isinstance(latest.get("z"), int):
+        final_x, final_z = latest["x"], latest["z"]
+        record_movement_trail(latest, connected=True)
+    d2_after = navigation_distance_sq(final_x, final_z, target_x, target_z)
+    arrived = max(abs(final_x - target_x), abs(final_z - target_z)) <= args.arrive
+    if arrived:
+        verdict = "done"
+        rewind_movement_trail(target_x, target_z)
+    elif d2_after < d2_before:
+        verdict = "retrace-progress"
+    else:
+        verdict = "retrace-regressed"
+    record = {"ts": now_ms(), "kind": "manual-retrace", "id": action_id,
+              "target": {"x": target_x, "z": target_z},
+              "leg": {"x": leg_x, "z": leg_z},
+              "start": {"x": start_x, "z": start_z},
+              "settled": {"x": final_x, "z": final_z},
+              "status": verdict, "walk_status": status,
+              "d2_before": d2_before, "d2_after": d2_after}
+    if verdict == "retrace-regressed":
+        record["useful_substitute"] = False
+    append_outcome(record)
+    flush_events([record])
+    if verdict == "retrace-regressed":
+        report(verdict, id=action_id, target_x=target_x, target_z=target_z,
+               d2=f"{d2_before}->{d2_after}",
+               requested=f"({leg_x - start_x},{leg_z - start_z})",
+               observed=f"({final_x - start_x},{final_z - start_z})",
+               useful_substitute="false",
+               reason="settled-no-closer-to-chosen-prior-tile",
+               next="different-strategy;repeating-the-identical-request-"
+                    "is-not-licensed")
+        sys.exit(EXIT_NOT_DONE)
+    report(verdict, id=action_id, target_x=target_x, target_z=target_z,
+           x=final_x, z=final_z, d2=f"{d2_before}->{d2_after}",
+           next=(None if verdict == "done"
+                 else "repeat-retrace-for-the-next-leg"))
+
+
+def cmd_goal(args):
+    """Spec rule 7h: the current goal's machine-checkable invariants."""
+    if args.action == "clear":
+        if not args.reason or not args.reason.strip():
+            die("goal clear records why: --reason TEXT")
+        if clear_goal(args.reason.strip()):
+            print("goal cleared")
+        else:
+            print("goal: (none)")
+        return
+    if args.action == "set":
+        if not args.text or not args.text.strip():
+            die("goal set takes the goal line as TEXT")
+        text = " ".join(args.text.split())
+        if len(text) > 300:
+            die("the goal line stays under 300 characters")
+        requirements = [parse_goal_requirement(pair)
+                        for pair in args.require or []]
+        if not requirements:
+            die("goal set declares at least one --require KIND=VALUE "
+                f"(kinds: {', '.join(GOAL_REQUIREMENT_KINDS)})")
+        goal = {"v": 1, "text": text, "objective": read_objective() or None,
+                "requires": requirements, "set_ts": now_ms()}
+        save_goal(goal)
+        flush_events([{"ts": now_ms(), "kind": "goal-set", "goal": text,
+                       "requires": requirements}])
+        print(f"goal-set text={text!r} requires="
+              + ";".join(describe_goal_requirement(r) for r in requirements))
+        return
+    goal = load_goal()
+    if goal is None:
+        report("goal-none",
+               note="declare-one-with:goal-set-TEXT---require-KIND=VALUE")
+        return
+    if goal.get("status") == "invalid":
+        report("goal-invalid", file=str(goal_invariants_path()),
+               next="goal-clear-or-goal-set")
+        sys.exit(EXIT_NOT_DONE)
+    if args.action == "show":
+        print(f"goal: {goal['text']}")
+        print(f"objective: {goal.get('objective') or '(none)'}")
+        for requirement in goal["requires"]:
+            print(f"  require {describe_goal_requirement(requirement)}")
+        return
+    # check
+    objective = read_objective() or None
+    if goal.get("objective") != objective:
+        report("goal-stale", goal=goal["text"],
+               goal_objective=goal.get("objective"),
+               current_objective=objective,
+               next="goal-clear-or-goal-set-under-the-current-objective")
+        sys.exit(EXIT_NOT_DONE)
+    if args.snapshot:
+        source = sys.stdin.read() if args.snapshot == "-" \
+            else Path(args.snapshot).read_text()
+        try:
+            snap = json.loads(source)
+        except json.JSONDecodeError as error:
+            die(f"snapshot is not JSON: {error}")
+    else:
+        snap = game_reflex.read_snapshot()
+        if not isinstance(snap, dict) or snap.get("logged_in") is not True \
+                or now_ms() - snap.get("ts", 0) > WAIT_SNAPSHOT_FRESH_MS:
+            report("goal-not-ready", state=wait_state_brief(snap))
+            sys.exit(EXIT_NOT_READY)
+    result = evaluate_goal(goal, snap)
+    met_text = ";".join(describe_goal_requirement(r) for r in result["met"])
+    unmet_text = ";".join(describe_goal_requirement(r) for r in result["unmet"])
+    if result["all_met"]:
+        report("goal-met", goal=goal["text"], satisfied=met_text or None)
+        return
+    if result["shared_resource"]:
+        # Spec rule 7h: the assessment is computed here, never composed after
+        # the fact — an open universal interface at an unproven place is a
+        # navigation failure even when the interface work itself succeeds.
+        append_outcome({
+            "ts": now_ms(), "kind": "unintended-outcome",
+            "goal": goal["text"], "objective": goal.get("objective"),
+            "met": result["met"], "unmet": result["unmet"],
+            "useful_substitute": False,
+            "assessment": "shared-resource-access-not-destination-success",
+            "snap": snap_brief(snap)})
+        report("goal-unmet-shared-resource", goal=goal["text"],
+               unmet=unmet_text, satisfied=met_text or None,
+               useful_substitute="false",
+               assessment="shared-resource-access-not-destination-success",
+               next="replan-toward-the-declared-goal-from-observed-state")
+        sys.exit(EXIT_NOT_DONE)
+    report("goal-unmet", goal=goal["text"], unmet=unmet_text,
+           satisfied=met_text or None)
+    sys.exit(EXIT_NOT_DONE)
+
+
+# --------------------------------------------------------------------------
+# The vocabulary plugged into game_reflex.evaluate (spec rules 4, 5, 8).
+# A field the snapshot does not carry makes the condition false, never an
+# exception — the same fail-safe rule the reflex triggers follow.
+# --------------------------------------------------------------------------
+def make_trigger_fn(objective: str, activity: str = ""):
+    stop_verdict, stop_record = load_stop()
+
+    def trigger_true(trig, snap, food):
+        if "objective_is" in trig:
+            if not objective or objective != trig["objective_is"]:
+                return False
+        if "activity_is" in trig:
+            if not activity or activity != trig["activity_is"]:
+                return False
+            # Spec rule 11d: the declared stop ceiling, fail closed exactly
+            # like fatigue_below — a reached ceiling, an unreadable skill,
+            # or an unreadable record never lets an activity-scoped rule
+            # fire past the number that was said out loud.
+            if stop_closure(stop_verdict, stop_record,
+                            trig["activity_is"], snap) is not None:
+                return False
+        if "npc_visible" in trig:
+            # Spec rule 4: an int or the target set — any listed type visible.
+            wanted = trig["npc_visible"]
+            wanted_set = set(wanted) if isinstance(wanted, list) else {wanted}
+            if not any(n.get("id") in wanted_set
+                       for n in snap.get("npcs") or []):
+                return False
+        if "skill_at_least" in trig:
+            # Spec rule 4: the rule's own eligibility floor, answered from the
+            # snapshot's base levels. Unpublished skills fail safe.
+            want = trig["skill_at_least"]
+            want_name = want["name"].strip().casefold()
+            level = next(
+                (s.get("level") for s in snap.get("skills") or []
+                 if isinstance(s, dict)
+                 and str(s.get("name", "")).strip().casefold() == want_name),
+                None)
+            if not isinstance(level, int) or isinstance(level, bool) \
+                    or level < want["level"]:
+                return False
+        if "object_visible" in trig:
+            if not any(o.get("id") == trig["object_visible"]
+                       for o in snap.get("objects") or []):
+                return False
+        if "bound_visible" in trig:
+            if not any(b.get("id") == trig["bound_visible"]
+                       for b in snap.get("bounds") or []):
+                return False
+        if "entity_visible" in trig:
+            if not matching_state_entities(snap, trig["entity_visible"]):
+                return False
+        if "ground_item_visible" in trig:
+            if not any(i.get("id") == trig["ground_item_visible"]
+                       for i in snap.get("ground_items") or []):
+                return False
+        if "shop_item_visible" in trig:
+            if not any(i.get("id") == trig["shop_item_visible"]
+                       for i in snap.get("shop_items") or []):
+                return False
+        if "bank_item_visible" in trig:
+            if not any(i.get("id") == trig["bank_item_visible"]
+                       for i in snap.get("bank_items") or []):
+                return False
+        if "message_contains" in trig:
+            want = trig["message_contains"].lower()
+            texts = [(m.get("text", "") if isinstance(m, dict) else str(m))
+                     for m in snap.get("messages") or []]
+            if not any(want in t.lower() for t in texts):
+                return False
+        if "near_tile" in trig:
+            px, pz = snap.get("x"), snap.get("z")
+            t = trig["near_tile"]
+            if not isinstance(px, int) or not isinstance(pz, int):
+                return False
+            # Spec rule 4: the effective radius floor keeps vicinity triggers
+            # from being mistaken for destination checks.
+            radius = max(t["radius"], NEAR_RADIUS_FLOOR)
+            if max(abs(px - t["x"]), abs(pz - t["z"])) > radius:
+                return False
+        inventory = snap.get("inventory") or []
+        # Live snapshots carry inventory entries as objects; the brief form this
+        # layer itself records (and every replay case built from one) carries
+        # plain item ids. A trigger must read both, or an inventory condition
+        # crashes the moment it is evaluated against a recorded snapshot.
+        inv_ids = {entry.get("id") if isinstance(entry, dict) else entry
+                   for entry in inventory}
+        if "inventory_has" in trig and trig["inventory_has"] not in inv_ids:
+            return False
+        if "inventory_lacks" in trig and trig["inventory_lacks"] in inv_ids:
+            return False
+        if "inventory_slots_below" in trig \
+                and len(inventory) >= trig["inventory_slots_below"]:
+            return False
+        if "inventory_slots_at_least" in trig \
+                and len(inventory) < trig["inventory_slots_at_least"]:
+            return False
+        if "fatigue_below" in trig:
+            fatigue = snap.get("fatigue")
+            if not isinstance(fatigue, (int, float)) or isinstance(fatigue, bool) \
+                    or fatigue >= trig["fatigue_below"]:
+                return False
+        if "fatigue_at_least" in trig:
+            # The counterpart of fatigue_below, and the only honest way to say
+            # "fatigue is full".  A snapshot without a numeric fatigue fails
+            # closed exactly as fatigue_below does, so a missing reading can
+            # never be mistaken for an exhausted player.
+            fatigue = snap.get("fatigue")
+            if not isinstance(fatigue, (int, float)) or isinstance(fatigue, bool) \
+                    or fatigue < trig["fatigue_at_least"]:
+                return False
+        if "in_combat" in trig and snap.get("in_combat") is not True:
+            return False
+        if "out_of_combat" in trig and snap.get("in_combat") is not False:
+            return False
+        if "bank_open" in trig or "bank_closed" in trig:
+            # The interface state every bank-side action depends on, and the
+            # honest stopping condition for the rule that opens one: the bank
+            # opens and the opener goes quiet.  Both polarities fail closed
+            # when the snapshot publishes no boolean, so an unread interface
+            # never passes for a closed one and a stale read never re-opens a
+            # bank that is already open.
+            state = snap.get("bank_open")
+            if not isinstance(state, bool):
+                return False
+            if trig.get("bank_open") is True and state is not True:
+                return False
+            if trig.get("bank_closed") is True and state is not False:
+                return False
+        if "standing_on_object" in trig or "standing_on_clear_tile" in trig:
+            # The scenery relation the server's own firemaking check reads:
+            # handleFiremaking refuses with "You can't light a fire here" when
+            # ANY GameObject stands on the pile's tile, and the pile is where
+            # the body dropped it.  Both polarities fail closed without a
+            # resolvable body tile, so an unknown position never looks clear.
+            px, pz = snap.get("x"), snap.get("z")
+            if not isinstance(px, int) or not isinstance(pz, int):
+                return False
+            occupied = any(entry.get("x") == px and entry.get("z") == pz
+                           for entry in snap.get("objects") or []
+                           if isinstance(entry, dict))
+            if trig.get("standing_on_object") is True and not occupied:
+                return False
+            if trig.get("standing_on_clear_tile") is True and occupied:
+                return False
+        if "stationary_ms_at_least" in trig:
+            # The engine's own observation (track_stationary_state), not a
+            # bridge field: a snapshot without it fails closed, so an engine
+            # that has not yet watched the player stand still can never be
+            # mistaken for one that has.
+            held = snap.get("_stationary_ms")
+            if not isinstance(held, int) or isinstance(held, bool) \
+                    or held < trig["stationary_ms_at_least"]:
+                return False
+        if "opponent_rounds_at_least" in trig:
+            rounds = snap.get("opponent_rounds")
+            if snap.get("in_combat") is not True \
+                    or not isinstance(rounds, int) or isinstance(rounds, bool) \
+                    or rounds < trig["opponent_rounds_at_least"]:
+                return False
+        return True
+    return trigger_true
+
+
+def snapshot_held_slots(snap: dict, item_id: int) -> int:
+    """How many inventory slots hold that identity, in either shape."""
+    return sum(1 for entry in snap.get("inventory") or []
+               if entry == item_id or (isinstance(entry, dict)
+                                       and entry.get("id") == item_id))
+
+
+def snapshot_holds_item(snap: dict, item_id: int) -> bool:
+    """Item presence, read from either snapshot inventory shape.
+
+    Live bridge snapshots carry inventory entries as objects; the brief form
+    this layer records into its own outcome queue — and therefore every replay
+    case built from one — carries plain item ids. ``make_trigger_fn`` already
+    reads both, so a compile-side presence check that assumed objects crashed
+    the moment a recorded snapshot reached it.
+    """
+    for entry in snap.get("inventory") or []:
+        if entry == item_id or (isinstance(entry, dict)
+                                and entry.get("id") == item_id):
+            return True
+    return False
+
+
+def nearest_npc(snap: dict, wanted, predicate=None):
+    """Choose by actual walking steps, independently of snapshot list order.
+
+    `wanted` is one type id or rule 4's target set (a list of ids): the choice
+    runs across every listed type, so a set compiles to its nearest visible
+    member, never to a preferred-order first match."""
+    px, pz = snap.get("x"), snap.get("z")
+    if not isinstance(px, int) or not isinstance(pz, int):
+        return None
+    wanted_set = set(wanted) if isinstance(wanted, (list, tuple)) else {wanted}
+    candidates = [npc for npc in snap.get("npcs") or []
+                  if npc.get("id") in wanted_set
+                  and all(isinstance(npc.get(key), int)
+                          for key in ("sidx", "x", "z"))
+                  and (predicate is None or predicate(npc))]
+    if not candidates:
+        return None
+    return min(candidates, key=lambda npc: (
+        max(abs(npc["x"] - px), abs(npc["z"] - pz)),
+        abs(npc["x"] - px) + abs(npc["z"] - pz), npc["sidx"]))
+
+
+def compiled_npc_action(action_type: str, npc: dict, wanted: int, **extra):
+    return {"type": action_type, "sidx": npc["sidx"], "npc": wanted,
+            "target_x": npc["x"], "target_z": npc["z"], **extra}
+
+
+def npc_id_set(value) -> set:
+    """Rule 4's target parameter as a set: one id, a list of ids, or neither
+    (empty). Lets scope comparisons treat `63` and `[63, 86]` uniformly."""
+    if isinstance(value, bool) or value is None:
+        return set()
+    if isinstance(value, int):
+        return {value}
+    if isinstance(value, (list, tuple)):
+        return {v for v in value
+                if isinstance(v, int) and not isinstance(v, bool)}
+    return set()
+
+
+def compile_player_action(rule, snap, food, eat_pick):
+    action = rule["action"]
+    if action["type"] == "talk-npc":
+        want = action["npc"]
+        npc = nearest_npc(snap, want)
+        if npc is not None:
+            return compiled_npc_action("talk-npc", npc, want), None
+        return None, "npc-not-visible"
+    if action["type"] == "attack-npc":
+        if action.get("mode") == "ranged":
+            if not any(isinstance(item, dict) and item.get("id") == action["weapon"]
+                       and item.get("equipped") is True for item in snap.get("inventory") or []):
+                return None, "ranged-weapon-not-equipped"
+            if inventory_quantity(snap, action["ammo"]) <= 0:
+                return None, "ranged-ammunition-missing"
+        want = action["npc"]
+        within = action.get("within")
+        px, pz = snap.get("x"), snap.get("z")
+        # Eligibility belongs to the selected entity. For a target set,
+        # choose the nearest attackable member rather than selecting a nearer
+        # non-attackable entry and incorrectly rejecting the whole set.
+        npc = nearest_npc(snap, want,
+                          predicate=lambda entry: entry.get("attackable") is True)
+        if npc is None:
+            return None, "npc-not-visible"
+        if action.get("mode") == "ranged" and npc.get("clear_shot") is not True:
+            return None, "ranged-no-clear-shot"
+        distance = max(abs(px - npc["x"]), abs(pz - npc["z"]))
+        if within is not None and distance > within:
+            return None, "npc-not-within-range"
+        extra = {"target_distance": distance}
+        if within is not None:
+            extra["within"] = within
+        # Compile only the selected member's exact type. The bridge retains
+        # its ordinary stable-identity dispatch re-check.
+        if action.get("mode") == "ranged":
+            extra.update(mode="ranged", weapon=action["weapon"], ammo=action["ammo"])
+        return compiled_npc_action("attack-npc", npc, npc["id"], **extra), None
+    if action["type"] == "interact-npc":
+        want = action["npc"]
+        within = action.get("within")
+        px, pz = snap.get("x"), snap.get("z")
+        npc = nearest_npc(snap, want)
+        if npc is not None:
+            distance = max(abs(px - npc["x"]), abs(pz - npc["z"]))
+            if within is not None and distance > within:
+                return None, "npc-not-within-range"
+            extra = {"cmd": action.get("cmd", 1), "target_distance": distance}
+            if within is not None:
+                extra["within"] = within
+            # Spec rule 5: a target set compiles to the chosen member's own
+            # exact type id — no set ever crosses the action file.
+            return compiled_npc_action("interact-npc", npc, npc["id"],
+                                       **extra), None
+        return None, "npc-not-within-range" if within is not None else "npc-not-visible"
+    if action["type"] == "use-item-npc":
+        item_id = action["item"]
+        if not snapshot_holds_item(snap, item_id):
+            return None, "item-not-held"
+        want = action["npc"]
+        within = action.get("within")
+        px, pz = snap.get("x"), snap.get("z")
+        npc = nearest_npc(snap, want)
+        if npc is not None:
+            distance = max(abs(px - npc["x"]), abs(pz - npc["z"]))
+            if within is not None and distance > within:
+                return None, "npc-not-within-range"
+            extra = {"item": item_id, "target_distance": distance}
+            if within is not None:
+                extra["within"] = within
+            return compiled_npc_action("use-item-npc", npc, want, **extra), None
+        return None, "npc-not-within-range" if within is not None else "npc-not-visible"
+    if action["type"] == "cast-npc":
+        spell_id = action["spell"]
+        spell = next((entry for entry in snap.get("spells") or []
+                      if entry.get("id") == spell_id), None)
+        if spell is None:
+            return None, "spell-state-unavailable"
+        if spell.get("target") != "npc/player":
+            return None, "spell-target-not-npc"
+        if spell.get("ready") is not True:
+            return None, "spell-not-ready"
+        want = action["npc"]
+        within = action.get("within")
+        px, pz = snap.get("x"), snap.get("z")
+        require_clear = action.get("require_clear_shot") == 1
+        require_unreachable = action.get("require_melee_unreachable") == 1
+        npc = nearest_npc(
+            snap, want,
+            lambda candidate: (
+                (not require_clear or candidate.get("clear_shot") is True)
+                and (not require_unreachable
+                     or candidate.get("terrain_melee_reachable") is False)))
+        if npc is not None:
+            distance = max(abs(px - npc["x"]), abs(pz - npc["z"]))
+            if within is not None and distance > within:
+                return None, "npc-not-within-range"
+            extra = {"spell": spell_id, "target_distance": distance}
+            if within is not None:
+                extra["within"] = within
+            for guard in ("stationary", "require_clear_shot",
+                          "require_melee_unreachable"):
+                if action.get(guard) == 1:
+                    extra[guard] = 1
+            return compiled_npc_action("cast-npc", npc, want, **extra), None
+        if require_clear or require_unreachable:
+            return None, "npc-terrain-guards-not-met"
+        return None, "npc-not-within-range" if within is not None else "npc-not-visible"
+    if action["type"] == "walk":
+        compiled = {"type": "walk", "x": action["x"], "z": action["z"]}
+        if isinstance(action.get("arrive"), int):
+            compiled["arrive"] = action["arrive"]
+        # Internal durable-route legs carry a collision-path budget. It does
+        # not limit the distant destination: it prevents one nearby waypoint
+        # from silently expanding into a long walk in the opposite direction.
+        if isinstance(action.get("max_path"), int):
+            compiled["max_path"] = action["max_path"]
+        if isinstance(action.get("route_step"), int):
+            compiled["route_step"] = action["route_step"]
+        return compiled, None
+    if action["type"] == "approach-entity":
+        selector = {"collection": action["collection"], "field": action["field"],
+                    "value": action["value"]}
+        target = nearest_state_entity(snap, selector)
+        if target is None:
+            return None, "semantic-entity-not-visible"
+        px, pz = snap.get("x"), snap.get("z")
+        distance = max(abs(px - target["x"]), abs(pz - target["z"]))
+        if distance <= action["within"]:
+            return None, "semantic-entity-already-near"
+        return {"type": "walk", "x": target["x"], "z": target["z"],
+                "arrive": action["within"]}, None
+    if action["type"] == "follow-player":
+        target = nearest_state_entity(
+            snap, {"collection": "players", "field": "name",
+                   "value": action["name"]})
+        if target is None or not isinstance(target.get("sidx"), int):
+            return None, "follow-player-not-visible"
+        px, pz = snap.get("x"), snap.get("z")
+        distance = max(abs(px - target["x"]), abs(pz - target["z"]))
+        if distance <= action["within"]:
+            return None, "follow-player-already-near"
+        # x/z/arrive are causal metadata for verification and the durable
+        # reacquisition loop. The client acts only on the current server
+        # index, using RuneScape's native Follow request.
+        return {"type": "follow-player", "sidx": target["sidx"],
+                "name": target.get("name") or action["name"],
+                "x": target["x"], "z": target["z"],
+                "arrive": action["within"]}, None
+    if action["type"] == "step-aside":
+        # The peaceful twin of `sidestep`: the same single ordinary walk to an
+        # adjacent walkable tile, but only OUT of combat, where its purpose is
+        # movement itself - the server's idle clock reads getLastMoved(), not
+        # intent. In combat the escape sidestep owns the break, so this refuses
+        # rather than racing it.
+        if snap.get("in_combat") is not False:
+            return None, "in-combat-escape-owns-the-break"
+        compiled = compile_sidestep_walk(snap, action.get("dx", 0),
+                                         action.get("dz", 1))
+        if compiled is None:
+            return None, "step-aside-no-adjacent-tile"
+        return compiled, None
+    if action["type"] == "sidestep":
+        if snap.get("in_combat") is not True:
+            return None, "already-out-of-combat"
+        compiled = compile_sidestep_walk(snap, action.get("dx", 0),
+                                         action.get("dz", 1))
+        if compiled is None:
+            return None, "sidestep-no-adjacent-tile"
+        return compiled, None
+    if action["type"] == "retreat":
+        if snap.get("in_combat") is not True:
+            return None, "already-out-of-combat"
+        if snap.get("_combat_provoked") is True:
+            # Runtime escape selection (spec rule 5a): a provoked,
+            # non-aggressive fight ALWAYS breaks with the one-tile sidestep;
+            # the far clearance retreat stays reserved for unprovoked combat -
+            # the grounded evidence of an aggressive or pursuing monster.
+            compiled = compile_sidestep_walk(snap, action.get("dx", 0),
+                                             action.get("dz", 1))
+            if compiled is None:
+                return None, "sidestep-no-adjacent-tile"
+            compiled["retreat_suppressed"] = 1
+            return compiled, None
+        compiled = {"type": "retreat", "distance": action.get("distance", 5),
+                    "dx": action.get("dx", 0), "dz": action.get("dz", 1)}
+        if action.get("committed_direction") == 1:
+            compiled["committed_direction"] = 1
+        return compiled, None
+    if action["type"] == "interact-object":
+        want = action["obj"]
+        exact_x, exact_z = action.get("x"), action.get("z")
+        for obj in snap.get("objects") or []:    # already nearest-first (rule 3 there)
+            if obj.get("id") == want and isinstance(obj.get("x"), int) \
+                    and isinstance(obj.get("z"), int) \
+                    and (not isinstance(exact_x, int) or obj["x"] == exact_x) \
+                    and (not isinstance(exact_z, int) or obj["z"] == exact_z):
+                return {"type": "interact-object", "x": obj["x"], "z": obj["z"],
+                        "obj": want, "cmd": action.get("cmd", 1)}, None
+        return None, "object-not-loaded"
+    if action["type"] == "use-item-object":
+        # The item half must be held right now, exactly as the deliberate
+        # door requires before the bridge re-resolves its live slot; the
+        # scenery half is chosen the way interact-object chooses one, the
+        # nearest loaded placement of that type id, whose tile rides the
+        # action file for the bridge's own unloaded/swapped recheck.
+        if not snapshot_holds_item(snap, action["item"]):
+            return None, "item-not-held"
+        want = action["obj"]
+        for obj in snap.get("objects") or []:    # already nearest-first
+            if obj.get("id") == want and isinstance(obj.get("x"), int) \
+                    and isinstance(obj.get("z"), int):
+                return {"type": "use-item-object", "x": obj["x"],
+                        "z": obj["z"], "item": action["item"],
+                        "obj": want}, None
+        return None, "object-not-loaded"
+    if action["type"] == "interact-bound":
+        want = action["obj"]
+        exact_x, exact_z, exact_dir = (action.get("x"), action.get("z"),
+                                       action.get("dir"))
+        blocked = False
+        for bnd in snap.get("bounds") or []:     # already nearest-first
+            if bnd.get("id") == want and isinstance(bnd.get("x"), int) \
+                    and isinstance(bnd.get("z"), int) \
+                    and (not isinstance(exact_x, int) or bnd["x"] == exact_x) \
+                    and (not isinstance(exact_z, int) or bnd["z"] == exact_z) \
+                    and (not isinstance(exact_dir, int)
+                         or bnd.get("dir") == exact_dir):
+                if bnd.get("reachable") is False:
+                    blocked = True
+                    continue
+                return {"type": "interact-bound", "x": bnd["x"], "z": bnd["z"],
+                        "dir": bnd.get("dir", 0), "obj": want,
+                        "cmd": action.get("cmd", 1)}, None
+        return None, "bound-unreachable" if blocked else "bound-not-loaded"
+    if action["type"] == "click-entity":
+        kind = action["kind"]
+        want = action["entity"]
+        button = action.get("button", 1)
+        if kind == "npc":
+            npc = nearest_npc(snap, want)
+            if npc is not None:
+                return compiled_npc_action("click-entity", npc, want,
+                                           kind="npc", button=button), None
+            return None, "npc-not-visible"
+        source = snap.get("objects" if kind == "object" else "bounds") or []
+        for entity in source:
+            if entity.get("id") == want and isinstance(entity.get("x"), int) \
+                    and isinstance(entity.get("z"), int):
+                compiled = {"type": "click-entity", "kind": kind,
+                            "x": entity["x"], "z": entity["z"],
+                            "obj": want, "button": button}
+                if kind == "bound":
+                    compiled["dir"] = entity.get("dir", 0)
+                return compiled, None
+        return None, f"{kind}-not-loaded"
+    if action["type"] == "click-inventory":
+        want = action["item"]
+        if want in PRAYER_BONE_ITEM_IDS and snap.get("fatigue") == 100:
+            return None, "bone-burial-blocked-at-full-fatigue"
+        if snapshot_holds_item(snap, want):
+            compiled = {"type": "click-inventory", "item": want,
+                        "button": action.get("button", 1)}
+            if action.get("batch") == "all":
+                # Evaluator metadata: emit_player_action deliberately does not
+                # serialize this field to the bridge. The client receives one
+                # ordinary click; the player engine owns the batch contract.
+                compiled["batch"] = "all"
+            return compiled, None
+        return None, "item-not-held"
+    if action["type"] in ("click-shop", "click-bank"):
+        interface = action["type"].split("-", 1)[1]
+        want = action["item"]
+        if not snap.get(f"{interface}_open"):
+            return None, f"{interface}-closed"
+        visible = any(entry.get("id") == want
+                      for entry in snap.get(f"{interface}_items") or [])
+        if action["type"] == "click-bank":
+            # The bank's selectable grid includes inventory items available
+            # for deposit even when no bank stack exists yet.
+            visible = visible or snapshot_holds_item(snap, want)
+        if visible:
+            return {"type": action["type"], "item": want,
+                    "button": action.get("button", 1)}, None
+        return None, f"item-not-in-{interface}"
+    if action["type"] == "choose-dialogue":
+        # Eligibility is the live menu itself, the shape click-shop and
+        # click-bank already use for an interface: the option list must be
+        # open and must name exactly one option this rule can answer. The
+        # compiled action carries that option's own current text, so the
+        # client re-matches an unambiguous string rather than a stale row.
+        if snap.get("dialogue_open") is not True:
+            return None, "dialogue-closed"
+        fragment = " ".join(action["text"].split()).casefold()
+        options = [" ".join(option.split())
+                   for option in snap.get("dialogue_options") or []
+                   if isinstance(option, str) and option.strip()]
+        exact = [option for option in options if option.casefold() == fragment]
+        partial = [option for option in options if fragment in option.casefold()]
+        if len(exact) == 1:
+            return {"type": "choose-dialogue", "text": exact[0]}, None
+        if len(exact) == 0 and len(partial) == 1:
+            return {"type": "choose-dialogue", "text": partial[0]}, None
+        if len(exact) > 1 or len(partial) > 1:
+            return None, "dialogue-option-ambiguous"
+        return None, "no-such-dialogue-option"
+    if action["type"] == "drop-inventory":
+        # The bridge refuses a drop during combat, so a doomed dispatch is
+        # named as an ordinary ineligibility here instead.
+        if snap.get("in_combat") is not False:
+            return None, "combat-blocks-drop"
+        if snapshot_holds_item(snap, action["item"]):
+            return {"type": "drop-inventory", "item": action["item"],
+                    "amount": 1}, None
+        return None, "item-not-held"
+    if action["type"] == "use-item-item":
+        # Both identities must be held right now; when the rule names the
+        # same id twice the pair needs two distinct slots, exactly as the
+        # deliberate door requires before the bridge re-resolves them.
+        if action["item"] == action["target"]:
+            if snapshot_held_slots(snap, action["item"]) < 2:
+                return None, "item-pair-needs-two-slots"
+        elif not snapshot_holds_item(snap, action["item"]) \
+                or not snapshot_holds_item(snap, action["target"]):
+            return None, "item-not-held"
+        return {"type": "use-item-item", "item": action["item"],
+                "target": action["target"]}, None
+    if action["type"] in ("take-ground", "use-item-ground"):
+        # One pile chooser for both ground doors: taking a pile and using a
+        # held item on a pile pick the same nearest REACHABLE target, and
+        # report the same unreachable/needs-door reasons.
+        if action["type"] == "use-item-ground" \
+                and not snapshot_holds_item(snap, action["item"]):
+            return None, "item-not-held"
+        # Spec rule 5's opt-in pile guard: Firemaking.handleFiremaking refuses
+        # with "You can't light a fire here" whenever ANY GameObject stands on
+        # the pile's tile, so a rule that asks for a clear tile must not have
+        # such a pile chosen for it and dispatched into a certain refusal.
+        obstructed = set()
+        if action.get("require_clear_tile") == 1:
+            obstructed = {(entry.get("x"), entry.get("z"))
+                          for entry in snap.get("objects") or []
+                          if isinstance(entry, dict)}
+        want = action["ground"] if action["type"] == "use-item-ground" \
+            else action["item"]
+        within = action.get("within")
+        px, pz = snap.get("x"), snap.get("z")
+        matching = []
+        blocked = []
+        obstructed_piles = 0
+        for item in snap.get("ground_items") or []:
+            if item.get("id") == want and isinstance(item.get("x"), int) \
+                    and isinstance(item.get("z"), int):
+                if within is not None and (
+                        not isinstance(px, int) or not isinstance(pz, int)
+                        or max(abs(px - item["x"]), abs(pz - item["z"])) > within):
+                    continue
+                if (item["x"], item["z"]) in obstructed:
+                    obstructed_piles += 1
+                    continue
+                if item.get("reachable") is False:
+                    blocked.append(item)
+                else:
+                    matching.append(item)
+        if matching:
+            def route_key(item):
+                distance = item.get("path_distance")
+                if isinstance(distance, int) and distance >= 0:
+                    return (0, distance)
+                if isinstance(px, int) and isinstance(pz, int):
+                    return (1, max(abs(px - item["x"]), abs(pz - item["z"])))
+                return (2, 0)
+
+            item = min(matching, key=route_key)
+            if action["type"] == "use-item-ground":
+                return {"type": "use-item-ground", "x": item["x"],
+                        "z": item["z"], "item": action["item"],
+                        "ground": want}, None
+            return {"type": "take-ground", "x": item["x"], "z": item["z"],
+                    "item": want}, None
+        if obstructed_piles:
+            return None, "ground-item-tile-obstructed"
+        if blocked:
+            return None, "ground-item-needs-door" \
+                if any(isinstance(item.get("door"), dict) for item in blocked) \
+                else "ground-item-unreachable"
+        return None, "ground-item-not-within-range" if within is not None \
+            else "ground-item-not-visible"
+    return None, f"unknown-action-{action['type']}"
+
+
+def emit_player_action(path_name: str, action: dict, action_id: int,
+                       ts: int) -> bool | None:
+    try:
+        latest = game_reflex.read_snapshot()
+        game_loadout.check_pickup(action, latest)
+        game_decisions.check(action['type'], action.get('item'), latest)
+    except ValueError as exc:
+        report('decision-conflict', reason=str(exc))
+        return False
+    retreat_combat_id = action.get("_retreat_combat_id")
+    if isinstance(retreat_combat_id, int):
+        # The direct retreat door and resident runner deliberately share one
+        # request.  The direct waiter can verify clearance and remove it after
+        # this runner selected a continuation but before the bridge write.
+        # Re-authorize at the last possible moment so that stale continuation
+        # cannot become an unbounded post-escape walk.
+        request = load_retreat_request()
+        latest = game_reflex.read_snapshot() or {}
+        if request is None or request.get("combat_id") != retreat_combat_id \
+                or retreat_has_clearance(latest, request):
+            return False
+    lines = [f"ts={ts}", f"id={action_id}", f"type={action['type']}"]
+    for key in ("kind", "sidx", "npc", "spell", "x", "z", "arrive", "max_path", "route_step", "dir", "obj", "cmd", "within",
+                "stationary", "require_clear_shot", "require_melee_unreachable",
+                "item", "button", "ground", "amount",
+                "distance", "dx", "dz", "committed_direction",
+                "target", "text"):
+        if key in action:
+            lines.append(f"{key}={action[key]}")
+    game_reflex.atomic_write(state_dir() / path_name, "\n".join(lines) + "\n")
+
+
+def compile_live_player_action(rule: dict, snap: dict, food: dict,
+                               eat_pick: str):
+    """Compile a live action and retain the transient retreat generation.
+
+    The marker never rides the bridge action; it exists only long enough for
+    emit_player_action to prove that the shared request still owns dispatch.
+    Replays continue to use the ordinary compiler and therefore assert the
+    exact public action vocabulary unchanged.
+    """
+    action, why = compile_player_action(rule, snap, food, eat_pick)
+    if action is not None:
+        try:
+            game_loadout.check_pickup(action, snap)
+            game_decisions.check(action['type'], action.get('item'), snap)
+        except ValueError as exc:
+            return None, f'decision-conflict: {exc}'
+    if action is not None and rule.get("name") == MANUAL_RETREAT_RULE_NAME:
+        combat_id = (rule.get("action") or {}).get("_retreat_combat_id")
+        if isinstance(combat_id, int):
+            action["_retreat_combat_id"] = combat_id
+    return action, why
+
+
+# --------------------------------------------------------------------------
+# The outcome queue (spec rule 16): the background author's inbox. Play
+# appends and keeps moving; nothing here ever blocks an action.
+# --------------------------------------------------------------------------
+def snap_brief(snap: dict) -> dict:
+    brief = {k: snap.get(k) for k in ("tick", "x", "z", "hits", "hits_max",
+                                      "fatigue", "sleeping", "sleep_fatigue", "sleep_status",
+                                      "walking", "in_combat", "talking_to_npc",
+                                      "dialogue_open", "dialogue_options",
+                                      "right_click_menu_open", "ui_panel_open", "ui_panel",
+                                      "hover_text",
+                                      "magic_level", "selected_spell",
+                                      "selected_inventory_item", "quest_points")}
+    brief["quests"] = [
+        {key: quest.get(key) for key in ("id", "name", "stage", "status")}
+        for quest in snap.get("quests") or []
+        if quest.get("status") in ("completed", "started")
+    ]
+    brief["ready_spells"] = [
+        {key: spell.get(key) for key in ("id", "name", "target")}
+        for spell in snap.get("spells") or [] if spell.get("ready") is True
+    ]
+    brief["inventory"] = [i.get("id") for i in snap.get("inventory") or []]
+    brief["messages"] = (snap.get("messages") or [])[-5:]
+    brief["players"] = (snap.get("players") or [])[:24]
+    brief["npcs"] = (snap.get("npcs") or [])[:12]
+    brief["objects"] = (snap.get("objects") or [])[:12]
+    brief["bounds"] = (snap.get("bounds") or [])[:12]
+    terrain = snap.get("terrain") or {}
+    brief["terrain"] = {
+        "radius": terrain.get("radius"),
+        "blocked_cells": (terrain.get("blocked_cells") or [])[:48],
+        "barriers": (terrain.get("barriers") or [])[:64],
+    }
+    brief["ground_items"] = (snap.get("ground_items") or [])[:12]
+    brief["shop_open"] = bool(snap.get("shop_open"))
+    brief["shop_items"] = (snap.get("shop_items") or [])[:40]
+    brief["bank_open"] = bool(snap.get("bank_open"))
+    brief["bank_items"] = snap.get("bank_items") or []
+    return brief
+
+
+def gap_signature(snap: dict, objective: str, activity: str = "") -> str:
+    """Stable author input: game ticks and wandering NPC tiles are not new gaps."""
+    game_messages = [
+        {"channel": m.get("channel"), "sender": m.get("sender"), "text": m.get("text")}
+        for m in (snap.get("messages") or [])[-5:]
+        if isinstance(m, dict) and m.get("channel") not in ("local", "private")
+    ]
+    shape = {
+        "objective": objective or None,
+        "activity": activity or None,
+        "x": snap.get("x"),
+        "z": snap.get("z"),
+        "ui_panel": snap.get("ui_panel"),
+        "inventory": [i.get("id") for i in snap.get("inventory") or []],
+        "messages": game_messages,
+        "npcs": sorted(n.get("id") for n in snap.get("npcs") or []
+                       if isinstance(n, dict) and isinstance(n.get("id"), int)),
+        "objects": sorted((o.get("id"), o.get("x"), o.get("z"))
+                          for o in snap.get("objects") or []
+                          if isinstance(o, dict) and isinstance(o.get("id"), int)),
+        "bounds": sorted((b.get("id"), b.get("x"), b.get("z"), b.get("dir"),
+                          b.get("reachable"), b.get("path_distance"), b.get("open_command"))
+                         for b in snap.get("bounds") or []
+                         if isinstance(b, dict) and isinstance(b.get("id"), int)),
+        "ground_items": sorted((i.get("id"), i.get("x"), i.get("z"),
+                                i.get("reachable"), i.get("path_distance"),
+                                (i.get("door") or {}).get("id"),
+                                (i.get("door") or {}).get("x"),
+                                (i.get("door") or {}).get("z"))
+                               for i in snap.get("ground_items") or []
+                               if isinstance(i, dict) and isinstance(i.get("id"), int)),
+    }
+    return json.dumps(shape, sort_keys=True, separators=(",", ":"))
+
+
+def append_outcome(record: dict) -> None:
+    path = queue_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a") as fh:
+        fh.write(json.dumps(record, separators=(",", ":")) + "\n")
+
+
+def rule_fingerprint(rule: dict) -> str:
+    """Stable authored-rule identity; evaluator-only fields do not count."""
+    return json.dumps({key: value for key, value in rule.items() if key != "channel"},
+                      sort_keys=True, separators=(",", ":"))
+
+
+def reflex_changes(before: dict, after: dict) -> list:
+    old = {rule["name"]: rule for rule in before.get("rules") or []}
+    new = {rule["name"]: rule for rule in after.get("rules") or []}
+    changes = []
+    for name in sorted(set(old) | set(new)):
+        if old.get(name) == new.get(name):
+            continue
+        changes.append({
+            "name": name,
+            "operation": "created" if name not in old else
+                         "removed" if name not in new else "updated",
+            "behavior_changed": rule_behavior(old.get(name)) != rule_behavior(new.get(name)),
+            "before": old.get(name), "after": new.get(name),
+        })
+    return changes
+
+
+def save_config_change(before: dict, after: dict, doing: str) -> None:
+    """Persist one authored mutation and bracket comparable XP iterations."""
+    validate_config(after)
+    changes = reflex_changes(before, after)
+    if not changes:
+        save_config(after)
+        return
+    activity = read_activity()
+    objective = read_objective()
+    snap = game_reflex.read_snapshot() or {}
+    relevant = any(
+        change.get("behavior_changed") and (
+            (isinstance(change.get("before"), dict)
+             and change["before"].get("enabled")
+             and rule_scope_applies(change["before"], objective, activity))
+            or (isinstance(change.get("after"), dict)
+                and change["after"].get("enabled")
+                and rule_scope_applies(change["after"], objective, activity)))
+        for change in changes) if activity else False
+    performance_before = finish_activity_iteration(
+        f"reflex-change:{doing}", snap, queue_review=False) if relevant else {}
+    save_config(after)
+    append_jsonl(reflex_history_path(), {
+        "v": 1, "ts": now_ms(), "kind": "reflex-change", "doing": doing,
+        "objective": objective or None, "activity": activity or None,
+        "relevant_to_activity": relevant, "changes": changes,
+        "performance_before": performance_before or None,
+    })
+    if relevant:
+        start_activity_stats(activity, snap, reason=f"reflex-change:{doing}", cfg=after)
+
+
+def repetition_candidate(est: dict, rule: dict | None, outcome: dict) -> dict | None:
+    """Aggregate exact repeated malfunctions for the event-driven author.
+
+    Successful repetition is the purpose of a learned routine and never
+    enters this history. Three matching failures/non-progress outcomes expose
+    a malfunction which one isolated author turn could otherwise miss.
+    """
+    action = outcome.get("action") or {}
+    if rule is None or action.get("type") == "retreat" \
+            or action.get("sidestep") == 1 \
+            or outcome.get("rule") in (
+                ROUTE_RULE_NAME, BACKTRACK_RULE_NAME, FOLLOW_RULE_NAME,
+                MANUAL_RETREAT_RULE_NAME):
+        return None
+    completion = outcome.get("completion") or {}
+    malfunction = outcome.get("status") != "done" \
+        or completion.get("result") == "failed"
+    if not malfunction:
+        # Exact repetition is the definition of a productive learned routine.
+        # Review is for repeated failure/non-progress, never repeated success.
+        return None
+    now = int(outcome.get("ts") or now_ms())
+    identity = {key: action.get(key) for key in (
+        "type", "npc", "obj", "item", "x", "z", "dir", "cmd", "button")
+        if key in action}
+    key = json.dumps({"rule": outcome.get("rule"),
+                      "objective": outcome.get("objective"),
+                      "activity": outcome.get("activity"),
+                      "action": identity}, sort_keys=True, separators=(",", ":"))
+    recent = [item for item in est.get("recent_repetitions") or []
+              if isinstance(item, dict) and isinstance(item.get("ts"), int)
+              and now - item["ts"] <= REPETITION_WINDOW_MS]
+    snap = outcome.get("snap") or {}
+    recent.append({"ts": now, "key": key, "status": outcome.get("status"),
+                   "x": snap.get("x"), "z": snap.get("z"),
+                   "inventory": snap.get("inventory") or []})
+    est["recent_repetitions"] = recent[-48:]
+    reported = {k: v for k, v in (est.get("reported_repetitions") or {}).items()
+                if isinstance(v, int) and now - v <= REPETITION_WINDOW_MS}
+    est["reported_repetitions"] = reported
+    matches = [item for item in recent if item.get("key") == key]
+    if len(matches) < REPETITION_THRESHOLD or key in reported:
+        return None
+    reported[key] = now
+    fingerprint = rule_fingerprint(rule)
+    holds = [hold for hold in est.get("repetition_holds") or []
+             if isinstance(hold, dict) and isinstance(hold.get("until"), int)
+             and hold["until"] > now
+             and not (hold.get("rule") == outcome.get("rule")
+                      and hold.get("objective") == outcome.get("objective")
+                      and hold.get("activity") == outcome.get("activity"))]
+    holds.append({"rule": outcome.get("rule"),
+                  "objective": outcome.get("objective"),
+                  "activity": outcome.get("activity"),
+                  "fingerprint": fingerprint,
+                  "reason": "repeated-malfunction",
+                  "until": now + REPETITION_REVIEW_HOLD_MS})
+    est["repetition_holds"] = holds[-16:]
+    return {"ts": now, "kind": "loop-candidate", "rule": outcome.get("rule"),
+            "objective": outcome.get("objective"), "activity": outcome.get("activity"),
+            "action": identity, "count": len(matches),
+            "span_ms": now - matches[0]["ts"],
+            "activity_scoped": "activity_is" in (rule.get("trigger") or {}),
+            "review_hold_ms": REPETITION_REVIEW_HOLD_MS,
+            "recent": [{k: v for k, v in item.items() if k != "key"}
+                       for item in matches[-REPETITION_THRESHOLD:]],
+            "note": "The same grounded malfunction repeated; repair its trigger, action, or "
+                    "completion transition before resuming it."}
+
+
+# --------------------------------------------------------------------------
+# Walk verification (spec rule 7a): the receipt is dispatch, not completion.
+# Follow the snapshot until the body stops moving, then judge against the
+# TARGET's coordinates — never the receipt alone.
+# --------------------------------------------------------------------------
+def verify_walk(tx: int, tz: int, arrive: int,
+                timeout_s: float = WALK_TIMEOUT_S,
+                settle_s: float = WALK_SETTLE_S,
+                poll_s: float = 0.2):
+    """Returns (status, final_x, final_z): status 'done', 'walk-short' or
+    'walk-unverified' (snapshot lost or logged out mid-walk)."""
+    deadline = time.time() + timeout_s
+    last_pos, last_move = None, time.time()
+    while time.time() < deadline:
+        snap = game_reflex.read_snapshot()
+        if snap is None or not snap.get("logged_in"):
+            return "walk-unverified", None, None
+        px, pz = snap.get("x"), snap.get("z")
+        if not isinstance(px, int) or not isinstance(pz, int):
+            return "walk-unverified", None, None
+        if max(abs(px - tx), abs(pz - tz)) <= arrive:
+            return "done", px, pz
+        if (px, pz) != last_pos:
+            last_pos, last_move = (px, pz), time.time()
+        elif time.time() - last_move >= settle_s:
+            return "walk-short", px, pz
+        time.sleep(poll_s)
+    return "walk-short", (last_pos or (None, None))[0], (last_pos or (None, None))[1]
+
+
+def inventory_quantity(snap: dict, item_id: int) -> int:
+    return sum(
+        entry.get("count", entry.get("amount", 1))
+        for entry in snap.get("inventory") or []
+        if isinstance(entry, dict) and entry.get("id") == item_id
+        and isinstance(entry.get("count", entry.get("amount", 1)), int)
+    )
+
+
+def continue_action_batch(cfg: dict, snap: dict, est: dict,
+                          objective: str, activity: str,
+                          events: list, now: int) -> list:
+    """Turn a started ``batch=all`` into an item-presence commitment.
+
+    A capacity threshold is an initiation condition, not a loop condition.
+    Once started, the authored rule keeps its priority but its transient
+    trigger is replaced with durable scope, item presence, and server safety
+    guards. Each pass still emits exactly one ordinary action and waits for
+    the selected item's observed decrease before another pass can fire.
+    """
+    rules = list(cfg.get("rules") or [])
+    batch = est.get("action_batch")
+    if not isinstance(batch, dict):
+        if batch is not None:
+            est["action_batch"] = None
+        return rules
+    rule = next((candidate for candidate in rules
+                 if candidate.get("name") == batch.get("rule")), None)
+    reason = None
+    if not isinstance(batch.get("item"), int) \
+            or isinstance(batch.get("item"), bool):
+        reason = "invalid-record"
+    elif rule is None or rule.get("enabled") is not True:
+        reason = "rule-disabled-or-removed"
+    elif rule_behavior_hash(rule) != batch.get("behavior"):
+        reason = "rule-changed"
+    elif batch.get("objective") != (objective or None) \
+            or batch.get("activity") != (activity or None):
+        reason = "scope-changed"
+    elif inventory_quantity(snap, batch.get("item", -1)) <= 0:
+        reason = "item-absent"
+    if reason is not None:
+        events.append({"ts": now, "kind": "action-batch-finished",
+                       "rule": batch.get("rule"), "item": batch.get("item"),
+                       "reason": reason})
+        est["action_batch"] = None
+        return rules
+
+    authored_trigger = rule.get("trigger") or {}
+    trigger = {
+        key: authored_trigger[key]
+        for key in ("objective_is", "activity_is")
+        if key in authored_trigger
+    }
+    trigger.update({"inventory_has": batch["item"], "out_of_combat": True})
+    if batch["item"] in PRAYER_BONE_ITEM_IDS:
+        # Burial is refused at 100 fatigue. Keep the commitment pending while
+        # a sleep action owns recovery, then resume from observed fatigue.
+        trigger["fatigue_below"] = 100
+    continuation = dict(rule, trigger=trigger)
+    return [continuation if candidate.get("name") == rule["name"] else candidate
+            for candidate in rules]
+
+
+def ground_quantity_at(snap: dict, item_id: int, x: int, z: int) -> int:
+    return sum(
+        1 for entry in snap.get("ground_items") or []
+        if isinstance(entry, dict) and entry.get("id") == item_id
+        and entry.get("x") == x and entry.get("z") == z
+    )
+
+
+def verify_take_ground(item_id: int, x: int, z: int,
+                       before_inventory: int, before_ground: int,
+                       timeout_s: float = TAKE_TIMEOUT_S):
+    """Keep the action slot conceptually occupied until the wanted pickup is
+    grounded. A pile disappearing is not collection: inventory must also grow.
+    While this function observes the walk-and-take, the runner cannot issue a
+    routine interaction that cancels the path halfway to the drop."""
+    deadline = time.monotonic() + timeout_s
+    latest = game_reflex.read_snapshot() or {}
+    last_pos = (latest.get("x"), latest.get("z"))
+    last_progress = time.monotonic()
+    missing_since = None
+    with SnapshotChangeWatch() as watch:
+        while True:
+            latest = game_reflex.read_snapshot() or latest
+            if latest.get("logged_in") is not True:
+                return "take-unverified", latest.get("x"), latest.get("z"), 0
+            now = time.monotonic()
+            current_inventory = inventory_quantity(latest, item_id)
+            current_ground = ground_quantity_at(latest, item_id, x, z)
+            gained = current_inventory - before_inventory
+            removed = current_ground < before_ground
+            if gained > 0 and removed:
+                return "done", latest.get("x"), latest.get("z"), gained
+            if removed:
+                missing_since = missing_since or now
+                if now - missing_since >= TAKE_MISSING_GRACE_S:
+                    return "take-missed", latest.get("x"), latest.get("z"), max(0, gained)
+            else:
+                missing_since = None
+
+            pos = (latest.get("x"), latest.get("z"))
+            if pos != last_pos or latest.get("walking") is True:
+                last_pos, last_progress = pos, now
+            elif now - last_progress >= WALK_SETTLE_S:
+                return "take-short", latest.get("x"), latest.get("z"), max(0, gained)
+
+            remaining = deadline - now
+            if remaining <= 0:
+                return "take-short", latest.get("x"), latest.get("z"), max(0, gained)
+            wake_in = min(remaining, 0.5)
+            if missing_since is not None:
+                wake_in = min(wake_in, TAKE_MISSING_GRACE_S - (now - missing_since))
+            watch.wait(max(0.01, wake_in))
+
+
+def verify_sidestep(action: dict, timeout_s: float = SIDESTEP_VERIFY_S):
+    """Rule 7a's one-tile postcondition, observed and never widened: 'done'
+    only when a newer snapshot shows in_combat false AND the body settled
+    exactly on the chosen adjacent tile. Combat persisting on the origin is
+    the retryable lock ('sidestep-locked'/'sidestep-unconfirmed'); combat
+    ending on the origin is benign ('sidestep-combat-ended'); leaving combat
+    anywhere else is the anomaly 'sidestep-displaced'. Nothing here emits a
+    movement command."""
+    target = (action.get("x"), action.get("z"))
+    origin = (action.get("origin_x"), action.get("origin_z"))
+    deadline = time.monotonic() + timeout_s
+    hard_stop = deadline + SIDESTEP_SETTLE_MAX_S
+    latest = game_reflex.read_snapshot() or {}
+    last_pos, last_move = None, time.monotonic()
+    with SnapshotChangeWatch() as watch:
+        while True:
+            latest = game_reflex.read_snapshot() or latest
+            if latest.get("logged_in") is not True:
+                return "sidestep-unverified", latest.get("x"), latest.get("z")
+            px, pz = latest.get("x"), latest.get("z")
+            now = time.monotonic()
+            if (px, pz) != last_pos:
+                last_pos, last_move = (px, pz), now
+            if latest.get("in_combat") is False and isinstance(px, int):
+                if (px, pz) == target:
+                    return "done", px, pz
+                if now - last_move >= WALK_SETTLE_S or now >= hard_stop:
+                    if (px, pz) == origin:
+                        return "sidestep-combat-ended", px, pz
+                    return "sidestep-displaced", px, pz
+            elif now >= deadline:
+                status = "sidestep-locked" if retreat_lock_feedback(latest) \
+                    else "sidestep-unconfirmed"
+                return status, px, pz
+            watch.wait(max(0.05, min(0.5, hard_stop - now)))
+
+
+def verify_retreat(timeout_s: float = RETREAT_VERIFY_S):
+    """Verify the effect the player actually wants: combat ended. A bridge
+    receipt proves only that a reachable escape walk was sent; the server may
+    still reject it during the first three opposing hits."""
+    deadline = time.monotonic() + timeout_s
+    latest = game_reflex.read_snapshot() or {}
+    with SnapshotChangeWatch() as watch:
+        while True:
+            latest = game_reflex.read_snapshot() or latest
+            if latest.get("logged_in") is not True:
+                return "retreat-unverified", latest.get("x"), latest.get("z")
+            if latest.get("in_combat") is False:
+                return "done", latest.get("x"), latest.get("z")
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                status = "retreat-locked" if retreat_lock_feedback(latest) \
+                    else "retreat-unconfirmed"
+                return status, latest.get("x"), latest.get("z")
+            watch.wait(remaining)
+
+
+def dispatch_stop_walk(defaults: dict, slot_wait_s: float = 0.0):
+    """The game's own stop (spec rule 7g): one receipted walk to the body's
+    freshest current tile. The server answers WALK_TO_POINT by resetting the
+    native follow and replacing the walk queue with that tile, so this is how
+    an ended follow releases the body. Returns (status, x, z): 'done' only
+    after a LATER snapshot reports walking false; 'slot-busy', a bridge
+    refusal, or 'stop-unverified' leave the caller's cancelling record for
+    the next pass to retry."""
+    snap = game_reflex.read_snapshot() or {}
+    if snap.get("logged_in") is not True \
+            or not isinstance(snap.get("x"), int) \
+            or not isinstance(snap.get("z"), int):
+        return "stop-unverified", snap.get("x"), snap.get("z")
+    action = {"type": "walk", "x": snap["x"], "z": snap["z"], "arrive": 0}
+    action_id = None
+    slot_deadline = time.monotonic() + slot_wait_s
+    while True:
+        with player_state_lock():
+            if not (state_dir() / "action.json").exists():
+                est = load_player_state()
+                est["action_seq"] += 1
+                action_id = est["action_seq"]
+                sent_at = now_ms()
+                est["inflight"] = {"id": action_id, "ts": sent_at}
+                save_player_state(est)
+                emit_player_action("action.json", action, action_id, sent_at)
+                break
+        if time.monotonic() >= slot_deadline:
+            return "slot-busy", snap.get("x"), snap.get("z")
+        time.sleep(0.1)
+    flush_events([{"ts": now_ms(), "kind": "follow-stop", "id": action_id,
+                   "action": action}])
+    status = "no-receipt"
+    receipt_path = state_dir() / "receipt.json"
+    deadline = time.monotonic() + defaults["inflight_timeout_ms"] / 1000.0
+    try:
+        with SnapshotChangeWatch() as watch:
+            while time.monotonic() < deadline:
+                try:
+                    receipt = json.loads(receipt_path.read_text())
+                except (OSError, json.JSONDecodeError):
+                    receipt = None
+                if receipt and receipt.get("id") == action_id:
+                    status = receipt.get("status", "no-status")
+                    try:
+                        receipt_path.unlink()
+                    except OSError:
+                        pass
+                    flush_events([{"ts": now_ms(), "kind": "receipt",
+                                   "id": action_id, "status": status}])
+                    break
+                watch.wait(max(0.01, min(0.25, deadline - time.monotonic())))
+    finally:
+        with player_state_lock():
+            est = load_player_state()
+            if action_id is not None \
+                    and (est.get("inflight") or {}).get("id") == action_id:
+                est["inflight"] = None
+                save_player_state(est)
+    if status != "done":
+        return status, snap.get("x"), snap.get("z")
+    latest = snap
+    verify_deadline = time.monotonic() + STOP_VERIFY_S
+    with SnapshotChangeWatch() as watch:
+        while True:
+            latest = game_reflex.read_snapshot() or latest
+            if latest.get("logged_in") is not True \
+                    or latest.get("walking") is not True:
+                return "done", latest.get("x"), latest.get("z")
+            remaining = verify_deadline - time.monotonic()
+            if remaining <= 0:
+                return "stop-unverified", latest.get("x"), latest.get("z")
+            watch.wait(max(0.01, min(0.5, remaining)))
+
+
+def verify_semantic_portal_open(portal: dict, timeout_s: float = STOP_VERIFY_S):
+    """Observe the exact planned obstacle cease blocking movement."""
+    latest = game_reflex.read_snapshot() or {}
+    deadline = time.monotonic() + timeout_s
+    with SnapshotChangeWatch() as watch:
+        while True:
+            latest = game_reflex.read_snapshot() or latest
+            if latest.get("logged_in") is not True:
+                return "portal-open-unverified", latest
+            if not _observed_closed_portal(latest, portal):
+                return "done", latest
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                return "portal-open-unverified", latest
+            watch.wait(max(0.01, min(0.5, remaining)))
+
+
+# --------------------------------------------------------------------------
+# The resident runner's heartbeat (spec rule 15): pid, ts, latest verdict.
+# A fresh heartbeat makes the runner the only evaluator; `step` defers.
+# --------------------------------------------------------------------------
+def enforced_rule_names(cfg: dict) -> list:
+    """The rule names the evaluator is actually holding in memory.
+
+    Spec rule 15: a refused reload keeps the last valid table, so the file on
+    disk and the table being enforced can differ. The heartbeat publishes the
+    enforced names so nothing downstream cites a rule this process never
+    loaded."""
+    return sorted(str(rule.get("name")) for rule in (cfg or {}).get("rules") or [])
+
+
+def write_heartbeat(verdict: str, detail: str = "", ground_items=None,
+                    plan: str = "", activity: str = "", activity_xp: str = "",
+                    activity_compare: str = "", friend_updates=None,
+                    goal: str = "", table_error: str = "",
+                    enforced_rules=None) -> None:
+    game_reflex.atomic_write(runner_path(), json.dumps(
+        {"pid": os.getpid(), "ts": now_ms(),
+         "verdict": verdict, "detail": detail,
+         "table_error": table_error or None,
+         "enforced_rules": list(enforced_rules or []),
+         "ground_items": ground_items or [],
+         "plan": plan or None,
+         "goal": goal or None,
+         "activity": activity or None,
+         "activity_xp": activity_xp or None,
+         "activity_compare": activity_compare or None,
+         "friend_updates": friend_updates or []}) + "\n")
+
+
+def refresh_observation_heartbeat(observation):
+    """A long observed action is live ownership, not a dead evaluator."""
+    try:
+        hb = json.loads(runner_path().read_text())
+    except (OSError, json.JSONDecodeError):
+        return
+    if hb.get("pid") != os.getpid():
+        return
+    now = now_ms()
+    if hb.get("verdict") == "action-observing" and now - hb.get("ts", 0) < 1000:
+        return
+    hb.update(ts=now, verdict="action-observing",
+              detail=f"observing {observation.get('type')} id={observation.get('id')}; "
+                     "wait for its outcome before another ordinary action")
+    game_reflex.atomic_write(runner_path(), json.dumps(hb) + "\n")
+
+
+def read_live_runner():
+    """The heartbeat, iff fresh and its pid is alive; else None."""
+    try:
+        hb = json.loads(runner_path().read_text())
+    except (OSError, json.JSONDecodeError):
+        return None
+    if now_ms() - hb.get("ts", 0) > RUNNER_FRESH_MS:
+        return None
+    pid = hb.get("pid")
+    if not isinstance(pid, int) or pid == os.getpid():
+        return None
+    try:
+        os.kill(pid, 0)
+    except (OSError, ProcessLookupError):
+        return None
+    return hb
+
+
+def direct_action_type_matches(requested: str, stored: str) -> bool:
+    """Compare semantic hand actions, including the two escape executors.
+
+    `retreat` is the public intent. A learned rule may implement that intent
+    with either the general clearance action or the exact one-tile sidestep;
+    both still own the same hand operation.
+    """
+    if requested == "retreat":
+        return stored in ("retreat", "sidestep")
+    return requested == stored
+
+
+def direct_action_parameter_matches(action: dict, key: str, value) -> bool:
+    """Match a caller's semantic selector against a stored action parameter."""
+    if key == "npc":
+        return value in npc_id_set(action.get("npc"))
+    if key in ("cmd", "button"):
+        return action.get(key, 1) == value
+    return action.get(key) == value
+
+
+def direct_scope_release_proof(rule: dict, requested: str, selectors: dict,
+                               snap) -> str:
+    """The live proof, if any, that this request lies outside the rule's own
+    declared scope (spec rule 12). Returns the proof name or None.
+
+    Only the `take-ground` acquisition request has scope proofs, and only a
+    fresh logged-in snapshot supplies them; everything unprovable keeps the
+    capture, so the interlock fails closed.
+    """
+    if not isinstance(snap, dict) or requested != "take-ground":
+        return None
+    item = selectors.get("item")
+    if not isinstance(item, int):
+        return None
+    trigger = rule.get("trigger") or {}
+    action = rule.get("action") or {}
+    # The stack-only proof: a guard requiring the very item this take would
+    # acquire cannot be satisfied by any routine transition except the
+    # acquisition it reserves. Unheld, the rule scopes itself away from
+    # initial acquisition. A guard on a different item proves nothing.
+    if trigger.get("inventory_has") == item \
+            and inventory_quantity(snap, item) == 0:
+        return "stack-only-guard-item-unheld"
+    # The locality proof: a `within` cap owns only piles inside it. When
+    # every visible matching pile is strictly beyond the cap, the rule
+    # cannot lawfully act on any pile now visible.
+    within = action.get("within")
+    px, pz = snap.get("x"), snap.get("z")
+    if isinstance(within, int) and isinstance(px, int) and isinstance(pz, int):
+        piles = [entry for entry in snap.get("ground_items") or []
+                 if isinstance(entry, dict) and entry.get("id") == item
+                 and isinstance(entry.get("x"), int)
+                 and isinstance(entry.get("z"), int)]
+        if piles and all(max(abs(entry["x"] - px), abs(entry["z"] - pz))
+                         > within for entry in piles):
+            return "all-visible-piles-beyond-within"
+    return None
+
+
+def rules_own_direct_action(cfg: dict, requested: str, selectors: dict,
+                            objective: str, activity: str,
+                            snap=None) -> tuple[list[str], list[dict]]:
+    """Return (owners, released) for one semantic hand action.
+
+    Ownership deliberately does not mean "the trigger is true this instant".
+    A trigger is the routine's state transition guard; letting a second hand
+    act while that guard is temporarily false is precisely the race this
+    boundary prevents. Disable/change the routine or its scope to return the
+    action to direct control. The one narrowing is spec rule 12's scope
+    proofs: a fresh snapshot proving the request outside a rule's own
+    declared scope releases that rule alone, and the release is reported so
+    the caller can record it.
+    """
+    owners, released = [], []
+    for rule in cfg.get("rules") or []:
+        if not rule.get("enabled") \
+                or not rule_scope_applies(rule, objective, activity):
+            continue
+        action = rule.get("action") or {}
+        pair_operand_click = requested == "click-inventory" \
+            and action.get("type") == "use-item-item" \
+            and isinstance(selectors.get("item"), int) \
+            and selectors["item"] in (action.get("item"), action.get("target")) \
+            and set(selectors) <= {"item", "button"}
+        if not pair_operand_click:
+            if not direct_action_type_matches(requested, action.get("type")):
+                continue
+            if not all(direct_action_parameter_matches(action, key, value)
+                       for key, value in selectors.items()):
+                continue
+        proof = direct_scope_release_proof(rule, requested, selectors, snap)
+        if proof is not None:
+            released.append({"rule": str(rule.get("name")), "proof": proof})
+            continue
+        owners.append(str(rule.get("name")))
+    return sorted(owners), sorted(released, key=lambda r: r["rule"])
+
+
+def cmd_direct_owner(args):
+    """Exit successfully iff the live resident routine owns this action.
+
+    This is the mechanical interlock used by direct semantic commands; it
+    emits no bridge action itself. Exit 1 means direct control is currently
+    unreserved; a scope-proof release additionally logs one
+    `direct-scope-release` decision event before releasing.
+    """
+    hb = read_live_runner()
+    if hb is None:
+        raise SystemExit(1)
+    selectors = parse_kv(args.param)
+    cfg = load_config()
+    snap = game_reflex.read_snapshot()
+    if not isinstance(snap, dict) or snap.get("logged_in") is not True \
+            or now_ms() - snap.get("ts", 0) > WAIT_SNAPSHOT_FRESH_MS:
+        snap = None
+    owners, released = rules_own_direct_action(
+        cfg, args.action, selectors, read_objective(), read_activity(), snap)
+    # Spec rule 15: the reservation belongs to the table the runner is
+    # ENFORCING, not to the file on disk. A rule the live runner never loaded
+    # — a refused reload keeping an older table — can never fire, so citing it
+    # would deadlock the direct door against a rule nobody is running.
+    enforced = hb.get("enforced_rules")
+    unenforced = []
+    if isinstance(enforced, list) and enforced:
+        unenforced = [name for name in owners if name not in enforced]
+        owners = [name for name in owners if name in enforced]
+    if unenforced:
+        flush_events([{
+            "ts": now_ms(), "kind": "direct-unenforced-release",
+            "action": args.action, "selectors": selectors,
+            "rules": unenforced, "pid": hb.get("pid"),
+            "table_error": hb.get("table_error") or None,
+        }])
+    if not owners:
+        if released:
+            flush_events([{
+                "ts": now_ms(), "kind": "direct-scope-release",
+                "action": args.action, "selectors": selectors,
+                "released": released,
+                "tick": snap.get("tick") if isinstance(snap, dict) else None,
+            }])
+        raise SystemExit(1)
+    report("routine-owned", action=args.action,
+           selectors=",".join(f"{key}={selectors[key]}"
+                              for key in sorted(selectors)) or None,
+           rules=",".join(owners), next="play")
+
+
+# --------------------------------------------------------------------------
+# The reflex-fire ledger (spec rule 10a): what the mechanical hands did since
+# the previous deliberation, presented exactly once, cursor advanced under its
+# own lock. The full history stays in the two decision logs.
+# --------------------------------------------------------------------------
+def reflex_fire_cursor_path() -> Path:
+    return game_dir() / "reflex-fire-cursor.json"
+
+
+def reflex_fire_cursor_lock_path() -> Path:
+    return game_dir() / "reflex-fire-cursor.lock"
+
+
+class reflex_cursor_lock:
+    """Serialize concurrent deliberations: one presents, the other sees the
+    advanced cursor. Deliberately NOT player_state_lock - presentation may
+    run while another process holds that."""
+    def __enter__(self):
+        reflex_fire_cursor_lock_path().parent.mkdir(parents=True, exist_ok=True)
+        self.fh = open(reflex_fire_cursor_lock_path(), "a+")
+        fcntl.flock(self.fh.fileno(), fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        fcntl.flock(self.fh.fileno(), fcntl.LOCK_UN)
+        self.fh.close()
+
+
+def collect_reflex_events(log_path: Path, engine: str, entry: dict):
+    """New event lines from one decision log since the cursor entry.
+    Returns (events, new_entry). A rotated or replaced log falls back to the
+    bounded tail filtered by the last presented timestamp, so nothing is
+    replayed from the beginning and nothing recent is lost."""
+    entry = entry if isinstance(entry, dict) else {}
+    try:
+        size = log_path.stat().st_size
+    except OSError:
+        return [], entry
+    min_ts = 0
+    with open(log_path, "rb") as fh:
+        first = fh.readline()
+        sha = hashlib.sha1(first).hexdigest() if first else None
+        offset = entry.get("offset")
+        if entry.get("sha") != sha or not isinstance(offset, int) \
+                or not 0 <= offset <= size:
+            # Unknown or rotated log: bounded tail, timestamp-filtered.
+            min_ts = entry.get("ts") if isinstance(entry.get("ts"), int) else 0
+            offset = max(0, size - REFLEX_FIRE_TAIL_BYTES)
+            fh.seek(offset)
+            if offset:
+                offset += len(fh.readline())  # drop the partial first line
+        fh.seek(offset)
+        data = fh.read(size - offset)
+    # Never advance past a line still being appended.
+    cut = data.rfind(b"\n")
+    if cut < 0:
+        return [], {"sha": sha, "offset": offset, "ts": entry.get("ts") or 0}
+    data = data[:cut + 1]
+    events = []
+    last_ts = entry.get("ts") if isinstance(entry.get("ts"), int) else 0
+    for line in data.splitlines():
+        try:
+            event = json.loads(line)
+        except (ValueError, UnicodeDecodeError):
+            continue
+        if not isinstance(event, dict):
+            continue
+        ts = event.get("ts")
+        if min_ts and (not isinstance(ts, int) or ts <= min_ts):
+            continue
+        event["_engine"] = engine
+        events.append(event)
+        if isinstance(ts, int):
+            last_ts = max(last_ts, ts)
+    return events, {"sha": sha, "offset": offset + cut + 1, "ts": last_ts}
+
+
+def build_reflex_fire_records(events: list):
+    """(records, suppressed): one compact record per firing, in time order,
+    and per-rule counts of the suppression kinds over the same span."""
+    by_id = {}
+    records = []
+    suppressed = {}
+    for event in sorted(events, key=lambda e: (e.get("ts") or 0)):
+        kind = event.get("kind")
+        engine = event.get("_engine")
+        if kind == "fired":
+            snap = event.get("snap") or {}
+            record = {"ts": event.get("ts"), "engine": engine,
+                      "rule": event.get("rule"), "action": event.get("action"),
+                      "outcome": "in-flight",
+                      "start": {"x": snap.get("x"), "z": snap.get("z")},
+                      "end": None}
+            by_id[(engine, event.get("id"))] = record
+            records.append(record)
+        elif kind == "receipt":
+            record = by_id.get((engine, event.get("id")))
+            if record is not None and record.get("outcome") == "in-flight":
+                record["outcome"] = event.get("status")
+        elif kind == "reflex-outcome":
+            record = by_id.get((engine, event.get("id")))
+            if record is None:
+                record = {"ts": event.get("ts"), "engine": engine}
+                records.append(record)
+            record.update({
+                "rule": event.get("rule"), "trigger": event.get("trigger"),
+                "action": event.get("action"), "outcome": event.get("status"),
+                "start": event.get("start"), "end": event.get("end")})
+            if event.get("moved") is not None:
+                record["moved"] = event["moved"]
+        elif kind in REFLEX_SUPPRESSION_KINDS:
+            rules = suppressed.setdefault(kind, {})
+            for name in (event.get("rules")
+                         if isinstance(event.get("rules"), list)
+                         else [event.get("rule")]):
+                if isinstance(name, str):
+                    rules[name] = rules.get(name, 0) + 1
+    return records, suppressed
+
+
+def present_reflex_fires() -> None:
+    """Spec rule 10a: print the firings recorded since the previous
+    deliberation, newest-bounded, then advance the durable cursor - so each
+    firing appears in exactly one deliberation's context. A broken ledger
+    must never block play: any error leaves the cursor untouched."""
+    try:
+        with reflex_cursor_lock():
+            try:
+                cursor = json.loads(reflex_fire_cursor_path().read_text())
+            except (OSError, ValueError):
+                cursor = {}
+            if not isinstance(cursor, dict):
+                cursor = {}
+            player_events, player_entry = collect_reflex_events(
+                state_dir() / "player-decisions.jsonl", "player",
+                cursor.get("player") or {})
+            reflex_events, reflex_entry = collect_reflex_events(
+                state_dir() / "decisions.jsonl", "reflex",
+                cursor.get("reflex") or {})
+            records, suppressed = build_reflex_fire_records(
+                player_events + reflex_events)
+            shown = records[-REFLEX_FIRE_PRESENT_MAX:]
+            omitted = len(records) - len(shown)
+            for order, record in enumerate(shown, 1):
+                line = {"n": order}
+                line.update({k: v for k, v in record.items() if v is not None})
+                print("reflex-fire " + json.dumps(line, separators=(",", ":")),
+                      flush=True)
+            if omitted > 0:
+                print(f"reflex-fires-omitted count={omitted} "
+                      f"log={state_dir() / 'player-decisions.jsonl'}",
+                      flush=True)
+            if suppressed:
+                capped = {kind: dict(sorted(rules.items(),
+                                            key=lambda kv: -kv[1])[:12])
+                          for kind, rules in suppressed.items()}
+                print("reflex-suppressed "
+                      + json.dumps(capped, separators=(",", ":")), flush=True)
+            game_dir().mkdir(parents=True, exist_ok=True)
+            game_reflex.atomic_write(
+                reflex_fire_cursor_path(),
+                json.dumps({"v": 1, "player": player_entry,
+                            "reflex": reflex_entry}) + "\n")
+    except Exception as error:  # noqa: BLE001 - presentation never blocks play
+        print(f"reflex-ledger-error {error!r}", file=sys.stderr, flush=True)
+
+
+# --------------------------------------------------------------------------
+# step (spec rule 7): one rules-first evaluation and one report line.
+# --------------------------------------------------------------------------
+QUIET_REPEATS = False       # the resident runner's log discipline: repeated
+_last_verdict = None        # idle verdicts collapse; firings always print
+
+
+def report(verdict, **fields):
+    global _last_verdict
+    if QUIET_REPEATS and verdict == _last_verdict and verdict != "fired":
+        return
+    _last_verdict = verdict
+    parts = [verdict]
+    for key, val in fields.items():
+        if val is not None:
+            parts.append(f"{key}={val}")
+    print(" ".join(parts), flush=True)
+
+
+def once_key(rule_name: str, objective: str) -> str:
+    return f"{rule_name}\t{objective}"
+
+
+# Spec rule 7i: the healing prerequisite reads the reflex engine's OWN durable
+# table to learn whether an eat is currently armed — tolerantly and read-only,
+# because an invalid or eat-disarmed table must never hold play for a hand
+# that cannot move. Cached by file identity so the runner pays one stat per
+# pass, not one parse.
+_armed_eat_cache = {"key": None, "threshold": None}
+
+
+def reflex_armed_eat_threshold():
+    """The widest hp_below among enabled game-channel eat rules in
+    reflex-rules.json, or None when no eat is armed there."""
+    path = game_reflex.rules_path()
+    try:
+        meta = path.stat()
+        key = (str(path), meta.st_mtime_ns, meta.st_size)
+    except OSError:
+        _armed_eat_cache["key"] = None
+        _armed_eat_cache["threshold"] = None
+        return None
+    if _armed_eat_cache["key"] == key:
+        return _armed_eat_cache["threshold"]
+    threshold = None
+    try:
+        cfg = json.loads(path.read_text())
+        rules = cfg.get("rules") if isinstance(cfg, dict) else None
+        for rule in rules if isinstance(rules, list) else []:
+            if not isinstance(rule, dict) or rule.get("enabled") is not True \
+                    or rule.get("channel") != "game" \
+                    or (rule.get("action") or {}).get("type") != "eat":
+                continue
+            hp_below = (rule.get("trigger") or {}).get("hp_below")
+            if isinstance(hp_below, (int, float)) and 0 < hp_below <= 1:
+                threshold = hp_below if threshold is None \
+                    else max(threshold, hp_below)
+    except (OSError, ValueError, AttributeError):
+        threshold = None
+    _armed_eat_cache["key"] = key
+    _armed_eat_cache["threshold"] = threshold
+    return threshold
+
+
+def held_food_quantity(snap: dict, food: dict) -> int:
+    total = 0
+    for item in snap.get("inventory") or []:
+        if isinstance(item, dict) and item.get("id") in food:
+            count = item.get("count")
+            total += count if isinstance(count, int) and count > 0 else 1
+    return total
+
+
+def update_healing_hold(est: dict, snap: dict, active: bool, threshold,
+                        food: dict, now: int) -> None:
+    """Spec rule 7i: one durable healing-hold / healing-hold-clear pair per
+    continuous yield episode, so the ledger explains a body standing still
+    at low health instead of leaving deliberation to re-diagnose it."""
+    episode = est.get("healing_hold")
+    hits, hits_max = snap.get("hits"), snap.get("hits_max")
+    food_quantity = held_food_quantity(snap, food)
+    if active and not episode:
+        est["healing_hold"] = {"since": now, "hits": hits,
+                               "hits_max": hits_max, "threshold": threshold,
+                               "food_quantity": food_quantity}
+        flush_events([{"ts": now, "kind": "healing-hold",
+                       "rule": "eat-low-health", "hits": hits,
+                       "hits_max": hits_max, "threshold": threshold,
+                       "food_quantity": food_quantity}])
+    elif not active and episode:
+        if snap.get("in_combat") is True:
+            observed = "combat"
+        elif threshold is None:
+            observed = "disarmed"
+        elif food_quantity <= 0:
+            observed = "food-exhausted"
+        else:
+            observed = "healed"
+        flush_events([{"ts": now, "kind": "healing-hold-clear",
+                       "rule": "eat-low-health", "observed": observed,
+                       "from_hits": episode.get("hits"), "hits": hits,
+                       "hits_max": hits_max,
+                       "from_food_quantity": episode.get("food_quantity"),
+                       "food_quantity": food_quantity}])
+        est["healing_hold"] = None
+
+
+def sleep_wake_fields(snap: dict) -> dict:
+    return dict(fatigue=snap.get("fatigue"), sleep_fatigue=snap.get("sleep_fatigue"),
+                status=snap.get("sleep_status") or None,
+                next="solve-current-word-from-screenshot-submit-Return-then-wait-until-not_sleeping-and-fatigue_zero",
+                wake_requires="current-word-submission-even-when-sleep-fatigue-is-zero")
+
+
+def step_once(cfg: dict, objective: str, activity: str, wait_ms: int):
+    """One evaluation. Returns (verdict, exit_code)."""
+    defaults = config_defaults(cfg)
+    est = load_player_state()
+    est["_inflight_timeout_ms"] = defaults["inflight_timeout_ms"]
+    events = []
+    now = now_ms()
+
+    if (state_dir() / "hold").exists():
+        if not est["was_held"]:
+            events.append({"ts": now, "kind": "hold"})
+            est["was_held"] = True
+            save_player_state(est)
+            flush_events(events)
+        report("held")
+        return "held", EXIT_HELD
+
+    snap = game_reflex.read_snapshot()
+    if snap is None:
+        report("no-snapshot", dir=str(state_dir()))
+        return "no-snapshot", EXIT_NOT_READY
+    record_movement_trail(snap)
+    record_navigation_observation(snap)
+    # The observed combat clock and provocation verdict (spec rule 4) are
+    # tracked BEFORE anything selects an escape, so the same pass that sees
+    # combat end can already refuse a stale far-clearance walk.
+    with player_state_lock():
+        est = load_player_state()
+        track_combat_state(snap, est, now)
+        track_stationary_state(snap, est, now)
+        save_player_state(est)
+    annotate_combat_state(snap, est, now)
+    annotate_stationary_state(snap, est, now)
+    xp_metrics = activity_metrics(snap, activity)
+    xp_text = activity_xp_metrics_text(xp_metrics)
+    xp_compare = activity_comparison_text(xp_metrics)
+    maybe_queue_activity_checkpoint(xp_metrics, cfg, objective, activity)
+    # The sleep screen owns keyboard input and blocks ordinary play. Never let
+    # an old objective, route, reflex, or queued reply pretend it can proceed
+    # until the current word has been solved and live state says awake.
+    if snap.get("logged_in") is True and snap.get("sleeping") is True:
+        friend_events = []
+        with player_state_lock():
+            sleeping_state = load_player_state()
+            capture_player_messages(snap, sleeping_state, friend_events)
+            top_up_session_from_player_messages(
+                snap, sleeping_state, friend_events)
+            capture_friend_status(snap, sleeping_state, friend_events)
+            save_player_state(sleeping_state)
+            flush_events(friend_events)
+        report("sleeping-needs-wake", **sleep_wake_fields(snap))
+        return "sleeping-needs-wake", EXIT_NO_RULE
+    # A semantic batch survives the transient threshold that initiated it.
+    # Reconcile it before dynamic safety rules are added so combat escape,
+    # eating, and sleep can still take precedence whenever its continuation
+    # guard is paused.
+    source_rules = continue_action_batch(
+        cfg, snap, est, objective, activity, events, now)
+    save_player_state(est)
+    hits, hits_max = snap.get("hits"), snap.get("hits_max")
+    food = game_reflex.load_food()
+    health_known = isinstance(hits, int) and isinstance(hits_max, int) \
+        and hits_max > 0
+    has_food = bool(game_reflex.food_slots(snap, food))
+    low_health_with_food = health_known and has_food \
+        and hits / hits_max < EAT_HEALTH_FRACTION
+    # Spec rule 7i: the healing prerequisite. The survival reflex engine and
+    # learned player are independent loops sharing one action slot. On the
+    # first safe snapshot the faster learned loop must not reacquire an NPC
+    # before the reflex table's ARMED eat can own and verify healing. This is
+    # a state prerequisite, not a delay: it vanishes on the observed HP/food
+    # transition that completes eating, and it never holds for a disarmed eat.
+    armed_eat = reflex_armed_eat_threshold()
+    snap_fresh = isinstance(snap.get("ts"), int) \
+        and now - snap["ts"] <= defaults["stale_ms"]
+    healing_need = snap_fresh and snap.get("in_combat") is False \
+        and health_known and has_food and armed_eat is not None \
+        and hits / hits_max < armed_eat
+    if snap_fresh and (healing_need or est.get("healing_hold")):
+        with player_state_lock():
+            est = load_player_state()
+            update_healing_hold(est, snap, healing_need, armed_eat, food, now)
+            save_player_state(est)
+    if healing_need:
+        report("healing-prerequisite", hits=hits, hits_max=hits_max,
+               threshold=armed_eat,
+               next="eat-low-health-observe-healing-or-food-decrease")
+        return "healing-prerequisite", EXIT_NOT_READY
+    if low_health_with_food and snap.get("in_combat") is True:
+        # Eating is server-illegal in combat. This safety transition owns the
+        # fight until three client-observed splats make retreat legal; the
+        # normal out-of-combat eat reflex then owns and verifies consumption.
+        source_rules.append({
+            "name": RETREAT_TO_EAT_RULE_NAME, "enabled": True,
+            "priority": RETREAT_TO_EAT_PRIORITY, "cooldown_ms": 0,
+            "hold_ticks": 1, "once_per_objective": False,
+            "note": "leave combat before eating; never click food while fighting",
+            "trigger": {"in_combat": True,
+                        "opponent_rounds_at_least": SIDESTEP_REQUIRED_ROUNDS},
+            "action": {"type": "retreat", "distance": 5, "dx": 0, "dz": 1},
+        })
+    retreat_request = load_retreat_request()
+    if retreat_request is not None and retreat_has_clearance(snap, retreat_request):
+        clear_retreat_request()
+        retreat_request = None
+    if retreat_request is not None and snap.get("in_combat") is False:
+        # A provoked, non-aggressive fight is broken by its one-tile step; the
+        # request must not go on to walk the 12-tile clearance leg (spec 7b).
+        last = est.get("last_combat") or {}
+        if last.get("provoked") is True \
+                and last.get("id") == retreat_request["combat_id"]:
+            clear_retreat_request()
+            flush_events([{"ts": now, "kind": "retreat-request-satisfied",
+                           "reason": "provoked-combat-broken-one-tile",
+                           "x": snap.get("x"), "z": snap.get("z")}])
+            retreat_request = None
+    if retreat_request is not None:
+        if snap.get("in_combat") is True:
+            retreat_action = {"type": "retreat",
+                              "distance": retreat_request["distance"],
+                              "dx": retreat_request["dx"],
+                              "dz": retreat_request["dz"],
+                              "committed_direction": 1,
+                              "_retreat_combat_id": retreat_request["combat_id"]}
+            retreat_trigger = {"in_combat": True}
+            retreat_note = "bounded escape: break the current combat lock"
+        else:
+            target_x, target_z = retreat_clearance_target(snap, retreat_request)
+            retreat_action = {"type": "walk", "x": target_x, "z": target_z,
+                              "arrive": 0,
+                              "_retreat_combat_id": retreat_request["combat_id"]}
+            retreat_trigger = {"out_of_combat": True}
+            retreat_note = "bounded escape: clear the whole aggressive pack"
+        source_rules.append({
+            "name": MANUAL_RETREAT_RULE_NAME, "enabled": True,
+            "priority": MANUAL_RETREAT_PRIORITY, "cooldown_ms": 0,
+            "hold_ticks": 1, "once_per_objective": False,
+            "note": retreat_note, "trigger": retreat_trigger,
+            "action": retreat_action,
+        })
+    backtrack = prepare_backtrack(snap, objective)
+    backtrack_blocked = False
+    if backtrack is not None and backtrack.get("status") == "blocked":
+        signature = route_obstacle_signature(snap)
+        if signature == backtrack.get("blocked_signature"):
+            backtrack_blocked = True
+        else:
+            backtrack = {key: value for key, value in backtrack.items()
+                         if not key.startswith("blocked_")}
+            backtrack["status"] = "active"
+            save_backtrack(backtrack)
+    if backtrack is not None and backtrack.get("status") == "active":
+        target_x, target_z = backtrack["points"][backtrack["index"]]
+        leg_x, leg_z = bounded_navigation_leg(
+            snap["x"], snap["z"], target_x, target_z)
+        source_rules.append({
+            "name": BACKTRACK_RULE_NAME, "enabled": True,
+            "priority": BACKTRACK_PRIORITY, "cooldown_ms": 0,
+            "hold_ticks": 1, "once_per_objective": False,
+            "note": "retrace the body's observed successful tile trail",
+            "trigger": {},
+            "action": {"type": "walk", "x": leg_x, "z": leg_z,
+                       "arrive": 0},
+        })
+    follow, follow_target = prepare_follow(snap, objective, activity)
+    follow_abandoned_reason = None
+    if follow is not None and follow.get("status") == "active":
+        follow, follow_action, follow_abandoned_reason = \
+            prepare_follow_navigation(follow, follow_target, snap)
+        if follow_action is not None:
+            source_rules.append({
+                "name": FOLLOW_RULE_NAME, "enabled": True,
+                "priority": FOLLOW_PRIORITY, "cooldown_ms": 0,
+                "hold_ticks": 1, "once_per_objective": False,
+                "note": "reacquire the chosen live player and stay nearby",
+                "trigger": {}, "action": follow_action,
+            })
+    trigger_true = make_trigger_fn(objective, activity)
+    # Escape rules own combat from its FIRST snapshot (spec rule 7b). The
+    # readiness trigger is set aside only for this ownership calculation: the
+    # pre-third-round span already holds routes, travel and pickups still,
+    # while the one-tile break waits for observed server combat progress.
+    urgent_retreat_names = {
+        rule["name"] for rule in source_rules
+        if rule.get("enabled")
+        and ((rule.get("action") or {}).get("type") in ("retreat", "sidestep")
+             and snap.get("in_combat") is True
+             or rule.get("name") == MANUAL_RETREAT_RULE_NAME)
+        and trigger_true({key: value
+                          for key, value in (rule.get("trigger") or {}).items()
+                          if key != "opponent_rounds_at_least"}, snap, {})
+    }
+
+    # Spec rules 7b-7c: capture urgent messages before ordinary play.
+    # The small lock prevents the resident runner from racing a Sol reply.
+    message_events = []
+    with player_state_lock():
+        est = load_player_state()
+        est["_inflight_timeout_ms"] = defaults["inflight_timeout_ms"]
+        capture_player_messages(snap, est, message_events)
+        top_up_session_from_player_messages(snap, est, message_events)
+        capture_friend_status(snap, est, message_events)
+        capture_urgent_system_messages(snap, est, message_events)
+        pending_system_message = oldest_pending_system_message(est)
+        pending_batch = pending_message_batch(est)
+        pending_message = pending_batch[-1] if pending_batch else None
+        settle_until = est.get("message_settle_until", 0)
+        save_player_state(est)
+        flush_events(message_events)
+    if not urgent_retreat_names and pending_system_message is not None and snap.get("logged_in") \
+            and now - snap.get("ts", 0) <= defaults["stale_ms"]:
+        report("system-message", id=pending_system_message["id"],
+               channel=pending_system_message["channel"],
+               action="move-required", text=pending_system_message["text"])
+        return "system-message", EXIT_SYSTEM_MESSAGE
+    if not urgent_retreat_names and pending_message is not None and snap.get("logged_in") \
+            and now - snap.get("ts", 0) <= defaults["stale_ms"] \
+            and now >= settle_until:
+        # Collecting a short multi-line chat burst is background observation,
+        # not a reason to freeze play. Learned activity and direct model play
+        # remain available until the burst is complete; only the settled
+        # conversation becomes the priority verdict below.
+        report("player-message", id=pending_message["id"],
+               channel=pending_message["channel"], sender=pending_message["sender"],
+               count=len(pending_batch),
+               **message_time_fields(pending_message, now),
+               burst=pending_message_burst(pending_batch, now),
+               session_renewed=message_batch_session_renewal(est, pending_batch) or None)
+        return "player-message", EXIT_PLAYER_MESSAGE
+    # Spec rule 21a: past the limit, ordinary evaluation stops — no learned
+    # rule, no route leg, on either hand. It sits BELOW rules 7b-7c above: a
+    # person who spoke still gets an answer, and the idle warning still gets
+    # moved for, because being logged out mid-routine helps nothing. Her own
+    # bridge doors stay open; what stops here is the table, not her hands.
+    sess = session_state(now)
+    if sess["phase"] in ("over", "expired", "ended"):
+        report("session-over", phase=sess["phase"], elapsed_ms=sess["elapsed_ms"],
+               limit_ms=sess["limit_ms"], grace_ms_left=sess["grace_ms_left"])
+        return "session-over", EXIT_SESSION_OVER
+
+    # Spec rule 11d: the declared stop ceiling's consequence. The DISARM is
+    # the trigger layer's and needs nothing here; this block performs what
+    # the declaration said reaching the ceiling does — once, on a fresh
+    # logged-in reading, below the message and session gates so a person
+    # who spoke still gets an answer and urgent escape still owns combat.
+    stop_verdict, stop_record = load_stop()
+    if not urgent_retreat_names and stop_verdict == "armed" and activity \
+            and stop_record["activity"] == activity \
+            and snap.get("logged_in") is True \
+            and now - snap.get("ts", 0) <= defaults["stale_ms"]:
+        closure = stop_closure(stop_verdict, stop_record, activity, snap)
+        if closure is not None and closure["why"] == "stop-reached":
+            then = stop_record["then"]
+            if not stop_record.get("reached_ts"):
+                marked = dict(stop_record, reached_ts=now,
+                              reached_level=closure["level"])
+                game_reflex.atomic_write(stop_path(),
+                                         json.dumps(marked) + "\n")
+                flush_events([{"ts": now, "kind": "stop-reached",
+                               "skill": stop_record["skill"],
+                               "ceiling": stop_record["level"],
+                               "level": closure["level"],
+                               "activity": activity,
+                               "then": stop_then_text(stop_record)}])
+                append_outcome({
+                    "ts": now, "kind": "stop-reached",
+                    "skill": stop_record["skill"],
+                    "ceiling": stop_record["level"],
+                    "level": closure["level"], "activity": activity,
+                    "then": stop_then_text(stop_record),
+                    "note": "the declared ceiling; the activity's rules are "
+                            "disarmed and the switch back in stays refused "
+                            "until: play stop-at --clear"})
+            if then["kind"] == "clear":
+                finish_activity_iteration(
+                    f"stop-reached:{stop_record['skill']}-{stop_record['level']}",
+                    snap)
+                try:
+                    activity_path().unlink()
+                except FileNotFoundError:
+                    pass
+                clear_activity_stats()
+            elif then["kind"] == "switch":
+                target = then["activity"].strip()
+                finish_activity_iteration(
+                    f"stop-reached-switch-to:{target}", snap)
+                game_dir().mkdir(parents=True, exist_ok=True)
+                game_reflex.atomic_write(activity_path(), target + "\n")
+                clear_activity_stats()
+                start_activity_stats(target, snap,
+                                     reason="stop-reached-switch", cfg=cfg)
+            report("stop-reached", skill=stop_record["skill"],
+                   ceiling=stop_record["level"], level=closure["level"],
+                   activity=activity, then=stop_then_text(stop_record),
+                   next="clear-or-replace-with:play-stop-at")
+            return "stop-reached", EXIT_NO_RULE
+
+    if (state_dir() / "action.json").exists():
+        report("slot-busy")
+        return "slot-busy", EXIT_NOT_READY
+
+    take_progress = foreign_take_in_progress()
+    if take_progress is not None:
+        report("take-in-progress", item=take_progress.get("item"),
+               x=take_progress.get("x"), z=take_progress.get("z"))
+        return "take-in-progress", EXIT_NOT_READY
+
+    # A direct hand's committed recovery leg (rule 7f's retrace) owns the
+    # body until its own postcondition is measured; evaluating around it
+    # would re-create the two-controller drag it exists to diagnose.
+    movement_progress = foreign_movement_in_progress()
+    if movement_progress is not None:
+        report("movement-in-progress", x=movement_progress.get("x"),
+               z=movement_progress.get("z"),
+               target_x=movement_progress.get("target_x"),
+               target_z=movement_progress.get("target_z"),
+               next="wait-for-retrace-postcondition")
+        return "movement-in-progress", EXIT_NOT_READY
+
+    # Spec rule 7g: a cancelled follow's stop owns the pass until a snapshot
+    # reports walking false. It runs BEFORE the walking gate below because a
+    # walking body is exactly the state it exists to end, and nothing here
+    # can refire the follow — a cancelling record never builds a follow
+    # action, and only a fresh `follow PLAYER` writes a new one.
+    if not urgent_retreat_names and follow is not None \
+            and follow.get("status") == "cancelling":
+        reason = follow.get("cancel_reason") or "cancelled"
+        if now - snap.get("ts", 0) > defaults["stale_ms"]:
+            report("stale", age_ms=now - snap.get("ts", 0))
+            return "stale", EXIT_NOT_READY
+        if snap.get("logged_in") is True and snap.get("in_combat") is True:
+            report("follow-stopping", player=json.dumps(follow["player"]),
+                   reason=reason, blocked="combat-owns-movement",
+                   next="retreat-then-the-stop-retries")
+            return "follow-stopping", EXIT_NOT_DONE
+        if snap.get("logged_in") is not True \
+                or snap.get("walking") is not True:
+            if not replace_follow_if_current(follow, None):
+                return "follow-replaced", EXIT_NOT_READY
+            flush_events([{"ts": now_ms(), "kind": "follow-stopped",
+                           "player": follow["player"], "reason": reason,
+                           "walking": False,
+                           "x": snap.get("x"), "z": snap.get("z")}])
+            report("follow-stopped", player=json.dumps(follow["player"]),
+                   reason=reason, walking="false",
+                   x=snap.get("x"), z=snap.get("z"))
+            return "follow-stopped", EXIT_FIRED
+        status, stop_x, stop_z = dispatch_stop_walk(defaults)
+        if status == "done":
+            if not replace_follow_if_current(follow, None):
+                return "follow-replaced", EXIT_NOT_READY
+            flush_events([{"ts": now_ms(), "kind": "follow-stopped",
+                           "player": follow["player"], "reason": reason,
+                           "walking": False, "x": stop_x, "z": stop_z}])
+            report("follow-stopped", player=json.dumps(follow["player"]),
+                   reason=reason, walking="false", x=stop_x, z=stop_z)
+            return "follow-stopped", EXIT_FIRED
+        report("follow-stopping", player=json.dumps(follow["player"]),
+               reason=reason, status=status,
+               next="the-stop-retries-next-pass")
+        return "follow-stopping", EXIT_NOT_DONE
+
+    if snap.get("logged_in") and snap.get("tick", -1) == est["last_tick"]:
+        report("same-tick", tick=snap.get("tick"))
+        return "same-tick", EXIT_NOT_READY
+
+    # Inventory preparation is an activity decision, not a remembered global reserve.
+    # Leave safety, open interfaces, movement and existing actions to their owners.
+    if not urgent_retreat_names and snap_fresh and snap.get("logged_in") is True \
+            and snap.get("in_combat") is False and not est.get("inflight") \
+            and not any(snap.get(key) for key in (
+                "walking", "talking_to_npc", "dialogue_open", "bank_open", "shop_open",
+                "trade_open", "right_click_menu_open")):
+        preparation = game_loadout.assessment(snap)
+        if preparation['state'] in ('needs-review', 'needs-preparation'):
+            report("no-rule-matched", inventory_prepare=json.dumps(preparation),
+                   next="play loadout; prepare-in-banking-or-resupply-mode; play loadout set FILE; verify-inventory")
+            return "no-rule-matched", EXIT_NO_RULE
+
+    # A direct hand may have committed to an NPC outside this resident
+    # runner. Ordinary learned rules must not cancel that approach or abandon
+    # a live conversation for incidental work (notably respawning loot).
+    # An applicable retreat remains the one exception: survival can interrupt
+    # either state, and the still-open commitment is reconsidered once safe.
+    if not urgent_retreat_names and snap.get("logged_in") \
+            and snap.get("walking") is True:
+        report("movement-in-progress", x=snap.get("x"), z=snap.get("z"),
+               next="wait-until-not_walking")
+        return "movement-in-progress", EXIT_NOT_READY
+    # An open option menu is answerable from the table (spec rule 5's
+    # choose-dialogue): a skill that re-asks "What would you like to make?"
+    # after every batch is a reflex loop, not a model turn per log. Only
+    # choose-dialogue rules run while the menu is open — nothing else may
+    # walk, loot, or interact past a question the game is waiting on — and
+    # with no such rule the open menu still belongs to the hand.
+    dialogue_rule_names = set()
+    if not urgent_retreat_names and snap.get("logged_in") \
+            and snap.get("talking_to_npc") is True:
+        choices = snap.get("dialogue_options") or []
+        if snap.get("dialogue_open") is True and choices:
+            dialogue_rule_names = {
+                rule["name"] for rule in source_rules
+                if rule.get("enabled")
+                and (rule.get("action") or {}).get("type") == "choose-dialogue"
+                and trigger_true(rule.get("trigger") or {}, snap, {})
+                and compile_player_action(rule, snap, {}, "min")[0] is not None
+            }
+            if not dialogue_rule_names:
+                report("npc-dialogue-choice",
+                       choices=json.dumps(choices, separators=(",", ":")),
+                       next="choose-dialogue-by-text")
+                return "npc-dialogue-choice", EXIT_NO_RULE
+        else:
+            report("npc-dialogue-in-progress", next="wait-for-next-dialogue-state")
+            return "npc-dialogue-in-progress", EXIT_NOT_READY
+
+    if not urgent_retreat_names and not dialogue_rule_names and follow is not None:
+        if follow.get("status") == "invalid":
+            report("follow-invalid", file=str(follow_path()))
+            return "follow-needs-path", EXIT_NO_RULE
+        px, pz = snap.get("x"), snap.get("z")
+        if follow.get("status") == "blocked":
+            report("follow-needs-path", player=json.dumps(follow["player"]),
+                   x=px, z=pz, reason=follow.get("blocked_reason", "no-progress"),
+                   next="inspect-obstacle-or-clear-follow")
+            return "follow-needs-path", EXIT_NO_RULE
+        if follow_target is not None and isinstance(px, int) and isinstance(pz, int) \
+                and max(abs(px - follow_target["x"]),
+                        abs(pz - follow_target["z"])) <= follow["within"]:
+            report("following-near", player=json.dumps(follow["player"]),
+                   distance=max(abs(px - follow_target["x"]),
+                                abs(pz - follow_target["z"])),
+                   within=follow["within"], next="runner-will-reacquire-if-player-moves")
+            return "following-near", EXIT_NOT_READY
+        if follow_target is None and isinstance(px, int) and isinstance(pz, int) \
+                and isinstance(follow.get("last_x"), int) \
+                and max(abs(px - follow["last_x"]), abs(pz - follow["last_z"])) \
+                    <= follow["within"]:
+            report("follow-target-lost", player=json.dumps(follow["player"]),
+                   last_seen=f"({follow['last_x']},{follow['last_z']})",
+                   next="wait-for-visibility-or-clear-follow")
+            return "follow-target-lost", EXIT_NO_RULE
+
+    # Spec rule 7e: one durable destination, executed by this resident runner
+    # as ordinary lowest-priority walk actions. Messages above and every
+    # learned interaction below retain priority.
+    route = None if backtrack is not None or follow is not None \
+        or dialogue_rule_names else load_route()
+    route_blocked = False
+    route_leg = None
+    route_portal_action = None
+    if route is not None and route.get("status") == "invalid":
+        report("route-invalid", file=str(route_path()))
+        return "route-needs-detour", EXIT_NO_RULE
+    if route is not None and route["objective"] != objective:
+        clear_route()
+        flush_events([{"ts": now_ms(), "kind": "route-cancelled",
+                       "reason": "objective-changed", "from": route["objective"],
+                       "to": objective}])
+        route = None
+    if route is not None:
+        px, pz = snap.get("x"), snap.get("z")
+        if isinstance(px, int) and isinstance(pz, int) \
+                and route_distance(px, pz, route) <= route["arrive"]:
+            clear_route()
+            flush_events([{"ts": now_ms(), "kind": "route-complete",
+                           "x": px, "z": pz, "target_x": route["x"],
+                           "target_z": route["z"]}])
+            route = None
+        elif route.get("status") == "blocked":
+            signature = route_obstacle_signature(snap)
+            if signature == route.get("blocked_signature"):
+                route_blocked = True
+            else:
+                route = {k: v for k, v in route.items()
+                         if not k.startswith("blocked_")}
+                route["status"] = "active"
+                save_route(route)
+        if route is not None and route.get("status") == "active":
+            route, route_leg = prepare_navigation_route(route, snap)
+            route_blocked = route.get("status") == "blocked"
+            portal = route.get("next_portal")
+            if not route_blocked and route_leg is None \
+                    and isinstance(portal, dict) \
+                    and portal.get("from") == [px, pz] \
+                    and _observed_closed_portal(snap, portal):
+                route_portal_action = semantic_portal_action(portal)
+
+    # Rules spent for this objective (spec rule 9) step aside BEFORE the
+    # engine sees the table, so the machinery stays vocabulary-blind.
+    sidestep_pause = load_sidestep_pause(objective)
+    live_rules = []
+    active_repetition_holds = []
+    est["repetition_holds"] = [
+        hold for hold in est.get("repetition_holds") or []
+        if isinstance(hold, dict) and isinstance(hold.get("until"), int)
+        and hold["until"] > now
+        and hold.get("reason") == "repeated-malfunction"
+    ]
+    for rule in source_rules:
+        if urgent_retreat_names and rule["name"] not in urgent_retreat_names:
+            continue
+        # While the game holds an open question, only the rules that answer
+        # it are candidates.
+        if dialogue_rule_names and rule["name"] not in dialogue_rule_names:
+            continue
+        # Retracing is a deliberate recovery commitment. Incidental learned
+        # work must neither cut it off nor become a fallback when one reverse
+        # leg is obstructed; urgent escape remains the sole exception.
+        if backtrack is not None and rule["name"] != BACKTRACK_RULE_NAME \
+                and rule["name"] not in urgent_retreat_names:
+            continue
+        # Following a human guide is a live navigation commitment. Ambient
+        # loot and routine reflexes cannot repeatedly cut across it; chat and
+        # an urgent retreat were already given their higher precedence.
+        if follow is not None and rule["name"] != FOLLOW_RULE_NAME \
+                and rule["name"] not in urgent_retreat_names:
+            continue
+        # One explicit route is the movement commitment. A stale learned
+        # travel leg must not pull the body away and then hand it back to the
+        # route (the observed east/west ping-pong). Nonmovement interactions
+        # retain their normal priority and may still interrupt useful travel.
+        if route is not None and (rule.get("action") or {}).get("type") \
+                in ("walk", "approach-entity") \
+                and rule["name"] not in urgent_retreat_names \
+                and trigger_true(rule.get("trigger") or {}, snap, {}):
+            events.append({"ts": now, "kind": "route-conflict-hold",
+                           "rule": rule["name"],
+                           "rule_target": ({"x": rule["action"]["x"],
+                                            "z": rule["action"]["z"]}
+                                           if rule["action"]["type"] == "walk"
+                                           else {"semantic": rule["action"]}),
+                           "route_target": {"x": route["x"], "z": route["z"]}})
+            continue
+        if rule.get("once_per_objective") and rule["enabled"] \
+                and once_key(rule["name"], objective) in est["objective_fired"]:
+            continue
+        # Spec rule 7a: a standing sidestep-pause holds ONLY the rules that
+        # would resume the provoking activity. Escape rules stay armed.
+        if sidestep_pause is not None and rule["enabled"] \
+                and rule["name"] not in urgent_retreat_names \
+                and ((rule.get("trigger") or {}).get("activity_is") == "thieving"
+                     or (npc_id_set(sidestep_pause.get("npc"))
+                         & npc_id_set((rule.get("action") or {}).get("npc")))):
+            logged = est.get("sidestep_pause_holds") or {}
+            if logged.get(rule["name"]) != sidestep_pause.get("ts"):
+                events.append({"ts": now, "kind": "sidestep-pause-hold",
+                               "rule": rule["name"],
+                               "pause_status": sidestep_pause.get("status"),
+                               "pause_ts": sidestep_pause.get("ts")})
+                logged[rule["name"]] = sidestep_pause.get("ts")
+                est["sidestep_pause_holds"] = logged
+            continue
+        # Runtime escape selection (spec rules 5, 7b): one-tile breaks and
+        # generic retreats in a PROVOKED fight wait for the third combat
+        # splat observed by the client.
+        atype = (rule.get("action") or {}).get("type")
+        if snap.get("in_combat") is True \
+                and "opponent_rounds_at_least" not in (rule.get("trigger") or {}) \
+                and (atype == "sidestep"
+                     or (atype == "retreat"
+                         and snap.get("_combat_provoked") is True)):
+            rule = dict(rule, trigger=dict(rule["trigger"],
+                                           opponent_rounds_at_least=
+                                           SIDESTEP_REQUIRED_ROUNDS))
+        fingerprint = rule_fingerprint(rule)
+        review_hold = next((hold for hold in est["repetition_holds"]
+                            if hold.get("rule") == rule["name"]
+                            and hold.get("objective") == (objective or None)
+                            and hold.get("activity") == (activity or None)
+                            and hold.get("fingerprint") == fingerprint), None)
+        if review_hold is not None and rule["name"] not in urgent_retreat_names:
+            active_repetition_holds.append(review_hold)
+            continue
+        # Every player rule is game-channel by construction (spec rule 5);
+        # the shared engine wants the key spelled out.
+        live_rules.append(dict(rule, channel="game"))
+    if route is not None and route_portal_action is not None \
+            and not route_blocked and not urgent_retreat_names:
+        live_rules.append({"name": ROUTE_RULE_NAME, "enabled": True,
+                           "priority": ROUTE_PRIORITY, "cooldown_ms": 0,
+                           "hold_ticks": 1, "channel": "game", "trigger": {},
+                           "action": route_portal_action})
+    elif route is not None and route_leg is not None \
+            and not route_blocked and not urgent_retreat_names:
+        leg_x, leg_z = route_leg
+        # Spec rule 7e: the plan's one remaining waypoint IS the planner's
+        # chosen arrival tile. When the body already stands inside that
+        # waypoint's arrive-box while the destination check is still unmet,
+        # re-offering the whole area makes the live walk a no-op that the
+        # collision search reports as refused-no-path, and an obstacle-free
+        # route blocks on the identical replanned waypoint forever (the
+        # 2026-09-01 Al Kharid bank stall). Narrow such a final leg to the
+        # exact waypoint.
+        body_x, body_z = snap.get("x"), snap.get("z")
+        leg_arrive = 0
+        if len(route.get("waypoints") or []) == 1 \
+                and not (isinstance(body_x, int) and isinstance(body_z, int)
+                         and max(abs(body_x - leg_x), abs(body_z - leg_z))
+                         <= route["arrive"]):
+            leg_arrive = route["arrive"]
+        live_rules.append({"name": ROUTE_RULE_NAME, "enabled": True,
+                           "priority": ROUTE_PRIORITY, "cooldown_ms": 0,
+                           "hold_ticks": 1, "channel": "game", "trigger": {},
+                           "action": {"type": "walk", "x": leg_x,
+                                      "z": leg_z,
+                                      "route_step": NAVIGATION_ROUTE_STEP_TILES,
+                                      "max_path": NAVIGATION_LEG_MAX_PATH_TILES,
+                                      "arrive": leg_arrive}})
+    live_rules = order_take_rules_by_proximity(live_rules, snap)
+    eval_cfg = {"v": cfg.get("v", 1),
+                "defaults": {k: v for k, v in defaults.items()},
+                "rules": live_rules}
+
+    # An old receipt for our own in-flight action is consumed first, exactly
+    # like the reflex loop does.
+    game_reflex.consume_receipt(est, now, sink=events)
+
+    game_reflex.evaluate(
+        eval_cfg, {}, snap, est, now,
+        emit=emit_player_action, sink=events,
+        trigger_fn=trigger_true,
+        compile_fn=compile_live_player_action, live=True)
+
+    fired = [e for e in events if e.get("kind") == "fired"]
+    cooldown_holds = sum(1 for e in events if e.get("kind") == "cooldown-hold")
+    if fired and (fired[0].get("action") or {}).get("batch") == "all":
+        fired_rule = next((rule for rule in cfg.get("rules") or []
+                           if rule.get("name") == fired[0].get("rule")), None)
+        fired_action = fired[0]["action"]
+        if fired_rule is not None:
+            existing_batch = est.get("action_batch")
+            batch = {"rule": fired_rule["name"],
+                     "behavior": rule_behavior_hash(fired_rule),
+                     "objective": objective or None,
+                     "activity": activity or None,
+                     "item": fired_action["item"],
+                     "button": fired_action.get("button", 1),
+                     "started_ts": (existing_batch.get("started_ts", now)
+                                    if isinstance(existing_batch, dict) else now)}
+            if not isinstance(existing_batch, dict):
+                events.append({"ts": now, "kind": "action-batch-started",
+                               "rule": fired_rule["name"],
+                               "item": fired_action["item"],
+                               "postcondition": "item-absent"})
+            est["action_batch"] = batch
+    save_player_state(est)
+    flush_events(events)
+
+    # Rule 7a's second grounded anomaly: mid-combat, every adjacent candidate
+    # blocked or already refused. Written once per standing pause.
+    if snap.get("in_combat") is True and sidestep_pause is None \
+            and any(e.get("kind") == "refused"
+                    and e.get("why") == "sidestep-no-adjacent-tile"
+                    for e in events):
+        sidestep_pause = {
+            "v": 1, "ts": now, "objective": objective or None,
+            "rule": next(e.get("rule") for e in events
+                         if e.get("kind") == "refused"
+                         and e.get("why") == "sidestep-no-adjacent-tile"),
+            "npc": snap.get("_combat_opponent_npc"),
+            "origin": {"x": snap.get("x"), "z": snap.get("z")},
+            "target": None, "settled": None,
+            "status": "sidestep-no-adjacent-tile", "moved": 0,
+            "feedback": latest_system_feedback(snap)}
+        write_sidestep_pause(sidestep_pause)
+        flush_events([{"ts": now, "kind": "sidestep-failed", **sidestep_pause}])
+        append_outcome({"ts": now, "kind": "sidestep-diagnostic",
+                        **sidestep_pause,
+                        "next": "thieving-held; no collision-reachable "
+                                "adjacent tile remains; inspect terrain and "
+                                "clear with: play sidestep-pause --clear"})
+
+    if not fired:
+        if not snap.get("logged_in"):
+            report("logged-out")
+            return "logged-out", EXIT_NOT_READY
+        if now - snap.get("ts", 0) > config_defaults(cfg)["stale_ms"]:
+            report("stale", age_ms=now - snap.get("ts", 0))
+            return "stale", EXIT_NOT_READY
+        if follow is not None:
+            report("follow-waiting", player=json.dumps(follow.get("player")),
+                   last_seen=(f"({follow.get('last_x')},{follow.get('last_z')})"
+                              if isinstance(follow.get("last_x"), int) else None))
+            return "follow-waiting", EXIT_NOT_READY
+        if route_blocked and route is not None:
+            cache_planned = route.get("planner") == "client-cache"
+            route_gap = ("route-needs-local-interaction" if cache_planned else
+                         "route-needs-detour")
+            report(route_gap, x=snap.get("x"), z=snap.get("z"),
+                   target_x=route["x"], target_z=route["z"],
+                   reason=route.get("blocked_reason", "no-progress"),
+                   feedback=latest_system_feedback(snap),
+                   portal=(json.dumps(route.get("next_portal"), separators=(",", ":"))
+                           if route.get("next_portal") else None),
+                   evidence=("client-cache-path" if cache_planned
+                             else "grounded-collision-path"),
+                   map_boundary=(None if cache_planned else "unproven"),
+                   next=("use-nearby-semantic-door-gate-stair-or-ladder;"
+                         "final-route-remains-binding" if cache_planned else
+                         "inspect-terrain-or-use-semantic-boundary-or-waypoint"))
+            return route_gap, EXIT_NO_RULE
+        if backtrack is not None and backtrack.get("status") == "invalid":
+            report("backtrack-invalid", file=str(backtrack_path()))
+            return "backtrack-blocked", EXIT_NO_RULE
+        if backtrack is not None and backtrack.get("status") == "diverged":
+            target_x, target_z = backtrack["points"][backtrack["index"]]
+            report("backtrack-diverged", x=snap.get("x"), z=snap.get("z"),
+                   target_x=target_x, target_z=target_z,
+                   contradictions=backtrack.get("contradictions"),
+                   reason=backtrack.get("diverged_reason",
+                                        "movement-opposed-request"),
+                   next="retrace-a-chosen-prior-tile-or-set-explicit-route-"
+                        "or-backtrack-clear")
+            return "backtrack-diverged", EXIT_NO_RULE
+        if backtrack_blocked and backtrack is not None:
+            target_x, target_z = backtrack["points"][backtrack["index"]]
+            report("backtrack-blocked", x=snap.get("x"), z=snap.get("z"),
+                   target_x=target_x, target_z=target_z,
+                   reason=backtrack.get("blocked_reason", "no-progress"),
+                   feedback=latest_system_feedback(snap))
+            return "backtrack-blocked", EXIT_NO_RULE
+        if route is not None:
+            report("route-waiting", x=snap.get("x"), z=snap.get("z"),
+                   target_x=route["x"], target_z=route["z"])
+            return "route-waiting", EXIT_NOT_READY
+        if active_repetition_holds:
+            held_names = ",".join(sorted({str(hold.get("rule"))
+                                          for hold in active_repetition_holds}))
+            left = max(0, max(int(hold["until"])
+                              for hold in active_repetition_holds) - now)
+            report("repetition-review-hold", rules=held_names,
+                   hold_ms_left=left, objective=objective or None,
+                   activity=activity or None)
+            return "repetition-review-hold", EXIT_NO_RULE
+        current_goal = load_goal()
+        report("no-rule-matched", objective=objective or None,
+               plan=read_plan() or None,
+               goal=(current_goal.get("text")
+                     if current_goal is not None
+                     and current_goal.get("status") != "invalid" else None),
+               activity=activity or None,
+               activity_xp=xp_text or None,
+               activity_compare=xp_compare or None,
+               **activity_fields(xp_text, activity),
+               **reflection_fields(snap),
+               rules_enabled=sum(1 for r in cfg["rules"] if r["enabled"]),
+               cooldown_holds=cooldown_holds,
+               sidestep_pause=(f"{sidestep_pause.get('status')}"
+                               " clear-with:play-sidestep-pause---clear"
+                               if sidestep_pause is not None else None),
+               ground_items=",".join(str(i.get("id"))
+                                     for i in snap.get("ground_items") or []) or None,
+               feedback=latest_system_feedback(snap))
+        return "no-rule-matched", EXIT_NO_RULE
+
+    event = fired[0]
+    rule_name = event["rule"]
+    action_id = event["id"]
+
+    # Await the bridge's receipt for our id (spec rule 7).
+    status = "no-receipt"
+    deadline = time.time() + wait_ms / 1000.0
+    receipt_path = state_dir() / "receipt.json"
+    while time.time() < deadline:
+        try:
+            receipt = json.loads(receipt_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            receipt = None
+        if receipt and receipt.get("id") == action_id:
+            status = receipt.get("status", "no-status")
+            est = load_player_state()
+            est["inflight"] = None
+            save_player_state(est)
+            flush_events([{"ts": now_ms(), "kind": "receipt", "id": action_id,
+                           "status": status}])
+            try:
+                receipt_path.unlink()
+            except OSError:
+                pass
+            break
+        time.sleep(0.05)
+
+    rule = next((r for r in live_rules if r["name"] == rule_name), None)
+
+    # Spec rule 7a: a walk's `done` receipt is dispatch, not arrival. Verify
+    # against the target's coordinates before anything treats it as complete.
+    action = event["action"]
+    final_x = final_z = None
+    gained = 0
+    completion_detail = None
+    is_sidestep = action.get("sidestep") == 1
+    is_retreat = not is_sidestep and rule is not None \
+        and rule["action"].get("type") == "retreat"
+    if status == "done" and is_sidestep:
+        status, final_x, final_z = verify_sidestep(action)
+        if status != "done":
+            flush_events([{"ts": now_ms(), "kind": status, "rule": rule_name,
+                           "id": action_id,
+                           "origin": {"x": action.get("origin_x"),
+                                      "z": action.get("origin_z")},
+                           "intended": {"x": action["x"], "z": action["z"]},
+                           "settled": {"x": final_x, "z": final_z},
+                           "feedback": latest_system_feedback(
+                               game_reflex.read_snapshot() or snap)}])
+    elif status == "done" and is_retreat:
+        status, final_x, final_z = verify_retreat()
+        if status != "done":
+            flush_events([{"ts": now_ms(), "kind": status, "rule": rule_name,
+                           "id": action_id, "x": final_x, "z": final_z,
+                           "feedback": latest_system_feedback(
+                               game_reflex.read_snapshot() or snap)}])
+    elif status == "done" and action["type"] == "walk":
+        arrive = WALK_ARRIVE_DEFAULT
+        if isinstance(action.get("arrive"), int):
+            arrive = action["arrive"]
+        elif rule is not None and isinstance(rule["action"].get("arrive"), int):
+            arrive = rule["action"]["arrive"]
+        status, final_x, final_z = verify_walk(action["x"], action["z"], arrive)
+        if status != "done":
+            flush_events([{"ts": now_ms(), "kind": status, "rule": rule_name,
+                           "id": action_id, "intended": {"x": action["x"], "z": action["z"]},
+                           "settled": {"x": final_x, "z": final_z}}])
+    elif status == "done" and action["type"] == "take-ground":
+        before_inventory = inventory_quantity(snap, action["item"])
+        before_ground = ground_quantity_at(
+            snap, action["item"], action["x"], action["z"])
+        status, final_x, final_z, gained = verify_take_ground(
+            action["item"], action["x"], action["z"],
+            before_inventory, before_ground)
+        if status != "done":
+            flush_events([{"ts": now_ms(), "kind": status, "rule": rule_name,
+                           "id": action_id, "item": action["item"],
+                           "x": final_x, "z": final_z, "gained": gained}])
+    elif status == "done" and action["type"] == "cast-npc":
+        fields = [f"{key}={action[key]}" for key in (
+            "spell", "sidx", "npc", "within", "stationary",
+            "require_clear_shot", "require_melee_unreachable")
+                  if key in action]
+        observation = make_action_observation(
+            action_id, "cast-npc", fields, snap, event.get("ts"))
+        completion_detail, latest = await_action_completion(
+            observation, WAIT_DEFAULT_S)
+        if completion_detail is None:
+            status = "cast-unverified"
+        elif completion_detail.get("result") == "failed":
+            status = "cast-failed"
+        if action.get("stationary") == 1 and latest is not None \
+                and (latest.get("x"), latest.get("z")) != (snap.get("x"), snap.get("z")):
+            status = "cast-moved"
+        if status != "done":
+            flush_events([{"ts": now_ms(), "kind": status, "rule": rule_name,
+                           "id": action_id, "spell": action["spell"],
+                           "npc": action["npc"], "completion": completion_detail,
+                           "feedback": latest_system_feedback(latest or snap)}])
+    elif status == "done" and action["type"] in (
+            "talk-npc", "attack-npc", "interact-npc", "use-item-npc",
+            "interact-object", "interact-bound",
+            "click-inventory", "click-entity",
+            "drop-inventory", "use-item-ground", "use-item-item",
+            "use-item-object", "choose-dialogue"):
+        fields = [f"{key}={action[key]}" for key in (
+            "item", "kind", "sidx", "npc", "x", "z", "dir", "obj", "cmd",
+            "within", "button", "batch", "ground", "amount",
+            "target", "text", "mode", "weapon", "ammo") if key in action]
+        observation = make_action_observation(
+            action_id, action["type"], fields, snap, event.get("ts"))
+        completion_detail, latest = await_action_completion(
+            observation, WAIT_MAX_S if action.get("mode") == "ranged" else WAIT_DEFAULT_S)
+        if completion_detail is None:
+            status = f"{action['type']}-unverified"
+        elif completion_detail.get("result") == "failed":
+            status = f"{action['type']}-failed"
+        if status != "done":
+            flush_events([{"ts": now_ms(), "kind": status, "rule": rule_name,
+                           "id": action_id, "item": action.get("item"),
+                           "npc": action.get("npc"),
+                           "completion": completion_detail,
+                           "feedback": latest_system_feedback(latest or snap)}])
+
+    commitment_portal = None
+    if rule_name == ROUTE_RULE_NAME and route is not None:
+        commitment_portal = route.get("next_portal")
+    elif rule_name == FOLLOW_RULE_NAME and follow is not None:
+        commitment_portal = follow.get("next_portal")
+    if status == "done" and action["type"] in ("interact-object", "interact-bound") \
+            and isinstance(commitment_portal, dict):
+        status, latest = verify_semantic_portal_open(commitment_portal)
+        if status != "done":
+            flush_events([{"ts": now_ms(), "kind": status,
+                           "rule": rule_name, "id": action_id,
+                           "portal": commitment_portal}])
+
+    if action["type"] == "walk" and final_x is not None and final_z is not None \
+            and rule_name != BACKTRACK_RULE_NAME:
+        # Preserve the settled end of a verified player-owned walk even while
+        # this synchronous pass prevented ordinary snapshot polling.
+        latest_walk = game_reflex.read_snapshot() or dict(snap, x=final_x, z=final_z)
+        record_movement_trail(latest_walk, connected=status in ("done", "walk-short"))
+
+    is_route = rule_name == ROUTE_RULE_NAME and route is not None
+    route_was_blocked = False
+    route_block_reason = None
+    is_route_portal = is_route \
+        and action["type"] in ("interact-object", "interact-bound") \
+        and isinstance(commitment_portal, dict)
+    if is_route_portal:
+        latest = game_reflex.read_snapshot() or snap
+        if status == "done":
+            progressed = {key: value for key, value in route.items()
+                          if key not in ("next_portal", "waypoints", "planned_from")
+                          and not key.startswith("planner_")
+                          and not key.startswith("blocked_")}
+            progressed.update({"status": "active", "last_ts": now_ms()})
+            save_route(progressed)
+            status = "route-portal-opened"
+            flush_events([{"ts": now_ms(), "kind": status, "id": action_id,
+                           "portal": commitment_portal,
+                           "target_x": route["x"], "target_z": route["z"]}])
+        else:
+            route_was_blocked = True
+            route_block_reason = status or "portal-open-unverified"
+            block_route(route, latest, route_block_reason)
+            status = "route-needs-local-interaction"
+            flush_events([{"ts": now_ms(), "kind": "route-portal-blocked",
+                           "id": action_id, "reason": route_block_reason,
+                           "portal": commitment_portal,
+                           "target_x": route["x"], "target_z": route["z"]}])
+    elif is_route:
+        latest = game_reflex.read_snapshot() or snap
+        lx, lz = latest.get("x"), latest.get("z")
+        start_distance = navigation_distance_sq(
+            snap["x"], snap["z"], route["x"], route["z"])
+        route_best_distance = int(route.get("best_distance_sq", start_distance))
+        current_distance = navigation_distance_sq(
+            lx, lz, route["x"], route["z"]) \
+            if isinstance(lx, int) and isinstance(lz, int) else None
+        reached_destination = isinstance(lx, int) and isinstance(lz, int) \
+            and route_distance(lx, lz, route) <= route["arrive"]
+        made_progress = current_distance is not None and current_distance < start_distance
+        made_best_progress = current_distance is not None \
+            and current_distance < route_best_distance
+        moved = isinstance(lx, int) and isinstance(lz, int) \
+            and (lx, lz) != (snap.get("x"), snap.get("z"))
+        endpoint = [lx, lz] if isinstance(lx, int) and isinstance(lz, int) else None
+        visited = [point for point in route.get("visited") or []
+                   if isinstance(point, list) and len(point) == 2]
+        repeated_endpoint = endpoint is not None and endpoint in visited
+        route_planner = route.get("planner")
+        if route_planner in ("client-cache", "verified-links") \
+                and status in ("done", "walk-short") and moved:
+            record_navigation_link(
+                snap["x"], snap["z"], lx, lz, route.get("landmark"))
+        if reached_destination:
+            clear_route()
+            status = "route-complete"
+            flush_events([{"ts": now_ms(), "kind": status, "id": action_id,
+                           "x": lx, "z": lz, "target_x": route["x"],
+                           "target_z": route["z"], "planner": route_planner}])
+        elif route_planner in ("client-cache", "verified-links") \
+                and status in ("done", "walk-short") and moved \
+                and not repeated_endpoint:
+            # This leg is on a grounded topology path. It may intentionally
+            # move away from the destination for much longer than an arbitrary
+            # straight-line detour budget would allow. Replan from the body's
+            # observed settlement while retaining the original destination.
+            # A settle that moved AGAINST the requested leg is different from
+            # a legitimate away-leg: the planner asked for that direction, the
+            # body went the other way (spec rule 7f). Count it; enough stop
+            # the route rather than replanning a drag forever.
+            leg_agrees = movement_agrees(snap["x"], snap["z"],
+                                         action["x"], action["z"], lx, lz)
+            contradictions = 0 if leg_agrees \
+                else int(route.get("contradictions") or 0) + 1
+            if contradictions >= MOVEMENT_CONTRADICTION_LIMIT:
+                route_was_blocked = True
+                route_block_reason = "movement-contradiction"
+                block_route(dict(route, contradictions=contradictions),
+                            latest, route_block_reason)
+                append_outcome({
+                    "ts": now_ms(), "kind": "movement-contradiction",
+                    "id": action_id, "commitment": "route",
+                    "contradictions": contradictions,
+                    "requested": {"x": action["x"], "z": action["z"]},
+                    "settled": {"x": lx, "z": lz},
+                    "start": {"x": snap.get("x"), "z": snap.get("z")},
+                    "target": {"x": route["x"], "z": route["z"]},
+                    "useful_substitute": False})
+                flush_events([{"ts": now_ms(), "kind": "route-leg-blocked",
+                               "id": action_id, "reason": route_block_reason,
+                               "x": lx, "z": lz, "target_x": route["x"],
+                               "target_z": route["z"], "leg_x": action["x"],
+                               "leg_z": action["z"],
+                               "contradictions": contradictions,
+                               "planner": route_planner}])
+                status = "route-needs-detour"
+            else:
+                status = "route-progress"
+                progressed = {key: value for key, value in route.items()
+                              if key not in ("waypoints", "planned_from", "planner",
+                                             "graph_link")
+                              and not key.startswith("planner_")
+                              and not key.startswith("blocked_")}
+                visited.append(endpoint)
+                nonclosing = 0 if made_best_progress \
+                    else int(route.get("nonclosing_legs") or 0) + 1
+                progressed.update({"status": "active", "last_x": lx, "last_z": lz,
+                                   "last_distance_sq": current_distance,
+                                   "best_distance_sq": min(route_best_distance,
+                                                           current_distance),
+                                   "nonclosing_legs": nonclosing,
+                                   "contradictions": contradictions,
+                                   "visited": visited[-NAVIGATION_VISITED_MAX:],
+                                   "last_ts": now_ms()})
+                save_route(progressed)
+                flush_events([{"ts": now_ms(), "kind": status, "id": action_id,
+                               "x": lx, "z": lz, "target_x": route["x"],
+                               "target_z": route["z"], "leg_x": action["x"],
+                               "leg_z": action["z"],
+                               "nonclosing_legs": nonclosing,
+                               "contradictions": contradictions or None,
+                               "planner": route_planner}])
+        elif route_planner == "verified-links":
+            # A remembered edge is only a hint. If today's live collision
+            # state rejects it, retire that edge and mechanically fall back to
+            # a fresh cache plan without changing or blocking the destination.
+            disable_navigation_link(str(route.get("graph_link") or ""))
+            replanning = {key: value for key, value in route.items()
+                          if key not in ("waypoints", "planned_from", "planner",
+                                         "graph_link")
+                          and not key.startswith("planner_")
+                          and not key.startswith("blocked_")}
+            replanning["status"] = "active"
+            replanning["last_ts"] = now_ms()
+            save_route(replanning)
+            flush_events([{"ts": now_ms(), "kind": "route-link-retired",
+                           "id": action_id, "reason": status,
+                           "x": lx, "z": lz, "target_x": route["x"],
+                           "target_z": route["z"],
+                           "link": route.get("graph_link")}])
+            status = "route-replanning"
+        elif route_planner == "client-cache" \
+                and status in ("done", "walk-short") and moved \
+                and repeated_endpoint:
+            route_was_blocked = True
+            route_block_reason = "route-cycle"
+            block_route(route, latest, route_block_reason)
+            flush_events([{"ts": now_ms(), "kind": "route-leg-blocked",
+                           "id": action_id, "reason": route_block_reason,
+                           "x": lx, "z": lz, "target_x": route["x"],
+                           "target_z": route["z"],
+                           "planner": "client-cache"}])
+            status = "route-needs-local-interaction"
+        elif route_planner == "client-cache":
+            route_was_blocked = True
+            route_block_reason = "client-cache-leg-no-progress" \
+                if status in ("done", "walk-short") else status
+            block_route(route, latest, route_block_reason)
+            flush_events([{"ts": now_ms(), "kind": "route-leg-blocked",
+                           "id": action_id, "reason": route_block_reason,
+                           "x": lx, "z": lz, "target_x": route["x"],
+                           "target_z": route["z"], "leg_x": action["x"],
+                           "leg_z": action["z"],
+                           "planner": "client-cache"}])
+            status = "route-needs-local-interaction"
+        elif status in ("done", "walk-short") and action.get("route_step") \
+                and moved and not repeated_endpoint:
+            # A route can legitimately move closer after first wandering far
+            # away, but that is not renewed progress until it beats the best
+            # point already reached on this route. Otherwise a wide
+            # oscillation can reset its own detour budget forever.
+            nonclosing = 0 if made_best_progress \
+                else int(route.get("nonclosing_legs") or 0) + 1
+            if nonclosing > NAVIGATION_MAX_NONCLOSING_LEGS:
+                route_was_blocked = True
+                route_block_reason = "detour-budget"
+                block_route(route, latest, route_block_reason)
+                flush_events([{"ts": now_ms(), "kind": "route-leg-blocked",
+                               "id": action_id, "reason": route_block_reason,
+                               "x": lx, "z": lz, "target_x": route["x"],
+                               "target_z": route["z"],
+                               "nonclosing_legs": nonclosing}])
+                status = "route-needs-detour"
+            else:
+                status = "route-progress"
+                progressed = {key: value for key, value in route.items()
+                              if not key.startswith("detour_")}
+                visited.append(endpoint)
+                progressed.update({"status": "active", "last_x": lx, "last_z": lz,
+                                   "last_distance_sq": current_distance,
+                                   "best_distance_sq": min(route_best_distance,
+                                                           current_distance),
+                                   "nonclosing_legs": nonclosing,
+                                   "visited": visited[-NAVIGATION_VISITED_MAX:],
+                                   "last_ts": now_ms()})
+                save_route(progressed)
+                flush_events([{"ts": now_ms(), "kind": status, "id": action_id,
+                               "x": lx, "z": lz, "target_x": route["x"],
+                               "target_z": route["z"],
+                               "pathfinder_prefix": True,
+                               "detour": not made_progress,
+                               "new_route_best": made_best_progress,
+                               "nonclosing_legs": nonclosing}])
+        elif status in ("done", "walk-short") and action.get("route_step") \
+                and repeated_endpoint:
+            route_was_blocked = True
+            route_block_reason = "route-cycle"
+            block_route(route, latest, route_block_reason)
+            flush_events([{"ts": now_ms(), "kind": "route-leg-blocked",
+                           "id": action_id, "reason": route_block_reason,
+                           "x": lx, "z": lz, "target_x": route["x"],
+                           "target_z": route["z"]}])
+            status = "route-needs-detour"
+        elif status in ("done", "walk-short") and made_progress:
+            # Compatibility with route records/actions produced before the
+            # path-prefix bridge existed.
+            status = "route-progress"
+            progressed = {key: value for key, value in route.items()
+                          if not key.startswith("detour_")}
+            progressed.update({"status": "active", "last_x": lx, "last_z": lz,
+                               "last_distance_sq": navigation_distance_sq(
+                                   lx, lz, route["x"], route["z"]),
+                               "last_ts": now_ms()})
+            save_route(progressed)
+            flush_events([{"ts": now_ms(), "kind": status, "id": action_id,
+                           "x": lx, "z": lz, "target_x": route["x"],
+                           "target_z": route["z"], "leg_x": action["x"],
+                           "leg_z": action["z"]}])
+        else:
+            route_was_blocked = True
+            route_block_reason = "no-progress" \
+                if status in ("done", "walk-short") and not moved else status
+            block_route(route, latest, route_block_reason)
+            flush_events([{"ts": now_ms(), "kind": "route-leg-blocked", "id": action_id,
+                           "reason": route_block_reason, "x": lx, "z": lz,
+                           "target_x": route["x"], "target_z": route["z"]}])
+            status = "route-needs-detour"
+
+    is_follow = rule_name == FOLLOW_RULE_NAME and follow is not None
+    if is_follow:
+        # Spec rule 7g: a leg that settles after the record was cleared or
+        # marked cancelling performs no follow bookkeeping — a cancelled
+        # commitment cannot write itself back to active.
+        current_follow = load_follow()
+        if current_follow is None \
+                or current_follow.get("status") in ("invalid", "cancelling") \
+                or current_follow.get("set_ts") != follow.get("set_ts"):
+            is_follow = False
+    follow_was_blocked = False
+    if is_follow:
+        latest = game_reflex.read_snapshot() or snap
+        lx, lz = latest.get("x"), latest.get("z")
+        if action["type"] in ("interact-object", "interact-bound") \
+                and isinstance(commitment_portal, dict):
+            if status == "done":
+                progressed = {key: value for key, value in follow.items()
+                              if key not in ("next_portal", "waypoints")
+                              and not key.startswith("planner_")}
+                progressed.update({"status": "active", "last_move_ts": now_ms()})
+                if replace_follow_if_current(follow, progressed):
+                    follow = progressed
+                    status = "follow-portal-opened"
+                    flush_events([{"ts": now_ms(), "kind": status,
+                                   "id": action_id, "player": follow["player"],
+                                   "portal": commitment_portal}])
+                else:
+                    is_follow = False
+            else:
+                follow_abandoned_reason = status or "portal-open-unverified"
+        elif action["type"] == "walk":
+            moved = isinstance(lx, int) and isinstance(lz, int) \
+                and (lx, lz) != (snap.get("x"), snap.get("z"))
+            endpoint = [lx, lz] if isinstance(lx, int) and isinstance(lz, int) else None
+            visited = [point for point in follow.get("visited") or []
+                       if isinstance(point, list) and len(point) == 2]
+            if not visited and isinstance(snap.get("x"), int) \
+                    and isinstance(snap.get("z"), int):
+                visited.append([snap["x"], snap["z"]])
+            repeated_endpoint = endpoint is not None and endpoint in visited
+            leg_agrees = moved and movement_agrees(
+                snap["x"], snap["z"], action["x"], action["z"], lx, lz)
+            target_x = follow.get("planner_target_x", action["x"])
+            target_z = follow.get("planner_target_z", action["z"])
+            start_distance = navigation_distance_sq(
+                snap["x"], snap["z"], target_x, target_z)
+            current_distance = navigation_distance_sq(lx, lz, target_x, target_z) \
+                if endpoint is not None else None
+            best_distance = int(follow.get("best_distance_sq", start_distance))
+            made_best_progress = current_distance is not None \
+                and current_distance < best_distance
+            nonclosing = 0 if made_best_progress \
+                else int(follow.get("nonclosing_legs") or 0) + 1
+            if status in ("done", "walk-short") and moved and leg_agrees \
+                    and not repeated_endpoint \
+                    and nonclosing <= NAVIGATION_MAX_NONCLOSING_LEGS:
+                status = "follow-progress"
+                progressed = {key: value for key, value in follow.items()
+                              if key not in ("waypoints", "next_portal")
+                              and not key.startswith("planner_")
+                              and not key.startswith("blocked_")}
+                visited.append(endpoint)
+                progressed.update({
+                    "status": "active", "last_move_ts": now_ms(),
+                    "last_distance_sq": current_distance,
+                    "best_distance_sq": min(best_distance, current_distance),
+                    "nonclosing_legs": nonclosing,
+                    "visited": visited[-NAVIGATION_VISITED_MAX:]})
+                if replace_follow_if_current(follow, progressed):
+                    follow = progressed
+                    flush_events([{"ts": now_ms(), "kind": status,
+                                   "id": action_id, "player": follow["player"],
+                                   "x": lx, "z": lz,
+                                   "leg_x": action["x"], "leg_z": action["z"],
+                                   "target_x": target_x, "target_z": target_z,
+                                   "nonclosing_legs": nonclosing,
+                                   "within": follow["within"]}])
+                else:
+                    is_follow = False
+            elif repeated_endpoint:
+                follow_abandoned_reason = "follow-cycle"
+            elif moved and not leg_agrees:
+                follow_abandoned_reason = "movement-contradiction"
+            elif nonclosing > NAVIGATION_MAX_NONCLOSING_LEGS:
+                follow_abandoned_reason = "detour-budget"
+            else:
+                follow_abandoned_reason = ("no-progress" if status in
+                                           ("done", "walk-short") else status)
+        else:
+            follow_abandoned_reason = status or "unsupported-follow-action"
+        if is_follow and follow_abandoned_reason:
+            if replace_follow_if_current(follow, None):
+                flush_events([{"ts": now_ms(), "kind": "follow-abandoned",
+                               "id": action_id, "player": follow["player"],
+                               "reason": follow_abandoned_reason,
+                               "controller": "self", "x": lx, "z": lz,
+                               "next": "current-plan"}])
+            else:
+                follow_abandoned_reason = None
+
+    is_backtrack = rule_name == BACKTRACK_RULE_NAME and backtrack is not None
+    backtrack_was_blocked = False
+    if is_backtrack:
+        latest = game_reflex.read_snapshot() or snap
+        lx, lz = latest.get("x"), latest.get("z")
+        target_x, target_z = backtrack["points"][backtrack["index"]]
+        start_distance = navigation_distance_sq(
+            snap["x"], snap["z"], target_x, target_z)
+        if status == "done" and [lx, lz] == [target_x, target_z]:
+            rewind_movement_trail(lx, lz)
+            backtrack["index"] += 1
+            backtrack["status"] = "active"
+            backtrack["contradictions"] = 0
+            if backtrack["index"] >= len(backtrack["points"]):
+                clear_backtrack()
+                status = "backtrack-complete"
+                flush_events([{"ts": now_ms(), "kind": "backtrack-complete",
+                               "id": action_id, "x": lx, "z": lz,
+                               "steps": len(backtrack["points"])}])
+            else:
+                save_backtrack(backtrack)
+                status = "backtrack-progress"
+                flush_events([{"ts": now_ms(), "kind": "backtrack-progress",
+                               "id": action_id, "x": lx, "z": lz,
+                               "remaining": len(backtrack["points"]) - backtrack["index"]}])
+        elif status in ("done", "walk-short") \
+                and isinstance(lx, int) and isinstance(lz, int) \
+                and navigation_distance_sq(lx, lz, target_x, target_z) < start_distance:
+            # A historical checkpoint can be farther away than one safe local
+            # leg. Keep approaching it without pretending the checkpoint was
+            # reached or consuming it from the recovery request.
+            backtrack["status"] = "active"
+            backtrack["contradictions"] = 0
+            save_backtrack(backtrack)
+            status = "backtrack-progress"
+            flush_events([{"ts": now_ms(), "kind": status, "id": action_id,
+                           "x": lx, "z": lz,
+                           "remaining": len(backtrack["points"]) - backtrack["index"],
+                           "target_x": target_x, "target_z": target_z,
+                           "leg_x": action["x"], "leg_z": action["z"]}])
+        else:
+            # Spec rule 7f: a settle that MOVED against its own request is a
+            # movement contradiction — something other than the request owned
+            # the body. Counted consecutively; enough of them stop the blind
+            # obstacle-signature retry loop entirely.
+            moved_against = status in ("done", "walk-short") \
+                and isinstance(lx, int) and isinstance(lz, int) \
+                and (lx, lz) != (snap.get("x"), snap.get("z")) \
+                and not movement_agrees(snap["x"], snap["z"],
+                                        action["x"], action["z"], lx, lz)
+            contradictions = int(backtrack.get("contradictions") or 0)
+            if moved_against:
+                contradictions += 1
+            backtrack_was_blocked = True
+            blocked = dict(backtrack)
+            if contradictions >= MOVEMENT_CONTRADICTION_LIMIT:
+                blocked.update({"status": "diverged",
+                                "contradictions": contradictions,
+                                "diverged_reason": "movement-opposed-request",
+                                "diverged_ts": now_ms()})
+                save_backtrack(blocked)
+                backtrack["status"] = "diverged"
+                append_outcome({
+                    "ts": now_ms(), "kind": "movement-contradiction",
+                    "id": action_id, "commitment": "backtrack",
+                    "contradictions": contradictions,
+                    "requested": {"x": action["x"], "z": action["z"]},
+                    "settled": {"x": lx, "z": lz},
+                    "start": {"x": snap.get("x"), "z": snap.get("z")},
+                    "target": {"x": target_x, "z": target_z},
+                    "useful_substitute": False})
+                flush_events([{"ts": now_ms(), "kind": "backtrack-diverged",
+                               "id": action_id, "x": lx, "z": lz,
+                               "target_x": target_x, "target_z": target_z,
+                               "contradictions": contradictions}])
+            else:
+                blocked.update({"status": "blocked", "blocked_reason": status,
+                                "contradictions": contradictions,
+                                "blocked_signature": route_obstacle_signature(latest),
+                                "blocked_ts": now_ms()})
+                save_backtrack(blocked)
+                flush_events([{"ts": now_ms(), "kind": "backtrack-blocked",
+                               "id": action_id, "reason": status, "x": lx, "z": lz,
+                               "target_x": target_x, "target_z": target_z,
+                               "contradictions": contradictions or None}])
+
+    # The once-per-objective mark is spent only on a VERIFIED done (rule 7a).
+    if rule is not None and rule.get("once_per_objective") and status == "done":
+        est = load_player_state()
+        est["objective_fired"][once_key(rule_name, objective)] = now
+        save_player_state(est)
+
+    # The one-tile break's episode bookkeeping (spec rules 5, 7a): remember
+    # the attempt, exclude a bridge-refused tile for the rest of this fight,
+    # and write the durable pause ONLY for the two grounded anomalies.
+    if is_sidestep:
+        origin = {"x": action.get("origin_x"), "z": action.get("origin_z")}
+        intended = {"x": action.get("x"), "z": action.get("z")}
+        with player_state_lock():
+            side_est = load_player_state()
+            attempt = side_est.get("combat_sidestep") \
+                if isinstance(side_est.get("combat_sidestep"), dict) else {}
+            refused_tiles = [tile for tile in attempt.get("refused_tiles") or []
+                             if isinstance(tile, list) and len(tile) == 2]
+            if status.startswith("refused") \
+                    and [action.get("x"), action.get("z")] not in refused_tiles:
+                refused_tiles.append([action.get("x"), action.get("z")])
+            side_est["combat_sidestep"] = {
+                "ts": now_ms(), "rule": rule_name, "status": status,
+                "origin": origin, "target": intended,
+                "refused_tiles": refused_tiles}
+            save_player_state(side_est)
+        if status == "done":
+            flush_events([{"ts": now_ms(), "kind": "sidestep-clear",
+                           "rule": rule_name, "id": action_id,
+                           "origin": origin, "settled": {"x": final_x,
+                                                         "z": final_z},
+                           "moved": 1}])
+        elif status == "sidestep-displaced":
+            moved = max(abs((final_x or 0) - (origin.get("x") or 0)),
+                        abs((final_z or 0) - (origin.get("z") or 0))) \
+                if isinstance(final_x, int) and isinstance(origin.get("x"), int) \
+                else None
+            pause = {"v": 1, "ts": now_ms(), "objective": objective or None,
+                     "rule": rule_name,
+                     "npc": ((rule.get("trigger") or {}).get("npc_visible")
+                             if rule is not None else None)
+                     or snap.get("_combat_opponent_npc"),
+                     "origin": origin, "target": intended,
+                     "settled": {"x": final_x, "z": final_z},
+                     "status": status, "moved": moved,
+                     "feedback": latest_system_feedback(
+                         game_reflex.read_snapshot() or snap)}
+            write_sidestep_pause(pause)
+            flush_events([{"ts": now_ms(), "kind": "sidestep-failed",
+                           "id": action_id, **pause}])
+            append_outcome({"ts": now_ms(), "kind": "sidestep-diagnostic",
+                            **pause,
+                            "next": "thieving-held; read the reflex-fire "
+                                    "record to name what moved the body; "
+                                    "clear with: play sidestep-pause --clear"})
+
+    # Every outcome feeds the background author (spec rule 16).
+    outcome = {"ts": now_ms(), "kind": "outcome", "rule": rule_name,
+               "id": action_id, "action": action, "status": status,
+               "objective": objective or None, "activity": activity or None,
+               "activity_performance": xp_metrics or None,
+               "snap": snap_brief(snap)}
+    if completion_detail is not None:
+        outcome["completion"] = completion_detail
+    if action["type"] == "walk":
+        outcome["intended"] = {"x": action["x"], "z": action["z"]}
+        if final_x is not None:
+            outcome["settled"] = {"x": final_x, "z": final_z}
+    elif action["type"] == "take-ground":
+        outcome["target"] = {"item": action["item"], "x": action["x"], "z": action["z"]}
+        outcome["settled"] = {"x": final_x, "z": final_z}
+        outcome["gained"] = gained
+    append_outcome(outcome)
+    est = load_player_state()
+    latest_action_state = game_reflex.read_snapshot() or {}
+    batch = est.get("action_batch")
+    if isinstance(batch, dict) and batch.get("rule") == rule_name \
+            and inventory_quantity(latest_action_state,
+                                   batch.get("item", -1)) <= 0:
+        events_batch = [{"ts": now_ms(), "kind": "action-batch-finished",
+                         "rule": rule_name, "item": batch.get("item"),
+                         "reason": "item-absent"}]
+        est["action_batch"] = None
+        flush_events(events_batch)
+    candidate = repetition_candidate(est, rule, outcome)
+    # Provocation evidence (spec rule 5a) is causal action identity, never a
+    # freshness window — and it SURVIVES this action's own conclusion. A
+    # provoked, non-aggressive NPC retaliates on the server's combat timer,
+    # routinely after the failure message that completed the pickpocket, so
+    # requiring combat to be visible here already is what read the 2026-09-01
+    # leaderboard retaliation fights as unprovoked and sent the low-health
+    # escape five tiles instead of one. The marker stands until the next
+    # concluded game action supersedes it (the unconditional clear below) or
+    # the combat episode it explains consumes it (track_combat_state).
+    est["last_npc_action"] = None
+    if action["type"] in PROVOKED_ACTION_TYPES \
+            and action.get("npc") is not None \
+            and snap.get("in_combat") is False:
+        est["last_npc_action"] = {
+            "id": action_id, "type": action["type"],
+            "npc": action.get("npc"), "awaiting_combat": True}
+    save_player_state(est)
+    if candidate is not None:
+        append_outcome(candidate)
+        flush_events([candidate])
+
+    # Spec rule 10: one compact self-describing record per concluded firing -
+    # rule, why it matched, the compiled action, and before/after coordinates,
+    # so a displacement that contradicts intent is readable from one line.
+    end_x, end_z = final_x, final_z
+    if end_x is None:
+        latest_end = game_reflex.read_snapshot() or {}
+        end_x, end_z = latest_end.get("x"), latest_end.get("z")
+    fire_record = {"ts": now_ms(), "kind": "reflex-outcome", "id": action_id,
+                   "rule": rule_name, "status": status,
+                   "objective": objective or None, "activity": activity or None,
+                   "trigger": (rule.get("trigger") if rule is not None else None),
+                   "action": {key: action[key] for key in (
+                       "type", "x", "z", "arrive", "max_path", "sidestep",
+                       "origin_x", "origin_z", "retreat_suppressed", "npc",
+                       "sidx", "obj", "item", "spell", "cmd", "within",
+                       "distance", "dx", "dz", "button", "kind", "batch",
+                       "ground", "amount", "text",
+                       "target_x", "target_z") if key in action},
+                   "start": {"x": snap.get("x"), "z": snap.get("z")},
+                   "end": {"x": end_x, "z": end_z}}
+    if isinstance(snap.get("x"), int) and isinstance(end_x, int):
+        fire_record["moved"] = max(abs(end_x - snap["x"]),
+                                   abs(end_z - snap["z"]))
+    flush_events([fire_record])
+
+    if action["type"] in ("walk", "take-ground") and final_x is not None:
+        if backtrack_was_blocked and backtrack.get("status") == "diverged":
+            report("backtrack-diverged", id=action_id, x=final_x, z=final_z,
+                   target_x=action["x"], target_z=action["z"],
+                   contradictions=backtrack.get("contradictions"),
+                   reason="movement-opposed-request",
+                   next="retrace-a-chosen-prior-tile-or-set-explicit-route-"
+                        "or-backtrack-clear")
+        elif backtrack_was_blocked:
+            report("backtrack-blocked", id=action_id, x=final_x, z=final_z,
+                   target_x=action["x"], target_z=action["z"])
+        elif follow_abandoned_reason:
+            report("follow-abandoned", id=action_id,
+                   player=json.dumps(follow["player"]),
+                   reason=follow_abandoned_reason, controller="self",
+                   x=final_x, z=final_z, next="current-plan")
+        elif route_was_blocked:
+            cache_planned = route.get("planner") == "client-cache"
+            report(("route-needs-local-interaction" if cache_planned else
+                    "route-needs-detour"),
+                   id=action_id, x=final_x, z=final_z,
+                   leg_x=action["x"], leg_z=action["z"],
+                   reason=route_block_reason,
+                   portal=(json.dumps(route.get("next_portal"), separators=(",", ":"))
+                           if route.get("next_portal") else None),
+                   evidence=("client-cache-path" if cache_planned
+                             else "grounded-collision-path"),
+                   map_boundary=(None if cache_planned else "unproven"),
+                   next=("use-nearby-semantic-door-gate-stair-or-ladder;"
+                         "final-route-remains-binding" if cache_planned else
+                         "inspect-terrain-or-use-semantic-boundary-or-waypoint"))
+        elif follow_was_blocked:
+            report("follow-needs-path", id=action_id,
+                   player=json.dumps(follow["player"]), x=final_x, z=final_z,
+                   reason=follow.get("blocked_reason"),
+                   next="inspect-obstacle-or-clear-follow")
+        else:
+            report("fired", rule=rule_name, id=action_id, type=action["type"],
+                   status=status, x=final_x, z=final_z, objective=objective or None,
+                   activity=activity or None, activity_xp=xp_text or None,
+                   activity_compare=xp_compare or None)
+    else:
+        if backtrack_was_blocked:
+            report("backtrack-blocked", id=action_id, target_x=action["x"],
+                   target_z=action["z"], reason=status)
+        elif follow_abandoned_reason:
+            report("follow-abandoned", id=action_id,
+                   player=json.dumps(follow["player"]),
+                   reason=follow_abandoned_reason, controller="self",
+                   next="current-plan")
+        elif route_was_blocked:
+            cache_planned = route.get("planner") == "client-cache"
+            report(("route-needs-local-interaction" if cache_planned else
+                    "route-needs-detour"), id=action_id,
+                   leg_x=action["x"], leg_z=action["z"], reason=route_block_reason,
+                   portal=(json.dumps(route.get("next_portal"), separators=(",", ":"))
+                           if route.get("next_portal") else None),
+                   evidence=("client-cache-path" if cache_planned
+                             else "grounded-collision-path"),
+                   map_boundary=(None if cache_planned else "unproven"),
+                   next=("use-nearby-semantic-door-gate-stair-or-ladder;"
+                         "final-route-remains-binding" if cache_planned else
+                         "inspect-terrain-or-use-semantic-boundary-or-waypoint"))
+        elif follow_was_blocked:
+            report("follow-needs-path", id=action_id,
+                   player=json.dumps(follow["player"]),
+                   reason=follow.get("blocked_reason"),
+                   next="inspect-obstacle-or-clear-follow")
+        else:
+            report("fired", rule=rule_name, id=action_id, type=action["type"],
+                   status=status, objective=objective or None,
+                   activity=activity or None, activity_xp=xp_text or None,
+                   activity_compare=xp_compare or None)
+    if backtrack_was_blocked:
+        return "backtrack-blocked", EXIT_NO_RULE
+    if route_was_blocked:
+        return ("route-needs-local-interaction"
+                if route is not None and route.get("planner") == "client-cache"
+                else "route-needs-detour"), EXIT_NO_RULE
+    if follow_abandoned_reason:
+        return "follow-abandoned", EXIT_NO_RULE
+    if follow_was_blocked:
+        return "follow-needs-path", EXIT_NO_RULE
+    return "fired", (EXIT_FIRED if status in ("done", "route-progress", "route-complete",
+                                               "route-replanning", "route-portal-opened",
+                                               "follow-progress", "follow-portal-opened",
+                                               "backtrack-progress", "backtrack-complete")
+                     else EXIT_NOT_DONE)
+
+
+# --------------------------------------------------------------------------
+# The test suite and the gate (spec rule 17): rules are deterministic
+# trigger-to-action data, so they are tested like data. `predict` is the pure
+# selection — triggers and compilation in priority order, no cooldowns, no
+# marks, no pacing — and every table-mutating door runs the whole suite
+# against the WOULD-BE table before writing a byte.
+# --------------------------------------------------------------------------
+EMPTY_TESTS = {"v": 1, "cases": []}
+
+
+def load_tests() -> dict:
+    path = tests_path()
+    if not path.exists():
+        return dict(EMPTY_TESTS, cases=[])
+    try:
+        tests = json.loads(path.read_text())
+    except json.JSONDecodeError as e:
+        die(f"test cases {path} are not valid JSON: {e}")
+    if not isinstance(tests, dict) or not isinstance(tests.get("cases"), list):
+        die(f"test cases {path} must be an object with a 'cases' list")
+    for case in tests["cases"]:
+        if not isinstance(case, dict) or not case.get("name") \
+                or not isinstance(case.get("snapshot"), dict):
+            die(f"test cases {path}: every case needs a name and a snapshot object")
+        if "expect_action" in case:
+            if not isinstance(case["expect_action"], dict):
+                die(f"test cases {path}: case '{case['name']}': expect_action "
+                    "must be an object of parameter assertions")
+            if case.get("expect") in (None, "", "none"):
+                die(f"test cases {path}: case '{case['name']}': expect_action "
+                    "needs a rule-name expect — no winner, no action to inspect")
+    return tests
+
+
+def save_tests(tests: dict) -> None:
+    game_reflex.atomic_write(tests_path(), json.dumps(tests, indent=2) + "\n")
+
+
+def predict(cfg: dict, snap: dict, objective: str, activity: str = ""):
+    """The rule that would win the slot for this snapshot: the highest
+    priority whose trigger holds AND whose action compiles. Pure."""
+    trigger_fn = make_trigger_fn(objective, activity)
+    rules = sorted((r for r in cfg["rules"] if r["enabled"]),
+                   key=lambda r: -r["priority"])
+    # The same candidate restriction the live pass applies: while the game
+    # holds an open question, only the rules that answer it may act, whatever
+    # any louder rule's priority is. A replay case must read what would
+    # really happen, so this belongs to the pure selection too.
+    if snap.get("dialogue_open") is True and (snap.get("dialogue_options") or []):
+        answering = [rule for rule in rules
+                     if rule["action"].get("type") == "choose-dialogue"
+                     and trigger_fn(rule["trigger"], snap, {})
+                     and compile_player_action(rule, snap, {}, "min")[0] is not None]
+        if answering:
+            rules = answering
+        else:
+            # The live pass reports npc-dialogue-choice and hands an
+            # unanswerable question back to the hand; nothing else may walk,
+            # loot, cut, or interact past it. A replay case must read the
+            # same, or a rule that merely happens to match would look like
+            # the winner of a pass it could never own.
+            return None, None
+    for rule in rules:
+        if not trigger_fn(rule["trigger"], snap, {}):
+            continue
+        action, _why = compile_player_action(rule, snap, {}, "min")
+        if action is not None:
+            return rule["name"], action
+    return None, None
+
+
+def lint_table(cfg: dict) -> list:
+    problems = []
+    for rule in cfg["rules"]:
+        tile = rule["trigger"].get("near_tile")
+        if tile and tile["radius"] < NEAR_RADIUS_FLOOR:
+            problems.append(
+                f"lint: rule '{rule['name']}' near_tile radius {tile['radius']} "
+                f"is below the floor {NEAR_RADIUS_FLOOR} — scope the vicinity "
+                "honestly; verification owns the destination")
+    return problems
+
+
+def action_assertion_failures(case: dict, action) -> list:
+    """Rule 17's semantic pin: each `expect_action` key must equal the
+    compiled parameter, and a key asserted null must be ABSENT — so a case
+    can state that no range cap rides a seek, or that a combat break carries
+    its own bounded movement, instead of inferring intent from displacement."""
+    problems = []
+    compiled = action if isinstance(action, dict) else {}
+    for key, want in (case.get("expect_action") or {}).items():
+        have = compiled.get(key)
+        if want is None:
+            if key in compiled:
+                problems.append(
+                    f"case '{case['name']}': action.{key} must stay absent, "
+                    f"the compiled action carries {json.dumps(have)}")
+        elif key not in compiled:
+            problems.append(f"case '{case['name']}': action.{key} is missing "
+                            f"— expected {json.dumps(want)}")
+        elif have != want:
+            problems.append(f"case '{case['name']}': action.{key} is "
+                            f"{json.dumps(have)} — expected {json.dumps(want)}")
+    return problems
+
+
+def replay_config(cfg, case):
+    """Preview one proposed enabled rule without mutating the installed table."""
+    if not case.get("candidate"):
+        return cfg
+    want = case.get("expect")
+    if not want or not any(r.get("name") == want for r in cfg.get("rules", [])):
+        return cfg  # Prediction fails the missing expected winner normally.
+    return dict(cfg, rules=[dict(r, enabled=True) if r.get("name") == want else r
+                            for r in cfg.get("rules", [])])
+
+
+def run_suite(cfg: dict):
+    """(failures, case-count) for lint plus every replay case."""
+    failures = lint_table(cfg)
+    tests = load_tests()
+    for case in tests["cases"]:
+        want = case.get("expect")
+        if want in (None, "", "none"):
+            want = None
+        got, action = predict(replay_config(cfg, case), case["snapshot"], case.get("objective") or "",
+                              case.get("activity") or "")
+        if got != want:
+            failures.append(f"case '{case['name']}': expected "
+                            f"{want or 'none'}, got {got or 'none'}")
+        elif got is not None:
+            failures.extend(action_assertion_failures(case, action))
+    return failures, len(tests["cases"])
+
+
+def gate_or_die(cfg: dict, doing: str) -> None:
+    failures, _n = run_suite(cfg)
+    if failures:
+        for line in failures:
+            print(f"gate: {line}", file=sys.stderr)
+        die(f"{doing} refused — {len(failures)} failure(s) against the "
+            "would-be table; a broken rule must not be armed (fix the rule, "
+            "or update the cases through the test doors first)")
+
+
+# --------------------------------------------------------------------------
+# Commands.
+# --------------------------------------------------------------------------
+def cmd_init(args):
+    game_dir().mkdir(parents=True, exist_ok=True)
+    state_dir().mkdir(parents=True, exist_ok=True)
+    if rules_path().exists():
+        print(f"learned table already at {rules_path()} — left untouched")
+    else:
+        game_reflex.atomic_write(rules_path(),
+                                 json.dumps(EMPTY_TABLE, indent=2) + "\n")
+        print(f"wrote empty learned table to {rules_path()}")
+
+
+def print_enforced_table_divergence(cfg: dict) -> None:
+    """Say out loud when the live runner is enforcing an older table.
+
+    Spec rule 15: a refused reload keeps the last valid table. Without this
+    line the file reads as armed while the running evaluator has never seen
+    it, and a rule with zero firings looks like a trigger bug."""
+    hb = read_live_runner()
+    if hb is None:
+        return
+    error = hb.get("table_error")
+    enforced = hb.get("enforced_rules")
+    if not error and not isinstance(enforced, list):
+        return
+    missing = ([rule["name"] for rule in cfg.get("rules") or []
+                if rule["name"] not in enforced]
+               if isinstance(enforced, list) and enforced else [])
+    if not error and not missing:
+        return
+    if error:
+        print(f"WARNING: the resident runner (pid {hb.get('pid')}) REFUSED this "
+              f"table and is enforcing an older one: {error}")
+    if missing:
+        print("WARNING: not enforced by the live runner: " + ",".join(sorted(missing)))
+
+
+def cmd_rules(args):
+    if getattr(args, "history", False):
+        records = load_jsonl(reflex_history_path())
+        wanted = getattr(args, "rule", None)
+        shown = 0
+        for record in records[-100:]:
+            changes = [change for change in record.get("changes") or []
+                       if not wanted or change.get("name") == wanted]
+            if not changes:
+                continue
+            names = ",".join(f"{change.get('operation')}:{change.get('name')}"
+                             for change in changes)
+            perf = record.get("performance_before") or {}
+            rates = ",".join(f"{skill.get('name')}={skill.get('xp_per_hour')}/hr"
+                             for skill in perf.get("skills") or []) or "no-XP-sample"
+            print(f"{record.get('ts')} activity={record.get('activity') or '(none)'} "
+                  f"relevant={str(bool(record.get('relevant_to_activity'))).lower()} "
+                  f"change={names} before={rates} doing={record.get('doing')}")
+            shown += 1
+        if not shown:
+            print("no reflex change history" + (f" for {wanted}" if wanted else ""))
+        return
+    cfg = load_config()
+    print_enforced_table_divergence(cfg)
+    if not cfg["rules"] and not cfg["unfinished"]:
+        print("no learned rules yet")
+    for rule in sorted(cfg["rules"], key=lambda r: -r["priority"]):
+        state = "on " if rule["enabled"] else "OFF"
+        trig = " ".join(f"{k}={json.dumps(v) if isinstance(v, dict) else v}"
+                        for k, v in rule["trigger"].items())
+        act = " ".join(f"{k}={v}" for k, v in rule["action"].items() if k != "type")
+        act = rule["action"]["type"] + (f" {act}" if act else "")
+        once = ", once/objective" if rule.get("once_per_objective") else ""
+        print(f"[{state}] {rule['name']}  (priority {rule['priority']}, "
+              f"cooldown {rule['cooldown_ms']}ms, hold {rule['hold_ticks']}{once})")
+        print(f"       when {trig}  ->  {act}")
+        if rule.get("note"):
+            print(f"       note: {rule['note']}")
+    for entry in cfg["unfinished"]:
+        print(f"[UNFINISHED] {entry['name']}: {entry['note']}")
+    d = config_defaults(cfg)
+    print("defaults: " + " ".join(f"{k}={v}" for k, v in sorted(d.items())))
+    obj = read_objective()
+    print(f"objective: {obj if obj else '(none)'}")
+    activity = read_activity()
+    print(f"activity: {activity if activity else '(none)'}")
+
+
+def parse_kv(pairs):
+    out = {}
+    for pair in pairs or []:
+        if "=" not in pair:
+            die(f"'{pair}' is not key=value")
+        key, val = pair.split("=", 1)
+        out[key] = game_reflex.parse_value(val)
+    return out
+
+
+def cmd_learn(args):
+    cfg = load_config()
+    before = json.loads(json.dumps(cfg))
+    if any(r["name"] == args.name for r in cfg["rules"]):
+        die(f"a rule named '{args.name}' already exists")
+    rule = {
+        "name": args.name,
+        "enabled": not args.disabled,
+        "priority": args.priority,
+        "cooldown_ms": args.cooldown_ms,
+        "hold_ticks": args.hold_ticks,
+        "trigger": parse_kv(args.trigger),
+        "action": {"type": args.action, **parse_kv(args.param)},
+    }
+    if args.once_per_objective:
+        rule["once_per_objective"] = True
+    if args.note:
+        rule["note"] = args.note
+    cfg["rules"].append(rule)
+    try:
+        validate_config(cfg)
+    except ValueError as e:
+        die(str(e))
+    gate_or_die(cfg, f"learning '{args.name}'")
+    save_config_change(before, cfg, f"learning '{args.name}'")
+    print(f"learned '{args.name}' "
+          f"({'disabled' if args.disabled else 'enabled'}, durable)")
+
+
+def cmd_unfinished(args):
+    cfg = load_config()
+    if any(e["name"] == args.name for e in cfg["unfinished"]):
+        die(f"an unfinished entry named '{args.name}' already exists")
+    cfg["unfinished"].append({"name": args.name, "note": " ".join(args.note)})
+    try:
+        save_config(cfg)
+    except ValueError as e:
+        die(str(e))
+    print(f"recorded '{args.name}' as unfinished — not evaluated, not forgotten")
+
+
+def find_rule(cfg, name):
+    for rule in cfg["rules"]:
+        if rule["name"] == name:
+            return rule
+    die(f"no rule named '{name}' (game_player.py rules lists them)")
+
+
+def cmd_enable(args, value=True):
+    cfg = load_config()
+    before = json.loads(json.dumps(cfg))
+    find_rule(cfg, args.rule)["enabled"] = value
+    gate_or_die(cfg, f"{'enabling' if value else 'disabling'} '{args.rule}'")
+    save_config_change(before, cfg,
+                       f"{'enabling' if value else 'disabling'} '{args.rule}'")
+    print(f"{args.rule}: {'enabled' if value else 'disabled'}")
+
+
+def cmd_set(args):
+    cfg = load_config()
+    before = json.loads(json.dumps(cfg))
+    rule = find_rule(cfg, args.rule)
+    key, value = args.key, game_reflex.parse_value(args.value)
+    if key in ("priority", "cooldown_ms", "hold_ticks", "enabled",
+               "once_per_objective", "note"):
+        rule[key] = value
+    elif key.startswith("trigger.") or key.startswith("action."):
+        section, sub = key.split(".", 1)
+        if value is None:
+            rule[section].pop(sub, None)
+        else:
+            rule[section][sub] = value
+    else:
+        die(f"unknown key '{key}' — priority, cooldown_ms, hold_ticks, enabled, "
+            "once_per_objective, note, trigger.<cond>, action.<param>")
+    try:
+        validate_config(cfg)
+    except ValueError as e:
+        die(str(e))
+    gate_or_die(cfg, f"setting '{args.rule}' {key}")
+    save_config_change(before, cfg, f"setting '{args.rule}' {key}")
+    print(f"{args.rule}: {key} = {value!r}")
+
+
+def expanded_npc_target(value, source: int, target: int, replace: bool):
+    """Retarget one NPC parameter without reconstructing its rule.
+
+    The default widens the existing target set; --replace is the deliberate
+    destructive form.  Returning None means this parameter did not name the
+    source and therefore is not part of this retarget operation.
+    """
+    values = list(value) if isinstance(value, list) else [value]
+    if source not in values:
+        return None
+    if replace:
+        values = [target if item == source else item for item in values]
+    elif target not in values:
+        values.append(target)
+    values = list(dict.fromkeys(values))
+    return values[0] if len(values) == 1 else values
+
+
+def cmd_retarget_npc(args):
+    """Atomically reuse whole reflexes for another interchangeable NPC.
+
+    This is intentionally one table mutation and one replay gate: the player
+    must not rebuild triggers, completion, guards, priority, or the action by
+    hand merely because the interchangeable target type changed.
+    """
+    if args.source == args.target:
+        die("source and target NPC ids are identical")
+    cfg = load_config()
+    before = json.loads(json.dumps(cfg))
+    changed = []
+    for name in args.rules:
+        rule = find_rule(cfg, name)
+        trigger = rule.get("trigger") or {}
+        action = rule.get("action") or {}
+        touched = False
+        if "npc_visible" in trigger:
+            widened = expanded_npc_target(
+                trigger["npc_visible"], args.source, args.target, args.replace)
+            if widened is not None:
+                trigger["npc_visible"] = widened
+                touched = True
+        if "npc" in action:
+            widened = expanded_npc_target(
+                action["npc"], args.source, args.target, args.replace)
+            if widened is not None:
+                if action.get("type") not in ("interact-npc", "attack-npc") \
+                        and isinstance(widened, list):
+                    die(f"'{name}' uses {action.get('type')}, whose npc parameter cannot "
+                        "be a target set; split or generalize that action first")
+                action["npc"] = widened
+                touched = True
+        if not touched:
+            die(f"'{name}' does not target NPC {args.source}")
+        changed.append(name)
+    try:
+        validate_config(cfg)
+    except ValueError as e:
+        die(str(e))
+    operation = "replacing" if args.replace else "expanding"
+    gate_or_die(cfg, f"{operation} NPC {args.source} with {args.target} in "
+                + ", ".join(changed))
+    save_config_change(before, cfg,
+                       f"retarget-npc {args.source} {args.target} "
+                       f"{'replace' if args.replace else 'expand'}")
+    print(f"retargeted {len(changed)} reflex(es): NPC {args.source} "
+          f"{'replaced by' if args.replace else 'expanded with'} {args.target}; "
+          "all other behavior preserved")
+
+
+def cmd_remove(args):
+    cfg = load_config()
+    old_cfg = json.loads(json.dumps(cfg))
+    before = len(cfg["rules"]) + len(cfg["unfinished"])
+    cfg["rules"] = [r for r in cfg["rules"] if r["name"] != args.rule]
+    cfg["unfinished"] = [e for e in cfg["unfinished"] if e["name"] != args.rule]
+    if len(cfg["rules"]) + len(cfg["unfinished"]) == before:
+        die(f"nothing named '{args.rule}' in rules or unfinished")
+    gate_or_die(cfg, f"removing '{args.rule}'")
+    if reflex_changes(old_cfg, cfg):
+        save_config_change(old_cfg, cfg, f"removing '{args.rule}'")
+    else:
+        save_config(cfg)
+    print(f"removed '{args.rule}'")
+
+
+def quest_key(value: str) -> str:
+    """Compare journal names with objective slugs without trusting punctuation."""
+    words = re.findall(r"[a-z0-9]+", unicodedata.normalize("NFKD", value).casefold())
+    wrappers = {"begin", "complete", "do", "finish", "quest", "start"}
+    while words and words[0] in wrappers:
+        words.pop(0)
+    while words and words[-1] in wrappers:
+        words.pop()
+    return "".join(words)
+
+
+def snapshot_quests() -> tuple[dict, list[dict]]:
+    snap = game_reflex.read_snapshot() or {}
+    quests = snap.get("quests")
+    if not isinstance(quests, list):
+        return snap, []
+    return snap, [quest for quest in quests
+                  if isinstance(quest, dict)
+                  and isinstance(quest.get("name"), str)
+                  and quest.get("name", "").strip()]
+
+
+def cmd_quests(args):
+    snap, quests = snapshot_quests()
+    if "quests" not in snap:
+        die("quest journal unavailable — the running client bridge has not published it")
+    fragment = " ".join(args.query or []).strip().casefold()
+    shown = [quest for quest in quests
+             if not fragment or fragment in quest["name"].casefold()]
+    print(f"quest-points={snap.get('quest_points', '?')} matches={len(shown)}")
+    for quest in shown:
+        print(f"{quest.get('status', 'unknown'):11s} stage={quest.get('stage', '?'):>3} "
+              f"id={quest.get('id', '?'):>2} {quest['name']}")
+    if fragment and not shown:
+        die(f"no quest name contains {fragment!r}")
+
+
+def order_take_rules_by_proximity(rules: list, snap: dict) -> list:
+    """Spec rule 8's tie refinement: among equal-priority take-ground rules,
+    the nearest matching reachable pile is taken first, so the kill tile
+    underfoot is cleared before the body walks to the next corpse. Every
+    non-take rule keeps its exact position."""
+    ground = snap.get("ground_items") or []
+    if not ground:
+        return rules
+    px, pz = snap.get("x"), snap.get("z")
+
+    def pile_distance(rule):
+        action = rule.get("action") or {}
+        if action.get("type") != "take-ground":
+            return None
+        best = None
+        for entry in ground:
+            if not isinstance(entry, dict) or entry.get("id") != action.get("item") \
+                    or entry.get("reachable") is False:
+                continue
+            d = entry.get("path_distance")
+            if not isinstance(d, int) or d < 0:
+                if not (isinstance(entry.get("x"), int) and isinstance(px, int)
+                        and isinstance(entry.get("z"), int) and isinstance(pz, int)):
+                    continue
+                d = max(abs(entry["x"] - px), abs(entry["z"] - pz))
+            if best is None or d < best:
+                best = d
+        return best
+
+    out = list(rules)
+    bands = {}
+    for index, rule in enumerate(out):
+        bands.setdefault(rule.get("priority"), []).append(index)
+    for indices in bands.values():
+        takes = [i for i in indices
+                 if (out[i].get("action") or {}).get("type") == "take-ground"]
+        if len(takes) < 2:
+            continue
+        distances = {id(out[i]): pile_distance(out[i]) for i in takes}
+        ranked = sorted((out[i] for i in takes),
+                        key=lambda r: (distances[id(r)] is None,
+                                       distances[id(r)] or 0))
+        for slot, rule in zip(takes, ranked):
+            out[slot] = rule
+    return out
+
+
+# --------------------------------------------------------------------------
+# Spec rule 11c: the objective progress record — measure, milestones,
+# reflection. An objective is pursued against live data, never orbited on
+# stale belief.
+# --------------------------------------------------------------------------
+def load_progress() -> dict:
+    """The progress record, iff it belongs to the current objective."""
+    try:
+        record = json.loads(progress_path().read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(record, dict) \
+            or (record.get("objective") or "") != (read_objective() or ""):
+        return {}
+    if not isinstance(record.get("milestones"), list):
+        record["milestones"] = []
+    return record
+
+
+def save_progress(record: dict) -> None:
+    game_dir().mkdir(parents=True, exist_ok=True)
+    game_reflex.atomic_write(progress_path(), json.dumps(record) + "\n")
+
+
+def archive_progress(reason: str) -> None:
+    """A finished objective's record is history, never live state."""
+    try:
+        record = json.loads(progress_path().read_text())
+    except (OSError, json.JSONDecodeError):
+        record = None
+    if isinstance(record, dict) and record:
+        entry = dict(record, archived_ts=now_ms(), archived_reason=reason)
+        game_dir().mkdir(parents=True, exist_ok=True)
+        with progress_history_path().open("a", encoding="utf-8") as fh:
+            fh.write(json.dumps(entry) + "\n")
+    try:
+        progress_path().unlink()
+    except FileNotFoundError:
+        pass
+
+
+def progress_gate_or_die(change: str) -> None:
+    """Refuse a decision made on stale standings (spec rule 11c)."""
+    record = load_progress()
+    measure = record.get("measure")
+    if not measure:
+        return
+    verified = record.get("verified_ms")
+    now = now_ms()
+    if isinstance(verified, int) and now - verified <= PROGRESS_STALE_MS:
+        return
+    ago = f"{(now - verified) // 60000}m ago" if isinstance(verified, int) \
+        else "never"
+    die(f"{change} refused: the objective's measure has not been read recently "
+        f"(last progress record: {ago}). Read the measure — {measure} — and "
+        "record what it actually showed with `play progress TEXT`, then retry. "
+        "Deciding on stale standings is how finished work gets retrained.")
+
+
+# The skills an activity name plausibly trains; anything else gaining XP is
+# named in the reflection facts so a stale activity label cannot hide.
+ACTIVITY_SKILL_HINTS = {
+    "combat": {"attack", "defense", "strength", "hits", "ranged"},
+    "melee": {"attack", "defense", "strength", "hits"},
+    "fight": {"attack", "defense", "strength", "hits"},
+    "kill": {"attack", "defense", "strength", "hits"},
+    "slay": {"attack", "defense", "strength", "hits"},
+    "warrior": {"attack", "defense", "strength", "hits"},
+    "range": {"ranged", "hits"},
+    "magic": {"magic", "hits"},
+    "cast": {"magic", "hits"},
+    "pray": {"prayer"},
+    "bury": {"prayer"},
+    "bone": {"prayer"},
+    "thiev": {"thieving"},
+    "pickpocket": {"thieving"},
+    "woodcut": {"woodcut"},
+    "chop": {"woodcut"},
+    "log": {"woodcut", "firemaking"},
+    "fire": {"firemaking"},
+    "cook": {"cooking"},
+    "fish": {"fishing"},
+    "mine": {"mining"},
+    "mining": {"mining"},
+    "smith": {"smithing"},
+    "craft": {"crafting"},
+    "fletch": {"fletching"},
+    "herb": {"herblaw"},
+    "agility": {"agility"},
+}
+
+
+def activity_implied_skills(activity):
+    """Names are hints; applicable scoped operations provide stronger evidence."""
+    act = (activity or "").lower()
+    implied = set()
+    for token, skills in ACTIVITY_SKILL_HINTS.items():
+        if token in act:
+            implied |= skills
+    for rule in activity_rule_snapshot(current_config_or_empty(), read_objective(), activity):
+        if not rule.get("activity_scope"):
+            continue
+        if rule.get("action") == "attack-npc":
+            implied |= {"attack", "defense", "strength", "hits", "ranged"}
+        elif rule.get("action") == "cast-npc":
+            implied |= {"magic", "hits"}
+    return implied
+
+
+def xp_activity_mismatch(xp_text, activity):
+    """Skills gaining XP that the declared activity does not account for."""
+    if not xp_text or not activity:
+        return None
+    act = activity.lower()
+    implied = activity_implied_skills(activity)
+    stray = []
+    for segment in xp_text.split(";"):
+        name = segment.split(":", 1)[0].strip()
+        if name and name.lower() not in act and name.lower() not in implied:
+            stray.append(name)
+    return ",".join(stray) or None
+
+
+def activity_fields(xp_text, activity) -> dict:
+    """The mismatch as a fact, escalated to an instruction once sustained.
+
+    Reflexes are scoped by the declared activity, so a stale label mutes
+    every rule for the mode actually being played. A stray skill with real
+    accumulated XP means the label has been wrong for a while — that is no
+    longer information, it is a defect with a named fix."""
+    stray = xp_activity_mismatch(xp_text, activity)
+    if not stray:
+        return {}
+    fields = {"activity_mismatch": stray}
+    sustained = False
+    for segment in (xp_text or "").split(";"):
+        name = segment.split(":", 1)[0].strip()
+        if name not in stray.split(","):
+            continue
+        match = re.search(r"\+(\d+)_total", segment)
+        if match and int(match.group(1)) >= 100:
+            sustained = True
+            break
+    if sustained:
+        fields["activity_stale"] = (
+            f"declared '{activity}' is not what is happening ({stray} keeps "
+            "gaining) — pick the real mode from the EXISTING catalog with "
+            "`play activity NAME`; its scoped reflexes are NOT firing while "
+            "the label is wrong. --new is for a genuinely new mode only: a "
+            "fresh name for an old mode splinters its reflexes")
+    return fields
+
+
+def reflection_fields(snap: dict = None) -> dict:
+    """Spec rule 11c: what a due reflection must face, riding the verdict."""
+    if not read_objective():
+        return {}
+    record = load_progress()
+    now = now_ms()
+    fields = {}
+    route = load_route()
+    if isinstance(snap, dict) and route and route.get("status") == "blocked" \
+            and route.get("blocked_reason") == "unreachable-in-client-cache":
+        doors = [{k: b.get(k) for k in ("id", "name", "x", "z", "dir", "commands")}
+                 for b in snap.get("bounds") or []
+                 if any(str(c).lower() in ("open", "close") for c in b.get("commands") or [])]
+        fields["route_recovery"] = (
+            f"Native cache could not PLAN a path to ({route.get('x')},{route.get('z')}); "
+            "this is not a failed server walk. Inspect the current doorway/terrain, "
+            "cross its observed threshold or perform its appropriate semantic interaction, "
+            "verify the result, then replan to that SAME final target. An open live doorway "
+            "can disagree with static cache scenery; establish the actual crossing rather "
+            "than trying more compass destinations or replaying the whole work trail. "
+            "Visible doorways=" + json.dumps(doors[:3], separators=(",", ":")))
+    if isinstance(snap, dict) and game_loadout.enabled():
+        fields['inventory_prepare'] = json.dumps(game_loadout.assessment(snap))
+    if isinstance(snap, dict) and len(snap.get("inventory") or []) >= 30:
+        waiting = len(snap.get("ground_items") or [])
+        if waiting:
+            fields["bag_full_loot_waiting"] = (
+                f"{waiting}-piles (no loot rule can fire at 30/30 slots — "
+                "finish the batch and follow its chosen disposal decision; "
+                "incidental loot does not change the plan or require a bank trip)")
+    if isinstance(snap, dict):
+        activity = read_activity()
+        act = (activity or "").lower()
+        if act and not any(token in act for token in
+                           ("bank", "travel", "transit", "walk", "journey")):
+            implied = activity_implied_skills(activity)
+            worn = [item for item in snap.get("inventory") or []
+                    if item.get("equipped")]
+            # Judge only what the name clearly declares: an unmapped name
+            # (which may be combat in practice) is the stale-activity
+            # escalation's business, not this line's.
+            if implied and len(worn) >= 3 \
+                    and not implied & {"attack", "defense", "strength",
+                                       "hits", "ranged", "magic"}:
+                fields["hauling"] = (
+                    f"{len(worn)} slots worn as combat gear while "
+                    f"'{activity}' needs none — worn items occupy bag slots, "
+                    "so bank what this mode does not use and reclaim them")
+    if isinstance(snap, dict):
+        hits, hits_max = snap.get("hits"), snap.get("hits_max")
+        if isinstance(hits, int) and isinstance(hits_max, int) \
+                and hits_max > 0 and hits * 2 < hits_max:
+            try:
+                heals = game_reflex.load_food()
+            except BaseException:
+                heals = {}
+            carried_food = sum(1 for item in snap.get("inventory") or []
+                               if item.get("id") in heals)
+            if not carried_food:
+                fields["starving"] = (
+                    f"hp {hits}/{hits_max} with no food carried — get food "
+                    "before fighting (cook on a range, fish, or buy), and "
+                    "rest or sleep to regenerate meanwhile")
+    if record.get("measure"):
+        verified = record.get("verified_ms")
+        fields["progress_age_min"] = (now - verified) // 60000 \
+            if isinstance(verified, int) else "never"
+    last = record.get("last_reflect_ms")
+    if isinstance(last, int):
+        if now - last > REFLECT_EVERY_MS:
+            fields["reflection_due"] = f"{(now - last) // 60000}m-since-last"
+    else:
+        fields["reflection_due"] = "now"
+    if fields.get("reflection_due"):
+        fields["next"] = "play reflect TEXT"
+    return fields
+
+
+def cmd_progress(args):
+    objective = read_objective()
+    if not objective:
+        die("set an objective before recording its progress")
+    record = load_progress()
+    text = " ".join(args.text).strip() if args.text else ""
+    if not text:
+        measure = record.get("measure") or "(no measure declared)"
+        verified = record.get("verified_ms")
+        age = f"{(now_ms() - verified) // 60000}m ago" \
+            if isinstance(verified, int) else "never"
+        print(f"objective: {objective}")
+        print(f"measure  : {measure}")
+        print(f"last read: {age}")
+        print(f"result   : {record.get('result') or '(none recorded)'}")
+        milestones = record.get("milestones") or []
+        if milestones:
+            for m in milestones:
+                mark = "done" if m.get("status") == "done" else "open"
+                print(f"milestone [{mark}] {m.get('name')}"
+                      + (f" — {m.get('evidence')}" if m.get("evidence") else ""))
+        else:
+            print("milestones: none")
+        last = record.get("last_reflect_ms")
+        print("reflected: " + (f"{(now_ms() - last) // 60000}m ago"
+                               if isinstance(last, int) else "never"))
+        return
+    if len(text) > 1200:
+        die("a progress record is a compact reading of the measure, not an essay")
+    record.update({"objective": objective, "verified_ms": now_ms(),
+                   "result": text})
+    record.setdefault("milestones", [])
+    save_progress(record)
+    event = {"ts": now_ms(), "kind": "progress-recorded",
+             "objective": objective, "result": text}
+    flush_events([event])
+    append_outcome(dict(event))
+    print(f"progress recorded: {text}")
+
+
+def cmd_milestone(args):
+    objective = read_objective()
+    if not objective:
+        die("set an objective before keeping its milestone ledger")
+    record = load_progress()
+    record.setdefault("objective", objective)
+    record.setdefault("milestones", [])
+    milestones = record["milestones"]
+    if args.action == "list":
+        if not milestones:
+            print("no milestones yet")
+        for m in milestones:
+            mark = "done" if m.get("status") == "done" else "open"
+            line = f"[{mark}] {m.get('name')}"
+            if m.get("note"):
+                line += f" — {m['note']}"
+            if m.get("evidence"):
+                line += f" (evidence: {m['evidence']})"
+            print(line)
+        return
+    if not args.name:
+        die(f"milestone {args.action} needs a NAME")
+    name = args.name.strip()
+    existing = next((m for m in milestones if m.get("name") == name), None)
+    if args.action == "add":
+        if existing is not None:
+            die(f"milestone '{name}' already exists ({existing.get('status')})")
+        entry = {"name": name, "status": "open", "ts": now_ms()}
+        if args.note:
+            entry["note"] = args.note
+        milestones.append(entry)
+        verb = "opened"
+    elif args.action == "done":
+        if existing is None:
+            die(f"no milestone named '{name}' — add it first")
+        if not args.evidence:
+            die("milestone done requires --evidence TEXT: closed on evidence, "
+                "never on feeling")
+        existing.update({"status": "done", "evidence": args.evidence,
+                         "ts": now_ms()})
+        verb = "closed"
+    elif args.action == "reopen":
+        if existing is None:
+            die(f"no milestone named '{name}'")
+        if not args.reason:
+            die("milestone reopen requires --reason TEXT naming the live data "
+                "that disagrees")
+        existing.update({"status": "open", "reopen_reason": args.reason,
+                         "ts": now_ms()})
+        verb = "reopened"
+    else:
+        die(f"unknown milestone action '{args.action}'")
+    save_progress(record)
+    event = {"ts": now_ms(), "kind": f"milestone-{verb}",
+             "objective": objective, "milestone": name,
+             "evidence": args.evidence or None, "reason": args.reason or None}
+    flush_events([event])
+    append_outcome(dict(event))
+    print(f"milestone {verb}: {name}")
+
+
+def cmd_reflect(args):
+    objective = read_objective()
+    if not objective:
+        die("set an objective before reflecting on its pursuit")
+    text = " ".join(args.text).strip()
+    if not text:
+        die("a reflection is an honest assessment in words, not a stamp")
+    record = load_progress()
+    record.setdefault("objective", objective)
+    record.setdefault("milestones", [])
+    record["last_reflect_ms"] = now_ms()
+    save_progress(record)
+    snap = game_reflex.read_snapshot() or {}
+    event = {"ts": now_ms(), "kind": "reflection", "objective": objective,
+             "activity": read_activity() or None, "plan": read_plan() or None,
+             "ground_items": len(snap.get("ground_items") or []),
+             "text": text}
+    flush_events([event])
+    append_outcome(dict(event))
+    print("reflection recorded")
+
+
+def activity_prep_line(snap: dict) -> str:
+    """The prep facts, in front of every activity change (spec rule 11c)."""
+    inv = snap.get("inventory") or []
+    try:
+        heals = game_reflex.load_food()
+    except BaseException:
+        heals = {}
+    food = [i for i in inv if i.get("id") in heals]
+    total_heal = sum(heals[i["id"]] * (i.get("count") or 1) for i in food)
+    worn = [str(i.get("name")) for i in inv if i.get("equipped")]
+    return (f"prep: food {len(food)} item(s) (~{total_heal} heal); "
+            f"equipped: {', '.join(worn) if worn else 'nothing'}; "
+            f"bag {len(inv)}/30 slots")
+
+
+# Spec rule 11: the plan is the current method, nothing else. Standing
+# instructions, lessons, and prohibitions are different artifacts wearing the
+# plan's clothes, and each refusal routes the text to its real home.
+STANDING_PLAN_PATTERNS = (
+    r"\bnever\b", r"\balways\b", r"\bunder no circumstances?\b",
+    r"\bfrom now on\b", r"\bgoing forward\b", r"\bat all times\b",
+    r"\bevery time\b", r"\bin the future\b", r"\bdo not (?:ever|again)\b",
+    r"\bstop \w+ing\b", r"\bhow to\b", r"\bremember\b", r"\bno \w+ing\b",
+    # Reworded prohibitions: a work-status list is the measure's business,
+    # never a clause frozen into the plan.
+    r"\bpaused\b", r"\bon hold\b", r"\bbanned\b", r"\bforbidden\b",
+    r"\boff[- ]limits\b",
+    # A queued future plan is a second plan: the handoff carries next-sitting
+    # work, the plan carries only the current leg's method.
+    r"\bnext (?:sitting|session)\b", r"\btomorrow\b",
+)
+
+
+def plan_hygiene_or_die(text: str) -> None:
+    hits = [p for p in STANDING_PLAN_PATTERNS
+            if re.search(p, text, re.IGNORECASE)]
+    if hits:
+        die("plan refused — it contains standing-instruction language "
+            f"(matched: {', '.join(hits)}). The plan is ONE method for the "
+            "current leg and nothing else. A lesson or fact belongs in "
+            "durable memory (betty-openrsc remember), a momentary redirect "
+            "in steering, finished or closed work is a measured fact (play "
+            "milestone done NAME --evidence …), what is or is not worth "
+            "training is the measure's business read fresh (play progress), "
+            "and next-sitting work rides the handoff — never a second plan "
+            "stapled after this one. State only what you are doing next "
+            "and how.")
+
+
+def cmd_objective(args):
+    old_objective = read_objective()
+    old_plan = read_plan()
+    if args.clear:
+        try:
+            objective_path().unlink()
+        except FileNotFoundError:
+            pass
+        if old_plan:
+            clear_plan_for_objective_change(
+                old_objective, "objective-cleared", old_plan)
+        clear_goal("objective-cleared")
+        archive_progress("objective-cleared")
+        print("objective cleared")
+        return
+    if args.name is None:
+        if args.measure is not None:
+            if not old_objective:
+                die("set an objective before declaring its measure")
+            measure = args.measure.strip()
+            if not measure or "\n" in measure:
+                die("the measure is one non-empty line naming where the "
+                    "objective's ground truth lives and how to read it")
+            record = load_progress()
+            record.update({"objective": old_objective, "measure": measure})
+            record.setdefault("milestones", [])
+            save_progress(record)
+            print(f"measure: {measure}")
+            return
+        obj = read_objective()
+        print(obj if obj else "(none)")
+        if obj:
+            measure = load_progress().get("measure")
+            if measure:
+                print(f"measure: {measure}")
+        return
+    if "\n" in args.name or not args.name.strip():
+        die("the objective is one non-empty line")
+    new_objective = args.name.strip()
+    _snap, quests = snapshot_quests()
+    wanted = quest_key(new_objective)
+    for quest in quests:
+        if wanted and quest_key(quest["name"]) == wanted \
+                and (quest.get("status") == "completed" or quest.get("stage", 0) < 0):
+            die(f"objective refused: {quest['name']} is already completed "
+                f"(journal stage={quest.get('stage')}); choose unfinished work")
+    game_dir().mkdir(parents=True, exist_ok=True)
+    if old_objective != new_objective:
+        archive_progress(f"objective-changed-to:{new_objective}")
+    game_reflex.atomic_write(objective_path(), new_objective + "\n")
+    if old_plan and old_objective != new_objective:
+        clear_plan_for_objective_change(
+            old_objective, f"objective-changed-to:{new_objective}", old_plan)
+    if old_objective != new_objective:
+        clear_goal(f"objective-changed-to:{new_objective}")
+    if args.measure is not None:
+        measure = args.measure.strip()
+        if not measure or "\n" in measure:
+            die("the measure is one non-empty line naming where the "
+                "objective's ground truth lives and how to read it")
+        record = load_progress()
+        record.update({"objective": new_objective, "measure": measure})
+        record.setdefault("milestones", [])
+        save_progress(record)
+        print(f"objective: {new_objective} (measure: {measure})")
+        return
+    print(f"objective: {new_objective}")
+
+
+def validate_plan_line(value: str, label: str, maximum: int) -> str:
+    value = value.strip()
+    if not value or "\n" in value or "\r" in value:
+        die(f"the {label} must be one non-empty line")
+    if len(value) > maximum:
+        die(f"the {label} exceeds {maximum} characters")
+    return value
+
+
+def record_plan_change(change: str, old_plan: str, new_plan: str,
+                       reason: str) -> None:
+    event = {"ts": now_ms(), "kind": f"plan-{change}",
+             "objective": read_objective() or None,
+             "old_plan": old_plan or None, "new_plan": new_plan or None,
+             "reason": reason}
+    flush_events([event])
+    append_outcome(dict(event, kind="plan-change", change=change))
+
+
+def clear_plan_for_objective_change(old_objective: str, reason: str,
+                                    old_plan: str) -> None:
+    try:
+        plan_path().unlink()
+    except FileNotFoundError:
+        pass
+    event = {"ts": now_ms(), "kind": "plan-cleared",
+             "objective": old_objective or None, "old_plan": old_plan,
+             "new_plan": None, "reason": reason}
+    flush_events([event])
+    append_outcome(dict(event, kind="plan-change", change="cleared"))
+
+
+def cmd_plan(args):
+    objective = read_objective()
+    current = read_plan()
+    if args.clear is not None:
+        if args.text is not None:
+            die("plan --clear REASON does not accept plan text")
+        reason = validate_plan_line(
+            args.clear, "plan-clear reason", PLAN_REASON_MAX_CHARS)
+        if not current:
+            print("plan already clear")
+            return
+        try:
+            plan_path().unlink()
+        except FileNotFoundError:
+            pass
+        record_plan_change("cleared", current, "", reason)
+        print("plan cleared")
+        return
+    if args.text is None:
+        print(current if current else "(none)")
+        return
+    if not objective:
+        die("set an objective before selecting its plan")
+    proposed = validate_plan_line(args.text, "plan", PLAN_MAX_CHARS)
+    plan_hygiene_or_die(proposed)
+    if args.revise is not None:
+        reason = validate_plan_line(
+            args.revise, "plan-revision reason", PLAN_REASON_MAX_CHARS)
+        if not current:
+            die("there is no current plan to revise; set the first plan without --revise")
+        if proposed == current:
+            print(f"plan unchanged: {current}")
+            return
+        progress_gate_or_die("plan revision")
+        game_reflex.atomic_write(plan_path(), proposed + "\n")
+        record_plan_change("revised", current, proposed, reason)
+        print(f"plan revised: {proposed}")
+        return
+    if current and current != proposed:
+        die("a different plan is already binding; use plan --revise REASON TEXT")
+    if current == proposed:
+        print(f"plan unchanged: {current}")
+        return
+    progress_gate_or_die("plan selection")
+    game_dir().mkdir(parents=True, exist_ok=True)
+    game_reflex.atomic_write(plan_path(), proposed + "\n")
+    record_plan_change("selected", "", proposed, "initial-selection")
+    print(f"plan: {proposed}")
+
+
+def print_activity_history(activity: str) -> None:
+    if not activity:
+        print("no activity selected")
+        return
+    rows = [row for row in load_jsonl(activity_history_path())
+            if row.get("activity") == activity]
+    current = {}
+    stats = load_activity_stats()
+    if stats.get("activity") == activity:
+        snap = game_reflex.read_snapshot() or {}
+        if skills_ready(snapshot_skills(snap)):
+            stats = refresh_activity_stats(snap, activity)
+        current = activity_metrics_from_stats(stats)
+    if not rows and not current:
+        print(f"activity history: {activity} — no measured iterations yet")
+        return
+    for row in rows[-12:]:
+        rates = ",".join(
+            f"{skill.get('name')}={skill.get('xp_per_hour')}/hr"
+            f"(+{skill.get('gained')})" for skill in row.get("skills") or []) \
+            or "no-positive-XP"
+        eligible = "comparable" if row.get("performance_eligible") else "short/no-XP"
+        print(f"iteration {row.get('iteration')} ended={row.get('ended_ms')} "
+              f"elapsed_ms={row.get('elapsed_ms')} {eligible} rates={rates} "
+              f"reason={row.get('end_reason')} rules={row.get('rule_set_hash')}")
+    if current:
+        rates = ",".join(
+            f"{skill.get('name')}={skill.get('xp_per_hour')}/hr"
+            f"(+{skill.get('gained')})" for skill in current.get("skills") or []) \
+            or "no-positive-XP-yet"
+        print(f"iteration {current.get('iteration')} CURRENT "
+              f"elapsed_ms={current.get('elapsed_ms')} rates={rates} "
+              f"reason={current.get('reason')} rules={current.get('rule_set_hash')}")
+    summary = activity_history_summary(activity, current)
+    if summary.get("best"):
+        print("best comparable: " + ", ".join(
+            f"{skill.get('name')}={skill.get('xp_per_hour')}/hr "
+            f"(iteration {skill.get('iteration')})"
+            for skill in summary["best"]))
+
+
+def registered_activities() -> dict:
+    path = game_dir() / "activity-catalog.json"
+    try:
+        records = json.loads(path.read_text())
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError):
+        die(f"activity catalog {path} cannot be read; repair it before selecting an activity")
+    if not isinstance(records, dict) or any(
+            not isinstance(name, str) or not name.strip() or "\n" in name
+            or not isinstance(reason, str) or not reason.strip()
+            for name, reason in records.items()):
+        die(f"activity catalog {path} is malformed; repair it before selecting an activity")
+    return records
+
+
+def activity_catalog(cfg: dict) -> list:
+    """Spec rule 11: the derived catalog of existing activities — every name
+    observed in the activity history, scoped by activity_is in the current
+    table, or named by the current selection and its measured stats."""
+    names = set(registered_activities())
+    for row in load_jsonl(activity_history_path()):
+        name = str(row.get("activity") or "").strip()
+        if name:
+            names.add(name)
+    for rule in cfg.get("rules") or []:
+        name = str((rule.get("trigger") or {}).get("activity_is") or "").strip()
+        if name:
+            names.add(name)
+    current = read_activity()
+    if current:
+        names.add(current)
+    stats_name = str(load_activity_stats().get("activity") or "").strip()
+    if stats_name:
+        names.add(stats_name)
+    return sorted(names)
+
+
+def activity_name_tokens(name: str) -> set:
+    return {token for token in re.split(r"[^a-z0-9]+", name.casefold()) if token}
+
+
+def activity_variant_base(name: str, catalog: list):
+    """Spec rule 11: a name whose hyphenated words strictly contain an
+    existing entry's whole name is that entry's VARIANT — a fork of the mode,
+    not a new mode. The target belongs in the objective, plan, and target-set
+    rules instead."""
+    tokens = activity_name_tokens(name)
+    for entry in catalog:
+        if entry == name:
+            continue
+        entry_tokens = activity_name_tokens(entry)
+        if entry_tokens and entry_tokens < tokens:
+            return entry
+    return None
+
+
+def print_activity_catalog(cfg: dict):
+    print("Existing activities for the current objective (scopes only; inspect targets and guards):")
+    objective = read_objective()
+    for name in activity_catalog(cfg):
+        scoped = [r for r in cfg.get("rules") or []
+                  if (r.get("trigger") or {}).get("activity_is") == name]
+        eligible = [r for r in scoped if r.get("enabled")
+                    and rule_scope_applies(r, objective, name)]
+        actions = sorted({str((r.get("action") or {}).get("type")) for r in eligible})
+        print(f"  {name}: {len(eligible)} applicable activity rules; "
+              f"actions={','.join(actions) or 'none'}; excluded={len(scoped) - len(eligible)}")
+    print("Choose the actual operation, not its desired XP reward. Reuse an existing mode; "
+          "create with --new REASON only when none fits. Global support is separate.")
+
+
+def print_activity_rules(briefing: dict):
+    active = briefing["activity_rules"]
+    print(f"activity-specific reflexes ({len(active)}):")
+    for item in active:
+        print(f"  {item['name']}: {item['action']} "
+              f"(objective={item['objective_scope'] or 'any'})")
+    if not active:
+        print("  none: no applicable activity-specific work routine; inspect existing modes "
+              "and their scopes before beginning a manual loop")
+    print(f"global support reflexes: {len(briefing['global_rules'])}; "
+          "these do not establish a complete work routine")
+    excluded = briefing["excluded_activity_rules"]
+    if excluded:
+        print("excluded activity reflexes:")
+        for item in excluded:
+            print(f"  {item['name']}: {'; '.join(item['reasons'])}")
+    candidates = briefing.get("reuse_candidates") or []
+    print("reuse templates (inspect before adapting; not automatically applicable): " + (
+        ", ".join(f"{item['name']} (from {item['source_activity']}; "
+                  f"{'enabled' if item['enabled'] else 'DISABLED'}; "
+                  f"objective={item['objective_scope'] or 'any'})"
+                  for item in candidates) if candidates else "none yet"))
+
+
+def cmd_activity(args):
+    """The immediate mode of play, separate from the longer-lived objective."""
+    consider = getattr(args, "consider", None)
+    listing = getattr(args, "list", False)
+    creation = getattr(args, "new", None)
+    if (consider is not None or listing) and (
+            args.clear or args.restart or getattr(args, "history", False) or creation is not None):
+        die("activity inspection cannot be combined with mutation or history flags")
+    if listing and args.name:
+        die("use activity NAME --consider WORK to preview one existing activity")
+    if consider is not None and not consider.strip():
+        die("--consider needs the intended work, before choosing its activity or inventory")
+    if consider is not None or listing:
+        cfg = load_config()
+        print_activity_catalog(cfg)
+        if args.name:
+            if args.name not in activity_catalog(cfg):
+                die("preview an existing catalog entry; no activity was selected or created")
+            print_activity_rules(activity_briefing(cfg, args.name, game_reflex.read_snapshot() or {}))
+        if consider is not None:
+            print("Relevant memories BEFORE deciding:")
+            print(recall_activity_memories(args.name or "", consider))
+            print("Apply relevant corrections to the method, activity, and preparation you choose. "
+                  "If a lesson does not fit, identify the current evidence; do not silently ignore "
+                  "it or carry old provisions into every activity.")
+        return
+    if creation is not None and (not args.name or args.clear or args.restart
+                                 or getattr(args, "history", False) or not creation.strip()):
+        die("activity NAME --new REASON requires a non-empty reason and no other mode flags")
+    if getattr(args, "history", False):
+        print_activity_history(args.name or read_activity())
+        return
+    if args.clear:
+        previous = read_activity()
+        if previous:
+            finish_activity_iteration("activity-cleared", game_reflex.read_snapshot() or {})
+        try:
+            activity_path().unlink()
+        except FileNotFoundError:
+            pass
+        clear_activity_stats()
+        print("activity cleared")
+        return
+    if args.name is None:
+        activity = read_activity()
+        print(activity if activity else "(none)")
+        return
+    if "\n" in args.name or not args.name.strip():
+        die("the activity is one non-empty line")
+    selected = args.name.strip()
+    cfg = load_config()
+    catalog = activity_catalog(cfg)
+    if selected not in catalog:
+        selected = next((name for name in catalog if name.casefold() == selected.casefold()), selected)
+    if selected in catalog and creation is not None:
+        die(f"activity '{selected}' already exists; select it without --new")
+    if selected not in catalog:
+        if creation is None:
+            print_activity_catalog(cfg)
+            die(f"activity '{selected}' is not in the catalog. Select an existing operation; "
+                "use --consider WORK to recall relevant lessons before deciding. "
+                "Only create with --new REASON when no existing activity fits")
+        base = activity_variant_base(selected, catalog)
+        if base:
+            die(f"activity '{selected}' is a variant of '{base}'; select the existing mode "
+                "and ground its target parameters instead of creating another activity")
+    # Spec rule 11d: the declared stop ceiling refuses the switch back into
+    # the activity it stops, and fails closed when the record or the level
+    # cannot be read. The refusal names the ceiling and the clearing door.
+    stop_verdict, stop_record = load_stop()
+    if stop_verdict == "invalid":
+        die(f"activity '{selected}' refused: the stop record {stop_path()} "
+            "is unreadable or malformed, so the ceiling it held cannot be "
+            "known — activity selection fails closed. Re-declare it with "
+            "`play stop-at SKILL LEVEL clear|halt|switch NAME` or clear it "
+            "with `play stop-at --clear`")
+    if stop_verdict == "armed" and stop_record["activity"] == selected:
+        level = stop_skill_level(stop_record, game_reflex.read_snapshot() or {})
+        if level is None:
+            die(f"activity '{selected}' refused: a stop is declared at "
+                f"{stop_record['skill']} {stop_record['level']} and the live "
+                f"{stop_record['skill']} level cannot be read — the ceiling "
+                "fails closed rather than trusting a blind switch. Clear or "
+                "replace it with `play stop-at --clear` if the ceiling no "
+                "longer stands")
+        if level >= stop_record["level"]:
+            die(f"activity '{selected}' refused: the declared stop at "
+                f"{stop_record['skill']} {stop_record['level']} is reached "
+                f"(level {level}). The ceiling stays binding until "
+                "`play stop-at --clear` or a replacing declaration")
+    previous = read_activity()
+    if selected != previous:
+        progress_gate_or_die(f"activity switch to '{selected}'")
+    snap = game_reflex.read_snapshot() or {}
+    changed = selected != previous or args.restart
+    if changed and previous:
+        finish_activity_iteration(
+            "activity-restarted" if selected == previous else f"activity-switched-to:{selected}",
+            snap)
+    game_dir().mkdir(parents=True, exist_ok=True)
+    records = registered_activities()
+    if selected not in records:
+        records[selected] = creation.strip() if creation is not None else "Selected from the existing catalog"
+        game_reflex.atomic_write(game_dir() / "activity-catalog.json",
+                                json.dumps(records, indent=2) + "\n")
+    game_reflex.atomic_write(activity_path(), selected + "\n")
+    if changed:
+        clear_activity_stats()
+        stats = start_activity_stats(
+            selected, snap,
+            reason="activity-restarted" if selected == previous else "activity-selected",
+            cfg=cfg)
+        briefing = activity_briefing(cfg, selected, snap)
+        append_outcome({
+            "ts": now_ms(), "kind": "activity-start", "activity": selected,
+            "objective": read_objective() or None,
+            "iteration": stats.get("iteration") or next_activity_iteration(selected),
+            "baseline_ready": bool(stats),
+            "current_rules": briefing["current_rules"],
+            "activity_rules": briefing["activity_rules"],
+            "global_rules": briefing["global_rules"],
+            "excluded_activity_rules": briefing["excluded_activity_rules"],
+            "creation_reason": creation.strip() if creation is not None else None,
+            "reuse_candidates": briefing["reuse_candidates"],
+            "history": {key: briefing["history"].get(key) for key in
+                        ("iterations", "latest", "best")},
+            "note": "Review existing reflexes first; reuse only grounded structure, then "
+                    "measure this iteration against comparable prior XP/hour.",
+        })
+    else:
+        stats = load_activity_stats()
+        briefing = activity_briefing(cfg, selected, snap)
+    print(f"activity: {selected}")
+    if game_loadout.enabled():
+        print("inventory preparation: " + json.dumps(game_loadout.assessment(snap)))
+    if changed:
+        print(f"iteration: {stats.get('iteration') or next_activity_iteration(selected)} "
+              f"({'baseline ready' if stats else 'XP baseline pending'})")
+        print(activity_prep_line(snap))
+        print("resolve preparation before settling in: combat wants food and "
+              "armed gear; a gathering, banking, or crafting mode should not "
+              "haul supplies it does not need")
+    print_activity_rules(briefing)
+    best = briefing.get("history", {}).get("best") or []
+    if best:
+        print("prior best: " + ", ".join(
+            f"{skill.get('name')} {skill.get('xp_per_hour')}/hr "
+            f"(iteration {skill.get('iteration')})" for skill in best))
+    if changed:
+        recalled = recall_activity_memories(selected)
+        if recalled:
+            print("relevant play memories for this transition:")
+            print(recalled)
+
+
+def cmd_stop_at(args):
+    """Spec rule 11d: declare, show, or clear the mechanical stop ceiling —
+    'woodcutting stops at 30' as one command at the moment it is said, so
+    the check is the trigger layer's and never the speaker's attention."""
+    if args.clear:
+        if args.skill is not None or args.level is not None or args.then:
+            die("stop-at --clear takes no other arguments")
+        verdict, record = load_stop()
+        tombstone = {"v": 1, "cleared": True, "cleared_ts": now_ms()}
+        if verdict == "armed":
+            tombstone["previous"] = {
+                key: record[key]
+                for key in ("skill", "level", "activity", "then",
+                            "reached_ts", "reached_level")
+                if key in record}
+        game_dir().mkdir(parents=True, exist_ok=True)
+        game_reflex.atomic_write(stop_path(), json.dumps(tombstone) + "\n")
+        flush_events([{"ts": now_ms(), "kind": "stop-cleared",
+                       "previous": tombstone.get("previous")}])
+        if verdict == "armed":
+            print(f"stop-at cleared: {record['skill']} {record['level']} "
+                  f"(activity {record['activity']})")
+        else:
+            print("stop-at cleared (none was armed)")
+        return
+    if args.skill is None:
+        verdict, record = load_stop()
+        if verdict in ("none", "cleared"):
+            print("(none)")
+            return
+        if verdict == "invalid":
+            die(f"the stop record {stop_path()} is unreadable or malformed — "
+                "activity rules and activity selection fail closed until it "
+                "is re-declared or cleared with `play stop-at --clear`")
+        line = (f"stop-at: {record['skill']} {record['level']} "
+                f"then={stop_then_text(record)} (activity {record['activity']})")
+        if record.get("reached_ts"):
+            line += " REACHED"
+        print(line)
+        level = stop_skill_level(record, game_reflex.read_snapshot() or {})
+        if level is None:
+            print(f"level: unread (the ceiling fails closed for "
+                  f"'{record['activity']}' until {record['skill']} can be read)")
+        else:
+            state = "reached" if level >= record["level"] else "below ceiling"
+            print(f"level: {level} ({state})")
+        return
+    if args.level is None or not args.then:
+        die("stop-at SKILL LEVEL clear|halt|switch NAME [--activity NAME] — "
+            "or bare stop-at to show, or stop-at --clear")
+    skill = args.skill.strip()
+    if not skill or "\n" in skill:
+        die("the skill is one non-empty line")
+    if not 1 <= args.level <= 99:
+        die("the ceiling level is an integer from 1 to 99")
+    then_words = [word.strip() for word in args.then if word.strip()]
+    kind = then_words[0].casefold() if then_words else ""
+    if kind == "switch" and len(then_words) == 2:
+        then = {"kind": "switch", "activity": then_words[1]}
+    elif kind in ("clear", "halt") and len(then_words) == 1:
+        then = {"kind": kind}
+    else:
+        die("what reaching the ceiling does is exactly one of: "
+            "clear | halt | switch NAME")
+    governed = (args.activity.strip() if args.activity else skill.casefold())
+    if not governed or "\n" in governed:
+        die("the governed activity is one non-empty line")
+    if then["kind"] == "switch" and then["activity"] == governed:
+        die(f"switch names '{then['activity']}', the governed activity "
+            "itself — a ceiling cannot switch back into what it stops")
+    # A typo'd skill would fail closed forever without ever reading a level.
+    # When the client publishes a ready skill table, the declared name must
+    # be in it; with no ready reading the door still works — a ceiling is
+    # spoken from anywhere, including logged out.
+    snap = game_reflex.read_snapshot() or {}
+    published = sorted(
+        {str(entry.get("name")).strip() for entry in snap.get("skills") or []
+         if isinstance(entry, dict) and str(entry.get("name") or "").strip()})
+    if published and skills_ready(snapshot_skills(snap)) \
+            and skill.casefold() not in {name.casefold() for name in published}:
+        die(f"'{skill}' names no skill the client publishes — "
+            f"known: {', '.join(published)}")
+    previous_verdict, previous = load_stop()
+    record = {"v": 1, "skill": skill, "level": args.level,
+              "activity": governed, "then": then, "set_ts": now_ms()}
+    game_dir().mkdir(parents=True, exist_ok=True)
+    game_reflex.atomic_write(stop_path(), json.dumps(record) + "\n")
+    flush_events([{"ts": now_ms(), "kind": "stop-declared",
+                   "skill": skill, "ceiling": args.level,
+                   "activity": governed, "then": stop_then_text(record),
+                   "replaced": ({key: previous[key] for key in
+                                 ("skill", "level", "activity")
+                                 if key in previous}
+                                if previous_verdict == "armed" else None)}])
+    print(f"stop-at: {skill} {args.level} then={stop_then_text(record)} "
+          f"(activity {governed})")
+    level = stop_skill_level(record, snap)
+    if level is not None:
+        state = "ALREADY REACHED" if level >= args.level else "below ceiling"
+        print(f"level: {level} ({state})")
+
+
+def cmd_session(args):
+    """Spec rule 21: open, inspect, or close the sitting.
+
+    `open` is the entrypoint's hand and never restarts a clock that is already
+    running — `play` stays the resume door. `end` is HER hand, declaring the
+    wind-down finished; it is also what the grace timer runs when nobody
+    declared anything. `status` is one line either hand can read."""
+    if args.action == "open":
+        # An ENDED record is not an open sitting — opening past one is exactly
+        # how the next sitting starts, and it is what lifts rule 21c-i's
+        # suppression. Only a live sitting refuses to be reopened.
+        with session_state_lock():
+            st = session_state()
+            if st["phase"] in ("open", "over", "expired"):
+                print(f"session already open: {st['elapsed_ms'] // 60000}m elapsed "
+                      f"of {st['limit_ms'] // 60000}m ({st['phase']})")
+                return
+            game_dir().mkdir(parents=True, exist_ok=True)
+            body = {"started": now_ms(),
+                    "limit_ms": int(args.limit_ms or SESSION_LIMIT_MS),
+                    "grace_ms": int(args.grace_ms or SESSION_GRACE_MS),
+                    "ended": None}
+            game_reflex.atomic_write(session_path(), json.dumps(body) + "\n")
+        print(f"session open: {body['limit_ms'] // 60000}m to play, "
+              f"{body['grace_ms'] // 60000}m of grace after that")
+        return
+    if args.action == "end":
+        with session_state_lock():
+            st = session_state()
+            if st["phase"] == "none":
+                print("session: none open")
+                return
+            if st["phase"] == "open":
+                die("session-end refused phase=open: the automatic deadline is still "
+                    f"open for {st['remaining_ms'] // 1000}s; cancel any stale "
+                    "wind-down and continue playing")
+            if st["phase"] == "ended":
+                print("session: already ended")
+                return
+            body = dict(read_session())
+            body["ended"] = now_ms()
+            game_reflex.atomic_write(session_path(), json.dumps(body) + "\n")
+        print(f"session ended after {st['elapsed_ms'] // 60000}m "
+              f"of a {st['limit_ms'] // 60000}m sitting")
+        return
+    if args.action == "cutoff":
+        # The transient hard-stop timer asks atomically. A player message may
+        # have moved the deadline since this timer was armed; in that case the
+        # caller rearms instead of disconnecting her at the obsolete time.
+        with session_state_lock():
+            st = session_state()
+            if st["phase"] in ("none", "ended"):
+                print(f"session-cutoff ignore phase={st['phase']}")
+                return
+            if st["grace_ms_left"] > 0:
+                print(f"session-cutoff wait_ms={st['grace_ms_left']}")
+                return
+            body = dict(read_session())
+            if body and not body.get("ended"):
+                body["ended"] = now_ms()
+                body["ended_reason"] = "deadline"
+                game_reflex.atomic_write(session_path(), json.dumps(body) + "\n")
+            print(f"session-cutoff due phase={st['phase']}")
+        return
+    st = session_state()
+    if st["phase"] == "none":
+        print("session: none open")
+        return
+    print(f"session: {st['phase']} — {st['elapsed_ms'] // 60000}m elapsed of "
+          f"{st['limit_ms'] // 60000}m, play left {st['remaining_ms'] // 60000}m, "
+          f"grace left {st['grace_ms_left'] // 60000}m")
+
+
+def cmd_route(args):
+    """Spec rule 7e: set, inspect, or clear the runner's durable route."""
+    if args.clear:
+        if args.x is not None or args.z is not None:
+            die("route --clear takes no coordinates")
+        if args.allow_portals is not None:
+            die("route --clear does not accept --allow-portals")
+        clear_route()
+        print("route cleared")
+        return
+    if args.x is None and args.z is None:
+        if args.allow_portals is not None:
+            die("route --allow-portals needs destination coordinates")
+        route = load_route()
+        if route is None:
+            print("route: (none)")
+        elif route.get("status") == "invalid":
+            print(f"route: invalid ({route_path()})")
+        else:
+            snap = game_reflex.read_snapshot() or {}
+            px, pz = snap.get("x"), snap.get("z")
+            current = f" current=({px},{pz}) distance={route_distance(px, pz, route)}" \
+                if isinstance(px, int) and isinstance(pz, int) else ""
+            last = f" last_progress=({route['last_x']},{route['last_z']})" \
+                if isinstance(route.get("last_x"), int) \
+                and isinstance(route.get("last_z"), int) else ""
+            detour = f" local_detour_attempts={len(route.get('detour_failed_legs') or [])}" \
+                if route.get("detour_failed_legs") else ""
+            landmark = route.get("landmark") or {}
+            label = f" landmark={json.dumps(landmark.get('name'))}" \
+                if landmark.get("name") else ""
+            planner = f" planner={route.get('planner')}" \
+                if route.get("planner") else ""
+            next_waypoint = route.get("waypoints", [None])[0] \
+                if route.get("waypoints") else None
+            waypoint = f" next=({next_waypoint[0]},{next_waypoint[1]})" \
+                if next_waypoint else ""
+            portal_value = route.get("next_portal") or {}
+            portal = (f" portal={portal_value.get('kind')}:{portal_value.get('id')}"
+                      f"@({portal_value.get('x')},{portal_value.get('z')})"
+                      if portal_value else "")
+            print(f"route: status={route['status']} target=({route['x']},{route['z']}) "
+                  f"arrive={route['arrive']} objective={route['objective'] or '(none)'}"
+                  f"{label}{planner}{waypoint}{portal}{current}{last}{detour}"
+                  f"{(' reason=' + route.get('blocked_reason', '')) if route['status'] == 'blocked' else ''}")
+        return
+    if args.x is None or args.z is None:
+        die("route needs both X and Z")
+    if not 0 <= args.arrive <= 10:
+        die("route --arrive must be from 0 through 10")
+    refuse_observed_blocked_destination(args.x, args.z, args.arrive)
+    snap = game_reflex.read_snapshot() or {}
+    route = {"v": 1, "x": args.x, "z": args.z, "arrive": args.arrive,
+             "objective": read_objective(), "status": "active", "set_ts": now_ms(),
+             "visited": [], "nonclosing_legs": 0}
+    if args.allow_portals is not None:
+        route["portal_authorized_reason"] = validate_plan_line(
+            args.allow_portals, "route portal reason", PLAN_REASON_MAX_CHARS)
+    if isinstance(snap.get("x"), int) and isinstance(snap.get("z"), int):
+        route.update({"origin_x": snap["x"], "origin_z": snap["z"],
+                      "origin_distance_sq": navigation_distance_sq(
+                          snap["x"], snap["z"], args.x, args.z),
+                      "best_distance_sq": navigation_distance_sq(
+                          snap["x"], snap["z"], args.x, args.z),
+                      "visited": [[snap["x"], snap["z"]]]})
+    # A newly chosen destination is an explicit replacement strategy, not a
+    # second movement commitment to race an old recovery.
+    clear_backtrack()
+    clear_follow()
+    save_route(route)
+    print(f"route-set target=({args.x},{args.z}) arrive={args.arrive} "
+          f"objective={route['objective'] or '(none)'}")
+
+
+def cmd_landmark(args):
+    """Find client-observed places by semantic identity, optionally route."""
+    query = " ".join(args.query).strip()
+    snap = game_reflex.read_snapshot() or {}
+    record_navigation_observation(snap)
+    candidates = world_landmark_candidates(query, args.kind)
+    if args.id is not None:
+        candidates = [item for item in candidates if item["id"] == args.id]
+    if not candidates:
+        die(f"no client-observed {args.kind or 'world'} landmark matches {query!r}")
+    if args.route:
+        routeable = [item for item in candidates
+                     if item.get("match") != "directional-cue"]
+        if routeable:
+            candidates = routeable
+        else:
+            die(f"{query!r} matches only a directional sign, not the named place; "
+                "use the sign as a cue and resolve an actual destination landmark")
+    px, pz = snap.get("x"), snap.get("z")
+    if args.nearest:
+        if not isinstance(px, int) or not isinstance(pz, int):
+            die("landmark --nearest needs a snapshot with the current tile")
+        candidates = [min(candidates,
+                          key=lambda item: (max(abs(item["x"] - px), abs(item["z"] - pz)),
+                                            item["kind"], item["id"], item["x"], item["z"]))]
+    for item in candidates[:40]:
+        distance = ""
+        if isinstance(px, int) and isinstance(pz, int):
+            distance = f" distance={max(abs(item['x'] - px), abs(item['z'] - pz))}"
+        command = f" command={item.get('command1')}" if item.get("command1") else ""
+        seen = f" sightings={item.get('sightings', 1)} last_seen={item.get('last_seen')}"
+        match = f" match={item.get('match')}" if item.get("match") else ""
+        print(f"landmark kind={item['kind']} id={item['id']} name={json.dumps(item['name'])} "
+              f"observed=({item['x']},{item['z']}){distance}{command}{seen} "
+              f"description={json.dumps(item['description'])}{match}")
+    if len(candidates) > 40:
+        print(f"landmark: {len(candidates) - 40} more matches; narrow --kind or use --nearest")
+    if not args.route:
+        return
+    if len(candidates) != 1:
+        die(f"landmark --route is ambiguous ({len(candidates)} placements); "
+            "narrow --kind or deliberately select --nearest")
+    if not 0 <= args.arrive <= 10:
+        die("landmark --arrive must be from 0 through 10")
+    item = candidates[0]
+    refuse_observed_blocked_destination(item["x"], item["z"], args.arrive)
+    route = {"v": 1, "x": item["x"], "z": item["z"], "arrive": args.arrive,
+             "objective": read_objective(), "status": "active", "set_ts": now_ms(),
+             "visited": [], "nonclosing_legs": 0,
+             "landmark": {"query": query, "kind": item["kind"], "id": item["id"],
+                          "name": item["name"], "description": item["description"]}}
+    if isinstance(px, int) and isinstance(pz, int):
+        route.update({"origin_x": px, "origin_z": pz,
+                      "origin_distance_sq": navigation_distance_sq(
+                          px, pz, item["x"], item["z"]),
+                      "best_distance_sq": navigation_distance_sq(
+                          px, pz, item["x"], item["z"]),
+                      "visited": [[px, pz]]})
+    clear_backtrack()
+    clear_follow()
+    save_route(route)
+    print(f"landmark-route-set kind={item['kind']} id={item['id']} "
+          f"name={json.dumps(item['name'])} target=({item['x']},{item['z']}) "
+          f"arrive={args.arrive} objective={route['objective'] or '(none)'}")
+
+
+def cmd_follow(args):
+    """Keep reacquiring one visible player and stay within a useful radius."""
+    if args.clear:
+        if args.player:
+            die("follow --clear takes no player name")
+        request = load_follow()
+        snap = game_reflex.read_snapshot() or {}
+        fresh = now_ms() - snap.get("ts", 0) <= WAIT_SNAPSHOT_FRESH_MS
+        walking = fresh and snap.get("logged_in") is True \
+            and snap.get("walking") is True
+        if request is None or request.get("status") == "invalid" or not walking:
+            if request is None or request.get("status") == "invalid":
+                clear_follow()
+            else:
+                replace_follow_if_current(request, None)
+            if request is not None and request.get("status") != "invalid":
+                flush_events([
+                    {"ts": now_ms(), "kind": "follow-cancelled",
+                     "reason": "cleared", "player": request.get("player")},
+                    {"ts": now_ms(), "kind": "follow-stopped",
+                     "player": request.get("player"), "reason": "cleared",
+                     "walking": False,
+                     "x": snap.get("x"), "z": snap.get("z")}])
+            print("follow cleared")
+            return
+        # Spec rule 7g: the body is still moving on this commitment. Mark
+        # the record cancelling FIRST — a live runner mid-pass can then
+        # neither refire nor resurrect it — and prove the stop: the
+        # postcondition is a later snapshot with walking false.
+        previous = request
+        request = dict(request)
+        request.update({"status": "cancelling", "cancel_reason": "cleared",
+                        "cancel_ts": now_ms()})
+        if not replace_follow_if_current(previous, request):
+            die("follow changed while clear was taking ownership; inspect it again")
+        flush_events([{"ts": now_ms(), "kind": "follow-cancelled",
+                       "reason": "cleared", "player": request["player"]}])
+        defaults = config_defaults(load_config())
+        status, stop_x, stop_z = dispatch_stop_walk(defaults, slot_wait_s=2.0)
+        if status == "done":
+            if not replace_follow_if_current(request, None):
+                die("follow changed while its stop was settling; the newer follow remains")
+            flush_events([{"ts": now_ms(), "kind": "follow-stopped",
+                           "player": request["player"], "reason": "cleared",
+                           "walking": False, "x": stop_x, "z": stop_z}])
+            print(f"follow-stopped walking=false x={stop_x} z={stop_z}")
+            return
+        print(f"follow-stopping status={status} — the record stays "
+              "cancelling and the resident runner completes the stop; "
+              "postcondition walking=false")
+        sys.exit(EXIT_NOT_DONE)
+    if not args.player:
+        request = load_follow()
+        if request is None:
+            print("follow: (none)")
+        elif request.get("status") == "invalid":
+            print(f"follow: invalid ({follow_path()})")
+        else:
+            last = ""
+            if isinstance(request.get("last_x"), int):
+                last = f" last_seen=({request['last_x']},{request['last_z']})"
+            reason = f" reason={request.get('blocked_reason')}" \
+                if request.get("status") == "blocked" else ""
+            print(f"follow: status={request['status']} player={json.dumps(request['player'])} "
+                  f"within={request['within']} objective={request['objective'] or '(none)'}"
+                  f"{last}{reason}")
+        return
+    player = args.player.strip()
+    if not player or "\n" in player or "\r" in player:
+        die("follow needs one non-empty player name")
+    if not 1 <= args.within <= 10:
+        die("follow --within must be from 1 through 10")
+    snap = game_reflex.read_snapshot() or {}
+    target = nearest_state_entity(
+        snap, {"collection": "players", "field": "name", "value": player})
+    if target is None:
+        die(f"follow cannot start: no visible player named {player!r}")
+    canonical = str(target.get("name") or player)
+    request = {"v": 1, "player": canonical, "within": args.within,
+               "objective": read_objective(),
+               "plan": read_plan(), "activity": read_activity(),
+               "status": "active",
+               "set_ts": now_ms(), "last_seen_ts": now_ms(),
+               "last_sidx": target.get("sidx"),
+               "last_x": target["x"], "last_z": target["z"],
+               "visited": [], "nonclosing_legs": 0}
+    if isinstance(snap.get("x"), int) and isinstance(snap.get("z"), int):
+        request.update({
+            "visited": [[snap["x"], snap["z"]]],
+            "best_distance_sq": navigation_distance_sq(
+                snap["x"], snap["z"], target["x"], target["z"])})
+    clear_route()
+    clear_backtrack()
+    save_follow(request)
+    print(f"follow-set player={json.dumps(canonical)} within={args.within} "
+          f"last_seen=({target['x']},{target['z']}) "
+          f"objective={request['objective'] or '(none)'}")
+
+
+def cmd_backtrack(args):
+    """Retrace observed successful movement instead of guessing a reverse route."""
+    if args.action == "clear":
+        clear_backtrack()
+        print("backtrack cleared")
+        return
+    if args.action == "status":
+        request = load_backtrack()
+        if request is None:
+            print("backtrack: (none)")
+        elif request.get("status") == "invalid":
+            print(f"backtrack: invalid ({backtrack_path()})")
+        else:
+            remaining = len(request["points"]) - request["index"]
+            next_x, next_z = request["points"][request["index"]] \
+                if remaining else (None, None)
+            print(f"backtrack: status={request['status']} remaining={remaining} "
+                  f"next=({next_x},{next_z}) objective={request['objective'] or '(none)'}")
+        return
+    if args.action == "history":
+        points = load_movement_trail()["points"]
+        if not points:
+            print("movement trail: (none)")
+            return
+        print(f"movement trail: {len(points)} observed tile(s); newest last")
+        for point in points[-20:]:
+            stamp = time.strftime("%Y-%m-%d %H:%M:%S",
+                                  time.localtime(point["ts"] / 1000.0))
+            boundary = " portal-boundary" if point.get("break") else ""
+            print(f"{stamp} tile=({point['x']},{point['z']}){boundary}")
+        return
+
+    existing = load_backtrack()
+    if existing is not None and existing.get("status") in ("active", "blocked",
+                                                           "diverged"):
+        remaining = len(existing["points"]) - existing["index"]
+        die(f"backtrack is already {existing['status']} with {remaining} point(s) "
+            "remaining; use status or clear before replacing it")
+
+    snap = game_reflex.read_snapshot() or {}
+    if snap.get("logged_in") is not True:
+        die("backtrack needs a logged-in movement snapshot")
+    record_movement_trail(snap)
+    trail = load_movement_trail()["points"]
+    if not trail:
+        die("no observed movement trail is available")
+    segment_start = 0
+    for index, point in enumerate(trail):
+        if point.get("break") is True:
+            segment_start = index
+    segment, loop_points_removed = loop_erase_movement_segment(
+        trail[segment_start:])
+    current = [snap.get("x"), snap.get("z")]
+    while segment and [segment[-1]["x"], segment[-1]["z"]] == current:
+        segment = segment[:-1]
+    targets = []
+    for point in reversed(segment):
+        target = [point["x"], point["z"]]
+        if not targets or targets[-1] != target:
+            targets.append(target)
+    if not targets:
+        die("the current portal-bounded trail has no earlier tile to retrace")
+    if args.action != "all":
+        try:
+            limit = int(args.action)
+        except ValueError:
+            die("backtrack takes a positive point count, all, history, status, or clear")
+        if limit <= 0:
+            die("backtrack point count must be positive")
+        targets = targets[:limit]
+    elif not args.reason or not args.reason.strip():
+        die("backtrack all replays the whole connected history; provide --reason TEXT, "
+            "or use the bounded default")
+    request = {"v": 1, "objective": read_objective(), "status": "active",
+               "index": 0, "points": targets, "set_ts": now_ms(),
+               "reason": args.reason.strip() if args.reason else None}
+    clear_route()
+    clear_follow()
+    save_backtrack(request)
+    if loop_points_removed:
+        flush_events([{"ts": now_ms(), "kind": "backtrack-loop-erased",
+                       "removed_points": loop_points_removed,
+                       "remaining_points": len(segment)}])
+    print(f"backtrack-set points={len(targets)} next=({targets[0][0]},{targets[0][1]}) "
+          f"objective={request['objective'] or '(none)'}"
+          f"{(' loop_erased=' + str(loop_points_removed)) if loop_points_removed else ''}")
+
+
+def cmd_log(args):
+    path = state_dir() / "player-decisions.jsonl"
+    try:
+        lines = path.read_text().splitlines()
+    except OSError:
+        print(f"no decisions yet at {path}")
+        return
+    for line in lines[-args.n:]:
+        print(line)
+
+
+def cmd_note(args):
+    """Spec rule 16: the playing hand's one-line door for lessons — stamped
+    with the live context and queued for the unified rule/memory author."""
+    snap = game_reflex.read_snapshot() or {}
+    append_outcome({"ts": now_ms(), "kind": "lesson", "text": " ".join(args.text),
+                    "objective": read_objective() or None,
+                    "snap": snap_brief(snap)})
+    print("noted for the unified rule/memory author")
+
+
+def validate_reply_text(text: str) -> None:
+    if not text.strip() or "\n" in text or "\r" in text:
+        die("reply text must be one non-empty line")
+    if len(text) > 80:
+        die("reply text exceeds the client's 80-character limit")
+
+
+def canonical_chat_text(text: str) -> str:
+    """Compare the words the Classic client actually carries.
+
+    RSC's chat codec can discard punctuation and normalize capitalization
+    between dispatch and the outgoing snapshot echo (for example `PM` becomes
+    `Pm`). Those are not delivery failures. Keep word/order differences
+    meaningful while making punctuation, case, and Unicode punctuation forms
+    irrelevant to confirmation.
+    """
+    normalized = unicodedata.normalize("NFKC", str(text)).casefold()
+    return " ".join("".join(ch if ch.isalnum() else " "
+                            for ch in normalized).split())
+
+
+def verify_chat_delivery(action: dict, after_id: int, timeout_s: float = 3.0) -> str:
+    """Confirm the outgoing chat echo; a bridge receipt is dispatch only."""
+    expected_text = canonical_chat_text(action["text"])
+    deadline = time.time() + timeout_s
+    while time.time() < deadline:
+        snap = game_reflex.read_snapshot() or {}
+        for message in snap.get("messages") or []:
+            if not isinstance(message, dict) or message.get("id", -1) <= after_id:
+                continue
+            if message.get("channel") == "game" \
+                    and "unable to send message" in message.get("text", "").casefold():
+                return "refused-server"
+            channel = "private" if action["type"] == "chat-private" else "local"
+            if message.get("channel") == channel \
+                    and message.get("incoming") is False \
+                    and canonical_chat_text(message.get("text", "")) == expected_text:
+                if channel != "private" \
+                        or message.get("sender", "").casefold() == action["target"].casefold():
+                    return "done"
+        time.sleep(0.05)
+    return "chat-unconfirmed"
+
+
+def cmd_reply(args):
+    """Answer one pending player message through the shared action slot."""
+    text = " ".join(args.text)
+    validate_reply_text(text)
+    cfg = load_config()
+    defaults = config_defaults(cfg)
+    snap = game_reflex.read_snapshot()
+    if snap is None:
+        report("reply-not-ready", message_id=args.message_id, reason="no-snapshot")
+        sys.exit(EXIT_NOT_READY)
+    if not snap.get("logged_in"):
+        report("reply-needs-login", message_id=args.message_id,
+               next="betty-openrsc-login", pending="preserved")
+        sys.exit(EXIT_NOT_READY)
+    if now_ms() - snap.get("ts", 0) > defaults["stale_ms"]:
+        die("cannot reply from a stale game snapshot")
+    if (state_dir() / "hold").exists():
+        die("cannot reply while play is held")
+    if (state_dir() / "action.json").exists():
+        die("cannot reply while the shared action slot is busy")
+
+    # The idle warning outranks conversation even when that conversation was
+    # already pending. Refresh it against the current tile here as well as in
+    # the runner, so a direct reply can neither race past a new warning nor be
+    # blocked by one whose required move just completed.
+    with player_state_lock():
+        est = load_player_state()
+        system_events = []
+        capture_urgent_system_messages(snap, est, system_events)
+        pending_system = oldest_pending_system_message(est)
+        save_player_state(est)
+        flush_events(system_events)
+    if pending_system is not None:
+        report("reply-needs-movement", message_id=args.message_id,
+               system_message_id=pending_system["id"], next="walk-one-tile",
+               pending="preserved")
+        sys.exit(EXIT_SYSTEM_MESSAGE)
+
+    baseline_message_id = max((m.get("id", -1) for m in snap.get("messages") or []
+                               if isinstance(m, dict)), default=-1)
+    with player_state_lock():
+        # The runner may have filled the slot after the quick check above but
+        # before this reply acquired the shared state lock.
+        if (state_dir() / "action.json").exists():
+            die("cannot reply while the shared action slot is busy")
+        est = load_player_state()
+        pending = next((m for m in est["pending_messages"] if m["id"] == args.message_id), None)
+        if pending is None:
+            die(f"no pending player message {args.message_id}")
+        if getattr(args, 'decision', None):
+            try:
+                game_decisions.save(json.loads(Path(args.decision).read_text()),
+                                    revise=getattr(args, 'revise', None))
+            except (OSError, ValueError) as exc:
+                die(str(exc))
+        nearby_names = {
+            str(player.get("name", "")).casefold()
+            for player in snap.get("players") or [] if isinstance(player, dict)
+        }
+        action = {"type": "chat-local", "text": text}
+        if pending["channel"] == "private" \
+                or pending["sender"].casefold() not in nearby_names:
+            action = {"type": "chat-private", "target": pending["sender"], "text": text}
+        est["action_seq"] += 1
+        action_id = est["action_seq"]
+        sent_at = now_ms()
+        est["inflight"] = {"id": action_id, "ts": sent_at}
+        save_player_state(est)
+        emit_player_action("action.json", action, action_id, sent_at)
+
+    status = "no-receipt"
+    deadline = time.time() + defaults["inflight_timeout_ms"] / 1000.0
+    receipt_path = state_dir() / "receipt.json"
+    while time.time() < deadline:
+        try:
+            receipt = json.loads(receipt_path.read_text())
+        except (OSError, json.JSONDecodeError):
+            receipt = None
+        if receipt and receipt.get("id") == action_id:
+            status = receipt.get("status", "no-status")
+            try:
+                receipt_path.unlink()
+            except OSError:
+                pass
+            break
+        time.sleep(0.05)
+
+    if status == "done":
+        status = verify_chat_delivery(action, baseline_message_id)
+
+    undeliverable = status == "refused-server" and action["type"] == "chat-private"
+    replied_batch = []
+    with player_state_lock():
+        est = load_player_state()
+        est["inflight"] = None
+        if status == "done" or undeliverable:
+            replied_batch = [m for m in est["pending_messages"]
+                    if m["channel"] == pending["channel"]
+                    and m["sender"].casefold() == pending["sender"].casefold()
+                    and m["id"] <= pending["id"]]
+            est["pending_messages"] = [m for m in est["pending_messages"]
+                    if not (m["channel"] == pending["channel"]
+                            and m["sender"].casefold() == pending["sender"].casefold()
+                            and m["id"] <= pending["id"])]
+            if not est["pending_messages"]:
+                est["message_settle_until"] = 0
+        save_player_state(est)
+        flush_events([{"ts": now_ms(), "kind": "player-message-reply",
+                       "message_id": pending["id"], "action_id": action_id,
+                       "channel": pending["channel"], "sender": pending["sender"],
+                       "reply_channel": "private" if action["type"] == "chat-private" else "local",
+                       "status": status}])
+    if status == "done" or undeliverable:
+        append_outcome({
+            "ts": now_ms(), "kind": "conversation-evidence",
+            "message_id": pending["id"], "channel": pending["channel"],
+            "sender": pending["sender"],
+            "messages": [{"id": item["id"], "text": item["text"]}
+                         for item in replied_batch],
+            "reply": text, "delivery_status": status,
+            "claims_untrusted": True,
+            "objective": read_objective() or None,
+            "activity": read_activity() or None,
+            "snap": snap_brief(game_reflex.read_snapshot() or snap),
+        })
+    if undeliverable:
+        flush_events([{"ts": now_ms(), "kind": "player-message-undeliverable",
+                       "message_id": pending["id"], "sender": pending["sender"],
+                       "reply": text, "reason": status,
+                       "next": "resume-play-and-answer-when-the-player-returns"}])
+        report("reply-undeliverable", message_id=pending["id"], action_id=action_id,
+               sender=pending["sender"], reason=status, pending="cleared",
+               next="resume-play")
+    else:
+        report("replied", message_id=pending["id"], action_id=action_id,
+               channel=pending["channel"], sender=pending["sender"],
+               reply_channel="private" if action["type"] == "chat-private" else "local",
+               status=status)
+    if status != "done" and not undeliverable:
+        sys.exit(EXIT_NOT_DONE)
+
+
+def cmd_test(args):
+    if args.action in ("run", None):
+        cfg = load_config()
+        failures, count = run_suite(cfg)
+        for line in failures:
+            print(f"FAIL {line}")
+        print(f"suite: {count} case(s), {len(failures)} failure(s)")
+        sys.exit(1 if failures else 0)
+    if args.action == "list":
+        tests = load_tests()
+        if not tests["cases"]:
+            print("no cases yet")
+        for case in tests["cases"]:
+            line = (f"{case['name']}: objective={case.get('objective') or '(none)'} "
+                    f"activity={case.get('activity') or '(none)'} "
+                    f"expect={case.get('expect') or 'none'}")
+            if case.get("candidate"):
+                line += " candidate=enabled-preview-only"
+            if case.get("expect_action"):
+                line += " action=" + json.dumps(case["expect_action"],
+                                                separators=(",", ":"))
+            print(line)
+        return
+    if args.action == "add":
+        if not args.name or not args.snapshot or args.expect is None:
+            die("test add <name> --expect <rule|none> --snapshot <file|-> "
+                "[--objective OBJ] [--expect-action JSON]")
+        raw = sys.stdin.read() if args.snapshot == "-" \
+            else Path(args.snapshot).read_text()
+        try:
+            snapshot = json.loads(raw)
+        except json.JSONDecodeError as e:
+            die(f"snapshot is not valid JSON: {e}")
+        assertion = None
+        if getattr(args, "expect_action", None):
+            try:
+                assertion = json.loads(args.expect_action)
+            except json.JSONDecodeError as e:
+                die(f"--expect-action is not valid JSON: {e}")
+            if not isinstance(assertion, dict):
+                die("--expect-action must be a JSON object of parameter "
+                    "assertions (a null value asserts the key is absent)")
+            if args.expect == "none":
+                die("--expect-action needs a rule-name --expect — "
+                    "no winner, no action to inspect")
+        tests = load_tests()
+        if any(c["name"] == args.name for c in tests["cases"]):
+            die(f"a case named '{args.name}' already exists")
+        case = {"name": args.name, "objective": args.objective or "",
+                "activity": args.activity or "",
+                "expect": None if args.expect == "none" else args.expect,
+                "snapshot": snapshot}
+        if getattr(args, "candidate", False):
+            if not case["expect"]:
+                die("--candidate requires a named expected rule")
+            case["candidate"] = True
+        if assertion is not None:
+            case["expect_action"] = assertion
+        # A case must be true in its actual or explicit candidate table — the suite stays green
+        # so the gate only trips when a MUTATION breaks something.
+        cfg = load_config()
+        got, action = predict(replay_config(cfg, case), snapshot, case["objective"], case["activity"])
+        want = case["expect"]
+        if got != want:
+            die(f"case would fail right now: expected {want or 'none'}, "
+                f"the live table gives {got or 'none'} — learn/fix the rule first")
+        if got is not None:
+            problems = action_assertion_failures(case, action)
+            if problems:
+                die("case would fail right now: " + "; ".join(problems)
+                    + " — the assertion must describe the action the live "
+                      "table actually compiles")
+        tests["cases"].append(case)
+        save_tests(tests)
+        print(f"case '{args.name}' added ({len(tests['cases'])} total)")
+        return
+    if args.action == "remove":
+        if not args.name:
+            die("test remove <name>")
+        tests = load_tests()
+        kept = [c for c in tests["cases"] if c["name"] != args.name]
+        if len(kept) == len(tests["cases"]):
+            die(f"no case named '{args.name}'")
+        tests["cases"] = kept
+        save_tests(tests)
+        print(f"case '{args.name}' removed")
+        return
+    die(f"unknown test action '{args.action}' — run, list, add, remove")
+
+
+def cmd_run(args):
+    """Spec rule 15: the resident runner. Rules fire within a poll interval
+    of their trigger becoming true; no model anywhere in the loop."""
+    global QUIET_REPEATS
+    QUIET_REPEATS = True
+    cfg = load_config()
+    wait_ms = config_defaults(cfg)["inflight_timeout_ms"]
+    poll_s = (args.poll_ms or 400) / 1000.0
+    state_dir().mkdir(parents=True, exist_ok=True)
+    try:
+        table_mtime = rules_path().stat().st_mtime
+    except OSError:
+        table_mtime = 0
+    try:
+        source_mtime = sum(Path(path).stat().st_mtime for path in (
+            __file__, game_reflex.__file__, game_loadout.__file__, game_decisions.__file__))
+    except OSError:
+        source_mtime = 0
+    last_gap_signature = None
+    gap_candidate_signature = None
+    gap_candidate_since = 0
+    last_verdict = "starting"
+    # Spec rule 15: a refused reload is not merely logged. The refusal rides
+    # every heartbeat until a table loads, so the ordinary verdict says the
+    # enforced table is not the one on disk.
+    table_error = ""
+    write_heartbeat("starting", plan=read_plan(), activity=read_activity(),
+                    enforced_rules=enforced_rule_names(cfg))
+    while True:
+        try:
+            # Reload the table when its mtime moves; an invalid table is
+            # refused loudly and the last valid one kept (spec rule 15).
+            try:
+                mt = rules_path().stat().st_mtime
+            except OSError:
+                mt = table_mtime
+            if mt != table_mtime:
+                table_mtime = mt
+                try:
+                    fresh = json.loads(rules_path().read_text())
+                    validate_config(fresh)
+                    fresh.setdefault("unfinished", [])
+                    cfg = fresh
+                    wait_ms = config_defaults(cfg)["inflight_timeout_ms"]
+                    table_error = ""
+                    flush_events([{"ts": now_ms(), "kind": "table-reloaded"}])
+                except (ValueError, json.JSONDecodeError) as e:
+                    table_error = str(e)[:300]
+                    flush_events([{"ts": now_ms(), "kind": "table-invalid",
+                                   "error": table_error}])
+
+            # Spec rule 15: a runner outliving a deploy enforces a table
+            # nobody can see — when the deployed source changes, re-exec in
+            # place so the same supervised process continues on current code.
+            # The shared evaluator ships in game_reflex, so its file counts
+            # as this runner's source too.
+            try:
+                smt = sum(Path(path).stat().st_mtime for path in (
+                    __file__, game_reflex.__file__, game_loadout.__file__, game_decisions.__file__))
+            except OSError:
+                smt = source_mtime
+            if smt != source_mtime:
+                flush_events([{"ts": now_ms(), "kind": "runner-source-changed",
+                               "note": "re-exec onto current code"}])
+                os.execv(sys.executable, [sys.executable] + sys.argv)
+
+            verdict, _code = step_once(cfg, read_objective(), read_activity(), wait_ms)
+
+            if verdict in ("no-rule-matched", "same-tick") \
+                    and (verdict == "no-rule-matched" or gap_candidate_signature is not None):
+                snap = game_reflex.read_snapshot() or {}
+                objective = read_objective()
+                activity = read_activity()
+                signature = gap_signature(snap, objective, activity)
+                now = now_ms()
+                if signature != gap_candidate_signature:
+                    gap_candidate_signature = signature
+                    gap_candidate_since = now
+                elif signature != last_gap_signature \
+                        and now - gap_candidate_since >= GAP_STABLE_MS:
+                    append_outcome({"ts": now_ms(), "kind": "gap",
+                                    "objective": objective or None,
+                                    "activity": activity or None,
+                                    "activity_performance": activity_metrics(
+                                        snap, activity) or None,
+                                    "snap": snap_brief(snap)})
+                    last_gap_signature = signature
+            elif verdict != "same-tick":
+                gap_candidate_signature = None
+                gap_candidate_since = 0
+
+            # same-tick is no news between game ticks: the heartbeat keeps
+            # carrying the last substantive verdict so `step`'s deferral
+            # still hands the model its exit-4 licence when one is due.
+            if verdict != "same-tick":
+                last_verdict = verdict
+            latest = game_reflex.read_snapshot() or {}
+            detail = latest_system_feedback(latest) or ""
+            live_pause = load_sidestep_pause(read_objective())
+            if live_pause is not None:
+                pause_detail = (f"sidestep-pause {live_pause.get('status')} "
+                                f"npc={live_pause.get('npc')}; thieving-held; "
+                                "clear with: play sidestep-pause --clear")
+                detail = f"{pause_detail}; {detail}" if detail else pause_detail
+            live_stop_verdict, live_stop = load_stop()
+            if live_stop_verdict == "invalid":
+                stop_detail = ("stop-at record invalid; activity rules fail "
+                               "closed; re-declare or clear with: "
+                               "play stop-at --clear")
+                detail = f"{stop_detail}; {detail}" if detail else stop_detail
+            elif live_stop_verdict == "armed":
+                stop_detail = (f"stop-at {live_stop['skill']} "
+                               f"{live_stop['level']} "
+                               f"then={stop_then_text(live_stop)}"
+                               + (" REACHED" if live_stop.get("reached_ts")
+                                  else ""))
+                detail = f"{stop_detail}; {detail}" if detail else stop_detail
+            active_route = load_route()
+            if active_route is not None and active_route.get("status") != "invalid":
+                route_detail = (f"route {active_route['status']} to "
+                                f"({active_route['x']},{active_route['z']})")
+                detail = f"{route_detail}; {detail}" if detail else route_detail
+            active_backtrack = load_backtrack()
+            if active_backtrack is not None \
+                    and active_backtrack.get("status") != "invalid":
+                remaining = len(active_backtrack["points"]) - active_backtrack["index"]
+                recovery_detail = (f"backtrack {active_backtrack['status']} "
+                                   f"with {remaining} point(s) remaining")
+                detail = f"{recovery_detail}; {detail}" if detail else recovery_detail
+            live_activity = read_activity()
+            live_metrics = activity_metrics(latest, live_activity)
+            live_xp = activity_xp_metrics_text(live_metrics)
+            live_compare = activity_comparison_text(live_metrics)
+            live_friend_updates = pending_friend_status(load_player_state())
+            live_goal = load_goal()
+            write_heartbeat(last_verdict, detail,
+                            [i.get("id") for i in latest.get("ground_items") or []],
+                            read_plan(), live_activity, live_xp, live_compare,
+                            live_friend_updates,
+                            (live_goal.get("text")
+                             if live_goal is not None
+                             and live_goal.get("status") != "invalid" else ""),
+                            table_error, enforced_rule_names(cfg))
+        except SystemExit:
+            raise
+        except Exception as e:  # one bad pass must not kill the unit
+            try:
+                flush_events([{"ts": now_ms(), "kind": "runner-error",
+                               "error": repr(e)[:300]}])
+            except Exception:
+                pass
+            time.sleep(1.0)
+        if args.once:
+            break
+        time.sleep(0.05 if last_verdict == "fired" else poll_s)
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        prog="game_player.py",
+        description="learned rules are the primary play path (specs/game-player.md)")
+    sub = parser.add_subparsers(dest="cmd")
+
+    sub.add_parser("init", help="write an empty learned table if none exists") \
+        .set_defaults(fn=cmd_init)
+    p = sub.add_parser("rules", help="the learned table or durable reflex history")
+    p.add_argument("--history", action="store_true",
+                   help="show reflex revisions and the XP sample before each change")
+    p.add_argument("--rule", help="with --history, restrict changes to one rule")
+    p.set_defaults(fn=cmd_rules)
+
+    p = sub.add_parser("learn", help="persist a verified play as an executable rule")
+    p.add_argument("name")
+    p.add_argument("--priority", type=int, required=True)
+    p.add_argument("--cooldown-ms", type=int, default=0)
+    p.add_argument("--hold-ticks", type=int, default=1)
+    p.add_argument("--once-per-objective", action="store_true")
+    p.add_argument("--disabled", action="store_true")
+    p.add_argument("--note")
+    p.add_argument("--trigger", action="append", metavar="COND=VALUE")
+    p.add_argument("--action", required=True)
+    p.add_argument("--param", action="append", metavar="KEY=VALUE")
+    p.set_defaults(fn=cmd_learn)
+
+    p = sub.add_parser("unfinished",
+                       help="record a play whose trigger/action cannot be grounded yet")
+    p.add_argument("name")
+    p.add_argument("note", nargs="+")
+    p.set_defaults(fn=cmd_unfinished)
+
+    p = sub.add_parser("enable", help="arm a rule")
+    p.add_argument("rule")
+    p.set_defaults(fn=lambda a: cmd_enable(a, True))
+    p = sub.add_parser("disable", help="disarm a rule")
+    p.add_argument("rule")
+    p.set_defaults(fn=lambda a: cmd_enable(a, False))
+
+    p = sub.add_parser("set", help="tune one rule key")
+    p.add_argument("rule")
+    p.add_argument("key")
+    p.add_argument("value")
+    p.set_defaults(fn=cmd_set)
+
+    p = sub.add_parser(
+        "retarget-npc",
+        help="atomically reuse complete reflexes for another NPC type")
+    p.add_argument("source", type=int, help="NPC type id already targeted")
+    p.add_argument("target", type=int, help="interchangeable NPC type id to add")
+    p.add_argument("rules", nargs="+", metavar="RULE",
+                   help="one or more reflexes to retarget in the same gated change")
+    p.add_argument("--replace", action="store_true",
+                   help="replace SOURCE instead of preserving it in the target set")
+    p.set_defaults(fn=cmd_retarget_npc)
+
+    p = sub.add_parser("remove", help="remove a rule or unfinished entry")
+    p.add_argument("rule")
+    p.set_defaults(fn=cmd_remove)
+
+    p = sub.add_parser("objective", help="show, set or clear the durable objective")
+    p.add_argument("name", nargs="?")
+    p.add_argument("--clear", action="store_true")
+    p.add_argument("--measure", metavar="TEXT",
+                   help="one line naming where this objective's ground truth "
+                        "lives and how to read it (spec rule 11c)")
+    p.set_defaults(fn=cmd_objective)
+
+    p = sub.add_parser("progress",
+                       help="record or show what the objective's measure "
+                            "actually showed (spec rule 11c)")
+    p.add_argument("text", nargs="*")
+    p.set_defaults(fn=cmd_progress)
+
+    p = sub.add_parser("milestone",
+                       help="the objective's sub-goal ledger: closed on "
+                            "evidence, reopened on live data (spec rule 11c)")
+    p.add_argument("action", choices=["add", "done", "reopen", "list"])
+    p.add_argument("name", nargs="?")
+    p.add_argument("--note", metavar="TEXT")
+    p.add_argument("--evidence", metavar="TEXT")
+    p.add_argument("--reason", metavar="TEXT")
+    p.set_defaults(fn=cmd_milestone)
+
+    p = sub.add_parser("reflect",
+                       help="record the periodic self-check: is this still "
+                            "accomplishing the objective? (spec rule 11c)")
+    p.add_argument("text", nargs="+")
+    p.set_defaults(fn=cmd_reflect)
+
+    p = sub.add_parser("quests", help="show or search the authoritative quest journal")
+    p.add_argument("query", nargs="*")
+    p.set_defaults(fn=cmd_quests)
+
+    p = sub.add_parser("plan", help="show or deliberately revise the objective's method")
+    p.add_argument("text", nargs="?")
+    plan_change = p.add_mutually_exclusive_group()
+    plan_change.add_argument("--revise", metavar="REASON")
+    plan_change.add_argument("--clear", metavar="REASON")
+    p.set_defaults(fn=cmd_plan)
+
+    p = sub.add_parser("activity", help="show, select or clear the current activity")
+    p.add_argument("name", nargs="?")
+    p.add_argument("--clear", action="store_true")
+    p.add_argument("--restart", action="store_true",
+                   help="restart this activity's elapsed time and XP baseline")
+    p.add_argument("--history", action="store_true",
+                   help="show comparable XP/hour iterations for NAME or the current activity")
+    p.add_argument("--list", action="store_true", help="inspect existing activities without selecting")
+    p.add_argument("--consider", metavar="WORK",
+                   help="recall lessons and inspect existing modes BEFORE choosing activity/method/inventory")
+    p.add_argument("--new", metavar="REASON", help="deliberately create a mode only when none fits")
+    p.set_defaults(fn=cmd_activity)
+
+    p = sub.add_parser("loadout", help="assess activity inventory; enable the gate or set a JSON declaration")
+    p.add_argument("action", nargs="?", default="status", choices=["status", "enable", "set"])
+    p.add_argument("file", nargs="?")
+    p.set_defaults(fn=game_loadout.command)
+
+    p = sub.add_parser("decision", help="record, review, or explicitly revise a durable gameplay choice")
+    p.add_argument("action", nargs="?", default="status", choices=["status", "set", "close", "check"])
+    p.add_argument("value", nargs="?")
+    p.add_argument("--revise", metavar="REASON")
+    p.add_argument("--reason")
+    p.add_argument("--item", type=int)
+    p.set_defaults(fn=game_decisions.command)
+
+    p = sub.add_parser("stop-at",
+                       help="declare, show, or clear the mechanical skill "
+                            "ceiling: SKILL LEVEL clear|halt|switch NAME "
+                            "(spec rule 11d)")
+    p.add_argument("skill", nargs="?")
+    p.add_argument("level", nargs="?", type=int)
+    p.add_argument("then", nargs="*",
+                   help="what reaching the ceiling does: clear | halt | switch NAME")
+    p.add_argument("--activity",
+                   help="the activity the ceiling governs "
+                        "(default: the skill name, casefolded)")
+    p.add_argument("--clear", action="store_true",
+                   help="retire the stop to an explicit cleared record")
+    p.set_defaults(fn=cmd_stop_at)
+
+    p = sub.add_parser("session", help="the sitting's clock: open, status, end")
+    p.add_argument("action", nargs="?", default="status",
+                   choices=["open", "status", "end", "cutoff"])
+    p.add_argument("--limit-ms", type=int, dest="limit_ms")
+    p.add_argument("--grace-ms", type=int, dest="grace_ms")
+    p.set_defaults(fn=cmd_session)
+
+    p = sub.add_parser("sidestep-pause",
+                       help="the one-tile combat break's anomaly pause: "
+                            "show it, or --clear to re-arm thieving")
+    p.add_argument("--clear", action="store_true")
+    p.set_defaults(fn=cmd_sidestep_pause)
+
+    p = sub.add_parser("route", help="set, inspect, or clear the durable ACTIONS route")
+    p.add_argument("x", nargs="?", type=int)
+    p.add_argument("z", nargs="?", type=int)
+    p.add_argument("--arrive", type=int, default=1)
+    p.add_argument("--clear", action="store_true")
+    p.add_argument("--allow-portals", metavar="REASON",
+                   help="allow an exact verified raw route through multiple doors")
+    p.set_defaults(fn=cmd_route)
+
+    p = sub.add_parser("landmark",
+                       help="find authoritative world placements by semantic identity")
+    p.add_argument("query", nargs="+")
+    p.add_argument("--kind", choices=["npc", "object", "bound"])
+    p.add_argument("--id", type=int,
+                   help="narrow the authoritative matches to one definition id")
+    p.add_argument("--nearest", action="store_true",
+                   help="deliberately select the matching spawn nearest the current tile")
+    p.add_argument("--route", action="store_true",
+                   help="set a durable route when the result is unambiguous")
+    p.add_argument("--arrive", type=int, default=2)
+    p.set_defaults(fn=cmd_landmark)
+
+    p = sub.add_parser("follow",
+                       help="durably reacquire one visible player and stay nearby")
+    p.add_argument("player", nargs="?")
+    p.add_argument("--within", type=int, default=2)
+    p.add_argument("--clear", action="store_true")
+    p.set_defaults(fn=cmd_follow)
+
+    p = sub.add_parser("backtrack",
+                       help="retrace observed successful tiles to the current portal boundary")
+    p.add_argument("action", nargs="?", default=str(BACKTRACK_DEFAULT_POINTS),
+                   help="point count, all, history, status, or clear")
+    p.add_argument("--reason",
+                   help="required evidence for the exceptional whole-history replay")
+    p.set_defaults(fn=cmd_backtrack)
+
+    p = sub.add_parser("retrace",
+                       help="one verified movement request toward one chosen "
+                            "previously occupied tile (spec rule 7f)")
+    p.add_argument("x", type=int)
+    p.add_argument("z", type=int)
+    p.add_argument("--arrive", type=int, default=0, choices=range(0, 11),
+                   metavar="N", help="Chebyshev arrival tolerance (default 0)")
+    p.set_defaults(fn=cmd_retrace)
+
+    p = sub.add_parser("goal",
+                       help="the current goal's machine-checkable invariants "
+                            "(spec rule 7h)")
+    p.add_argument("action", nargs="?", default="show",
+                   choices=["show", "set", "check", "clear"])
+    p.add_argument("text", nargs="?")
+    p.add_argument("--require", action="append", metavar="KIND=VALUE")
+    p.add_argument("--reason", help="required by goal clear")
+    p.add_argument("--snapshot",
+                   help="check against a captured snapshot JSON file, or - for stdin")
+    p.set_defaults(fn=cmd_goal)
+
+    p = sub.add_parser("step",
+                       help="one rules-first evaluation; exit 4 = model may reason")
+    p.add_argument("--max", type=int, default=1,
+                   help="keep stepping while rules fire cleanly, at most N actions")
+    p.add_argument("--wait-ms", type=int, default=None,
+                   help="receipt wait (default: defaults.inflight_timeout_ms)")
+    p.add_argument("--local", action="store_true",
+                   help="evaluate here even if the resident runner is live")
+    p.set_defaults(fn=None)  # handled below: needs config-aware default
+
+    p = sub.add_parser(
+        "direct-owner",
+        help="test whether the live resident routine owns a semantic action")
+    p.add_argument("action", choices=ACTIONS)
+    p.add_argument("--param", action="append", metavar="KEY=VALUE")
+    p.set_defaults(fn=cmd_direct_owner)
+
+    p = sub.add_parser("log", help="tail the player decision log")
+    p.add_argument("-n", type=int, default=20)
+    p.set_defaults(fn=cmd_log)
+
+    p = sub.add_parser("run", help="the resident runner: rules fire on their "
+                                   "triggers, continuously (spec rule 15)")
+    p.add_argument("--once", action="store_true")
+    p.add_argument("--poll-ms", type=int)
+    p.set_defaults(fn=cmd_run)
+
+    p = sub.add_parser("note", help="queue a lesson for the unified rule/memory "
+                                    "author (spec rules 16, 19)")
+    p.add_argument("text", nargs="+")
+    p.set_defaults(fn=cmd_note)
+
+    p = sub.add_parser("reply", help="answer a pending player message through "
+                                      "the shared action slot (spec rule 7b)")
+    p.add_argument("message_id", type=int)
+    p.add_argument("text", nargs="+")
+    p.add_argument("--decision", metavar="FILE", help="save this promised course before sending the reply")
+    p.add_argument("--revise", metavar="REASON", help="explain a changed decision supplied with --decision")
+    p.set_defaults(fn=cmd_reply)
+
+    p = sub.add_parser("wait-until", aliases=["wait_until"],
+                       help="wait on live ACTIONS state without sleeps or screenshots")
+    p.add_argument("condition")
+    p.add_argument("--timeout", type=float, default=WAIT_DEFAULT_S,
+                   help=f"hard ceiling in seconds (default {WAIT_DEFAULT_S:g}, max {WAIT_MAX_S:g})")
+    p.set_defaults(fn=cmd_wait_until)
+
+    p = sub.add_parser("action-arm", help=argparse.SUPPRESS)
+    p.add_argument("id", type=int)
+    p.add_argument("type")
+    p.add_argument("fields", nargs="*")
+    p.set_defaults(fn=cmd_action_arm)
+
+    p = sub.add_parser("retreat",
+                       help="keep sending reachable escape walks until combat really ends")
+    p.add_argument("--timeout", type=float, default=20.0,
+                   help="hard ceiling in seconds (default 20, max 30)")
+    p.add_argument("--distance", type=int, default=5)
+    p.add_argument("--dx", type=int, default=0,
+                   help="fallback x direction when the opponent is not identified")
+    p.add_argument("--dz", type=int, default=1,
+                   help="fallback z direction when the opponent is not identified")
+    p.set_defaults(fn=cmd_retreat)
+
+    p = sub.add_parser("take",
+                       help="take a visible item and verify it entered inventory")
+    p.add_argument("item", type=int)
+    p.set_defaults(fn=cmd_take)
+
+    p = sub.add_parser("test", help="replay the cases against the table "
+                                    "(spec rule 17)")
+    p.add_argument("action", nargs="?", default="run",
+                   choices=["run", "list", "add", "remove"])
+    p.add_argument("name", nargs="?")
+    p.add_argument("--candidate", action="store_true",
+                   help="preview the named expected rule as enabled, without arming it")
+    p.add_argument("--expect", help="the rule that must win, or 'none'")
+    p.add_argument("--expect-action", dest="expect_action", metavar="JSON",
+                   help="object of compiled-action parameter assertions; a "
+                        "null value asserts the key is absent (spec rule 17)")
+    p.add_argument("--snapshot", help="snapshot JSON file, or - for stdin")
+    p.add_argument("--objective", help="objective the case runs under")
+    p.add_argument("--activity", help="current activity the case runs under")
+    p.set_defaults(fn=cmd_test)
+
+    args = parser.parse_args()
+    if args.cmd == "step":
+        # Spec rule 10a: a deliberation sees the reflexes that fired since it
+        # last looked, before anything else - so a movement contradicting the
+        # plan is named from the record, never guessed at.
+        present_reflex_fires()
+        # Spec rule 15: while the resident runner is live it is the ONLY
+        # evaluator — report ITS latest verdict under the same exit contract.
+        if not args.local:
+            hb = read_live_runner()
+            if hb is not None:
+                verdict = hb.get("verdict", "")
+                # The resident process normally captured these already. Do
+                # the same read here as a hot-upgrade seam: a newly installed
+                # CLI can surface a still-visible transition even while the
+                # long-lived runner is finishing its old code generation.
+                friend_events = []
+                with player_state_lock():
+                    live_state = load_player_state()
+                    live_snapshot = game_reflex.read_snapshot() or {}
+                    capture_player_messages(live_snapshot, live_state, friend_events)
+                    top_up_session_from_player_messages(
+                        live_snapshot, live_state, friend_events)
+                    capture_friend_status(
+                        live_snapshot, live_state, friend_events)
+                    save_player_state(live_state)
+                    flush_events(friend_events)
+                friend_updates = pending_friend_status(live_state)
+                friend_updates_field = friend_status_text(friend_updates) \
+                    if friend_updates else None
+                if verdict == "player-message":
+                    batch = pending_message_batch(live_state)
+                    pending = batch[-1] if batch else None
+                    if pending is not None:
+                        asked_at = now_ms()
+                        report("player-message", id=pending["id"],
+                               channel=pending["channel"], sender=pending["sender"],
+                               count=len(batch),
+                               **message_time_fields(pending, asked_at),
+                               burst=pending_message_burst(batch, asked_at),
+                               session_renewed=(
+                                   message_batch_session_renewal(live_state, batch) or None),
+                               friend_updates=friend_updates_field)
+                    else:
+                        report("runner-player-message", age_ms=now_ms() - hb.get("ts", 0),
+                               pid=hb.get("pid"), friend_updates=friend_updates_field)
+                elif verdict == "system-message":
+                    pending = oldest_pending_system_message(live_state)
+                    if pending is not None:
+                        report("system-message", id=pending["id"],
+                               channel=pending["channel"], action="move-required",
+                               text=pending["text"], friend_updates=friend_updates_field)
+                    else:
+                        report("runner-system-message", age_ms=now_ms() - hb.get("ts", 0),
+                               pid=hb.get("pid"), friend_updates=friend_updates_field)
+                else:
+                    deliberation_fields = {}
+                    if verdict == "no-rule-matched":
+                        deliberation_fields = dict(
+                            reflection_fields(live_snapshot),
+                            **activity_fields(hb.get("activity_xp"),
+                                              hb.get("activity")))
+                    elif verdict == "sleeping-needs-wake":
+                        deliberation_fields = sleep_wake_fields(live_snapshot)
+                    report(f"runner-{verdict or 'unknown'}",
+                           age_ms=now_ms() - hb.get("ts", 0), pid=hb.get("pid"),
+                           table_error=hb.get("table_error") or None,
+                           plan=hb.get("plan") or read_plan() or None,
+                           activity=hb.get("activity") or None,
+                           activity_xp=hb.get("activity_xp") or None,
+                           activity_compare=hb.get("activity_compare") or None,
+                           ground_items=",".join(str(i)
+                                                 for i in hb.get("ground_items") or []) or None,
+                           feedback=hb.get("detail") or None,
+                           friend_updates=friend_updates_field,
+                           **deliberation_fields)
+                acknowledge_friend_status(friend_updates)
+                sys.exit({"no-rule-matched": EXIT_NO_RULE,
+                          "sleeping-needs-wake": EXIT_NO_RULE,
+                          "stop-reached": EXIT_NO_RULE,
+                          "route-needs-detour": EXIT_NO_RULE,
+                          "route-needs-local-interaction": EXIT_NO_RULE,
+                          "follow-needs-path": EXIT_NO_RULE,
+                          "follow-target-lost": EXIT_NO_RULE,
+                          "follow-abandoned": EXIT_NO_RULE,
+                          "backtrack-blocked": EXIT_NO_RULE,
+                          "backtrack-diverged": EXIT_NO_RULE,
+                          "held": EXIT_HELD,
+                          "fired": EXIT_FIRED,
+                          "player-message": EXIT_PLAYER_MESSAGE,
+                          "system-message": EXIT_SYSTEM_MESSAGE,
+                          "session-over": EXIT_SESSION_OVER}.get(verdict, EXIT_NOT_READY))
+        cfg = load_config()
+        if args.wait_ms is None:
+            args.wait_ms = config_defaults(cfg)["inflight_timeout_ms"]
+        objective = read_objective()
+        activity = read_activity()
+        fired_count = 0
+        verdict, code = "no-rule-matched", EXIT_NO_RULE
+        for _ in range(max(1, args.max)):
+            verdict, code = step_once(cfg, objective, activity, args.wait_ms)
+            if verdict != "fired":
+                break
+            fired_count += 1
+            if code != EXIT_FIRED:
+                break
+        if fired_count and verdict == "fired":
+            sys.exit(code)
+        sys.exit(EXIT_FIRED if fired_count else code)
+    if not getattr(args, "fn", None):
+        parser.print_help()
+        sys.exit(2)
+    args.fn(args)
+
+
+if __name__ == "__main__":
+    main()

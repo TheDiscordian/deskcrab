@@ -1,0 +1,1 @@
+That turn hit a usage limit, swapped to the other login and hung there with nothing spoken. Nothing is broken now, and I will add a timeout and an audible notice so it cannot happen again.

@@ -1,0 +1,19 @@
+[Unit]
+Description=DeskCrab Signal bridge (incoming messages into her log and a wake)
+Documentation=https://github.com/TheDiscordian/deskcrab/blob/main/specs/signal.md
+After=deskcrab-signal.service
+Wants=deskcrab-signal.service
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+# The bridge reconnects to the daemon on its own (rule 5); Restart covers a
+# crash of the bridge itself.
+ExecStart=%h/.local/bin/crab signal bridge
+WorkingDirectory=%h
+Restart=always
+RestartSec=5
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=default.target

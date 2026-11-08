@@ -1,0 +1,62 @@
+Source Output #12
+	Driver: protocol-native.c
+	Owner Module: 11
+	Client: 7
+	Source: 1
+	Sample Specification: float32le 1ch 25Hz
+	Channel Map: mono
+	Format: pcm, format.sample_format = "\"float32le\""  format.rate = "25"  format.channels = "1"  format.channel_map = "\"mono\""
+	Corked: no
+	Mute: no
+	Volume: mono: 65536 / 100% / 0.00 dB
+	        balance 0.00
+	Buffer Latency: 0 usec
+	Source Latency: 1875 usec
+	Resample method: peaks
+	Properties:
+		media.name = "Peak detect"
+		application.name = "PulseAudio Volume Control"
+		native-protocol.peer = "UNIX socket client"
+		native-protocol.version = "35"
+		application.id = "org.PulseAudio.pavucontrol"
+		application.icon_name = "audio-card"
+		application.version = "5.0"
+		application.process.id = "4242"
+		application.process.user = "user"
+		application.process.host = "desk"
+		application.process.binary = "pavucontrol"
+		application.language = "C.UTF-8"
+		window.x11.display = ":1"
+		application.process.machine_id = "00000000000000000000000000000000"
+		module-stream-restore.id = "source-output-by-application-id:org.PulseAudio.pavucontrol"
+Source Output #13
+	Driver: protocol-native.c
+	Owner Module: 11
+	Client: 7
+	Source: 2
+	Sample Specification: float32le 1ch 25Hz
+	Channel Map: mono
+	Format: pcm, format.sample_format = "\"float32le\""  format.rate = "25"  format.channels = "1"  format.channel_map = "\"mono\""
+	Corked: no
+	Mute: no
+	Volume: mono: 65536 / 100% / 0.00 dB
+	        balance 0.00
+	Buffer Latency: 0 usec
+	Source Latency: 1875 usec
+	Resample method: peaks
+	Properties:
+		media.name = "Peak detect"
+		application.name = "PulseAudio Volume Control"
+		native-protocol.peer = "UNIX socket client"
+		native-protocol.version = "35"
+		application.id = "org.PulseAudio.pavucontrol"
+		application.icon_name = "audio-card"
+		application.version = "5.0"
+		application.process.id = "4242"
+		application.process.user = "user"
+		application.process.host = "desk"
+		application.process.binary = "pavucontrol"
+		application.language = "C.UTF-8"
+		window.x11.display = ":1"
+		application.process.machine_id = "00000000000000000000000000000000"
+		module-stream-restore.id = "source-output-by-application-id:org.PulseAudio.pavucontrol"

@@ -1,0 +1,1 @@
+Length is a writing choice, not a code path — there is nothing to patch here, and this reply is the change. Tell me again if it creeps back.

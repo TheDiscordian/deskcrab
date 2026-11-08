@@ -1,0 +1,10 @@
+#!/bin/bash
+# The user manager, which a test never speaks to. Queries answer empty (the
+# sandbox has no units), state changes are recorded and refused.
+printf '%s\n' "$*" >> "${SANDBOX_SYSTEMCTL_LOG:-/dev/null}"
+case "$*" in
+    *list-units*|*list-timers*) exit 0 ;;
+    *is-active*)                exit 1 ;;
+    *show*)                     exit 0 ;;
+esac
+exit 0

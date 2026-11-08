@@ -1,0 +1,298 @@
+#!/usr/bin/env bash
+# want-reflect — the nightly want reflection: the day just lived, held once
+# against the wants drawer, with no obligation to produce anything.
+#
+# Part of sleep, run after the twin-merge pass and BEFORE the night's work
+# (specs/nightly.md rules 53g-53j; the record
+# let-wants-emerge-from-lived-experience-during-sl, 2026-09-09). The wants
+# drawer grew only by hand, and nothing ever held the day she actually lived
+# up against the shelf — while the record's own line draws the boundary this
+# script keeps: this is NOT a prompt to invent wants, generate homework,
+# force an output, or spend repair time chasing novelty. The reflection
+# exposes lived experience and unfinished attraction to one judgment call,
+# leaves room for no new want to form — MOST NIGHTS FORM NO NEW WANT, and
+# NOTHING is the expected answer, never a failure — and records something
+# only when it reads as an appetite she would actually choose.
+#
+#   want-reflect run [YYYY-MM-DD]   reflect on that day (default: yesterday)
+#
+# What it reads, and nothing else: the day's journal — her turns and the
+# user's words as lived, a builder's `kind: job` entry excluded exactly as
+# rule 41 excludes it from her voice — and the wants drawer's standing in
+# every state, so an existing attraction is never re-invented. What it may
+# write, at most once a night and only on a WANT verdict: one want, through
+# the wants tool and ONLY through it (`lib/eng --kind want new`, specs/
+# wants.md rules 6-7 — the tool declares the writes, resolves the slug, and
+# appends the shelf line where a shelf is configured). On NOTHING, and on
+# every non-answer, this phase writes not one byte. It never speaks, never
+# notifies, never books a wake, and never dispatches a builder.
+#
+# The judgment is taste on the sleep path, so it is the night judge's
+# (specs/nightly.md rules 14c-14e): one call, no model fallback, never
+# re-asked. Knobs, environment or deskcrab.conf (this file sources
+# lib/common.sh):
+#   WANT_REFLECT_ENABLED=1           0/no/off/false switches the phase off
+#   WANT_REFLECT_MODEL=gpt-5.6-sol   the judge — defaults from the night's
+#                                       one pair (rule 14c-i)
+#   WANT_REFLECT_EFFORT=high         its reasoning effort, same default rule
+#   WANT_REFLECT_TIMEOUT=300         seconds for the one call
+#   WANT_REFLECT_JOURNAL_BUDGET=48000   bytes of the day's digest, cut on a
+#                                       character boundary, announced
+#   WANT_REFLECT_WANTS_BUDGET=4000      bytes of the drawer's standing, same
+#   DAY_JOURNAL_DIR                  the journal drawer (common.sh resolves)
+#   DESKCRAB_WANTS_DIR / DESKCRAB_WANTS_FILE   the drawer and the shelf,
+#                                       seeded exactly as crab's want door
+#
+# Every nightly failure path exits 0 with a trace line on stdout (the
+# night's log): a broken reflection costs only itself, never the night.
+set -uo pipefail
+
+# readlink -f before dirname, or the deployed symlink's logical `..` walks
+# into ~/.local/lib and sources a lib/common.sh that does not exist
+# (specs/nightly.md rule 6a).
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+# shellcheck source=common.sh
+. "$SCRIPT_DIR/lib/common.sh"
+
+# The drawer and the shelf ride the same seeding as `crab want`, so the tool
+# below writes where the live instance's wants actually live.
+export DESKCRAB_WANTS_DIR="${DESKCRAB_WANTS_DIR:-$(deskcrab_home)/wants}"
+export DESKCRAB_WANTS_FILE="${DESKCRAB_WANTS_FILE:-${WANTS_FILE:-}}"
+
+# Defaults from the night's one judge (nightly.md rule 14c-i); this pair
+# overrides it for the want reflection alone.
+WANT_REFLECT_MODEL="${WANT_REFLECT_MODEL:-${NIGHT_JUDGE_MODEL:-gpt-5.6-sol}}"
+WANT_REFLECT_EFFORT="${WANT_REFLECT_EFFORT:-${NIGHT_JUDGE_EFFORT:-high}}"
+JOURNAL_BUDGET="${WANT_REFLECT_JOURNAL_BUDGET:-48000}"
+WANTS_BUDGET="${WANT_REFLECT_WANTS_BUDGET:-4000}"
+
+# The account log names the path that recorded each refusal
+# (specs/account-fallback.md rule 11). Not exported: nothing dispatched from
+# here should inherit it — and nothing is dispatched from here at all.
+SESSION_KIND=want-reflect
+
+say() { printf 'want-reflect: %s\n' "$1"; }
+
+# The one judgment call, on the night judge's shared walk — sourced, never
+# re-implemented (specs/nightly.md rules 14c-14e). Reads the prompt on
+# stdin; prints the judge's text; returns 1 when nothing usable came back.
+# shellcheck source=nightly-judge
+. "$LIB_DIR/nightly-judge"
+judge_walk() {
+    nightly_judge_walk "$WANT_REFLECT_MODEL" "$WANT_REFLECT_EFFORT" \
+        "${WANT_REFLECT_TIMEOUT:-300}" want-reflect '^(NOTHING|WANT)([^A-Za-z0-9]|$)'
+}
+
+# day_digest <journal file> — the day as lived, rendered for one reader: her
+# turns and the user's beside them, in the order the day happened. A
+# builder's `kind: job` row is a log, not her lived day (rule 41's line),
+# and never enters the digest.
+day_digest() {
+    python3 - "$1" <<'PY'
+import json, sys
+rows = []
+try:
+    with open(sys.argv[1], encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                e = json.loads(line)
+            except ValueError:
+                continue
+            if e.get("kind") == "job":
+                continue  # a builder's entry is a log, not her lived day
+            rows.append(e)
+except OSError:
+    sys.exit(0)
+rows.sort(key=lambda e: e.get("epoch", 0))
+for e in rows:
+    t = (e.get("time") or "")[11:16] or "??:??"
+    print("[%s] %s" % (t, e.get("kind", "?")))
+    if e.get("user"):
+        print("  the user: %s" % e["user"].strip())
+    if e.get("reply"):
+        print("  her: %s" % e["reply"].strip())
+    if e.get("outcome"):
+        print("  (outcome: %s)" % e["outcome"].strip())
+    print()
+PY
+}
+
+cmd_run() {
+    case "${WANT_REFLECT_ENABLED:-1}" in
+        0|no|off|false)
+            say "switched off (WANT_REFLECT_ENABLED=${WANT_REFLECT_ENABLED:-}) — no reflection tonight"
+            return 0 ;;
+    esac
+
+    local DAY JFILE
+    DAY="${1:-$(date -d yesterday +%F 2>/dev/null || date +%F)}"
+    JFILE="$DAY_JOURNAL_DIR/$DAY.jsonl"
+    if [ ! -f "$JFILE" ]; then
+        say "no journal for $DAY — a day that was not lived has nothing to reflect on"
+        return 0
+    fi
+
+    # The day, digested and bounded. Job rows are already out; a day that
+    # held only builders is a day with no turn of her own, and spends no
+    # judge on it.
+    local DIGEST_FILE DIGEST_SZ DAY_SECTION
+    DIGEST_FILE="$(mktemp "${TMPDIR:-/tmp}/deskcrab-want-reflect-day-XXXXXX")"
+    day_digest "$JFILE" > "$DIGEST_FILE"
+    if ! grep -q '[^[:space:]]' "$DIGEST_FILE" 2>/dev/null; then
+        say "the journal for $DAY holds no turn of her own (builder rows only) — nothing lived to reflect on"
+        rm -f "$DIGEST_FILE"
+        return 0
+    fi
+    DIGEST_SZ="$(wc -c < "$DIGEST_FILE")"
+    if [ "$DIGEST_SZ" -gt "$JOURNAL_BUDGET" ] 2>/dev/null; then
+        # A cut that happens is announced — rule 58a's discipline: the bound
+        # is design, a trim nobody can see is silent truncation.
+        say "the day's digest outgrew its prompt budget — $DIGEST_SZ bytes, cut to $JOURNAL_BUDGET on a character boundary; the evening's tail is dropped whole"
+    fi
+    DAY_SECTION="$(utf8_head "$JOURNAL_BUDGET" "$DIGEST_FILE")"
+    rm -f "$DIGEST_FILE"
+
+    # The drawer's standing, every state, so what is already live, resting,
+    # grown or retired is visible and never re-invented.
+    local DRAWER DRAWER_SZ DRAWER_SECTION
+    DRAWER="$(python3 "$SCRIPT_DIR/lib/eng" --kind want list --state all 2>/dev/null)"
+    if [ -z "$DRAWER" ]; then
+        DRAWER_SECTION="(the drawer is empty — no want has ever been named)"
+    else
+        DRAWER_SZ="$(printf '%s' "$DRAWER" | wc -c)"
+        if [ "$DRAWER_SZ" -gt "$WANTS_BUDGET" ] 2>/dev/null; then
+            say "the drawer's standing outgrew its prompt budget — $DRAWER_SZ bytes, cut to $WANTS_BUDGET on a character boundary"
+        fi
+        DRAWER_SECTION="$(printf '%s' "$DRAWER" | utf8_head "$WANTS_BUDGET")"
+    fi
+
+    say "reflecting once on the day of $DAY — the lived day beside the drawer's standing; most nights form no new want, and that is the expected outcome"
+
+    # ONE call, never re-asked (rule 53h). A walk that returns nothing
+    # usable forms nothing — no cheaper model, no retry, no second question.
+    local OUT
+    if ! OUT="$(judge_walk <<PROMPT
+You are the night reflection of a personal assistant who is asleep. Below is
+the day she just lived — her own turns in her own words, beside the user's —
+and her wants drawer as it stands: the appetites she already keeps, live and
+resting and grown and retired.
+
+Read the day for what actually pulled at her: a thing she kept returning to,
+an attraction left unfinished, a thread she visibly enjoyed and left open.
+Then decide whether the day's own material shows a NEW appetite she would
+genuinely choose to keep — hers, not one you think she should have.
+
+The rule is conservative on purpose. MOST NIGHTS FORM NO NEW WANT, and
+NOTHING is the expected answer, never a failure. Never manufacture a want to
+have something to show. Never turn the day's chores, defects or errands into
+a want — work has its own drawers, and rest is not a backlog. Never propose
+novelty for its own sake. Never restate a want the drawer already carries,
+live or dormant. If the day's own material would not make her reach for it
+unprompted, the answer is NOTHING.
+
+Answer in exactly one of these forms and nothing else:
+NOTHING — <one line: the honest reading of the day>
+or
+WANT — <a short title for the want, a few words, in her voice>
+<then two to five first-person sentences, written as her: what in the day
+pulled toward this, and why she would actually choose to keep it>
+
+=== THE DAY ($DAY) ===
+$DAY_SECTION
+
+=== THE WANTS DRAWER ===
+$DRAWER_SECTION
+PROMPT
+    )"; then
+        say "no reflection came back from $WANT_REFLECT_MODEL tonight — nothing is formed, and no cheaper model may form it"
+        return 0
+    fi
+
+    local LINE
+    LINE="$(printf '%s\n' "$OUT" | grep -E '^(NOTHING|WANT)([^A-Za-z0-9]|$)' | head -1)"
+    case "$LINE" in
+        NOTHING*)
+            say "no new want tonight — $(printf '%s' "$LINE" | sed -E 's/^NOTHING[^A-Za-z0-9]*//')"
+            return 0 ;;
+        WANT*NOTHING*)
+            # The judge changed its mind mid-line (the eng-merge lesson,
+            # rule 53c): a line carrying both tokens is a non-answer, and
+            # every non-answer forms nothing.
+            say "ambiguous verdict — the line carries both tokens, nothing is formed: $LINE"
+            return 0 ;;
+        WANT*) ;;
+        *)
+            say "no verdict line in the judge's answer — nothing is formed"
+            return 0 ;;
+    esac
+
+    local TITLE
+    TITLE="$(printf '%s' "$LINE" | sed -E 's/^WANT[^A-Za-z0-9]*//; s/[[:space:]]+$//')"
+    if [ -z "$TITLE" ]; then
+        say "the WANT verdict named no title — nothing is formed"
+        return 0
+    fi
+    if [ "$(printf '%s' "$TITLE" | wc -c)" -gt 120 ]; then
+        say "the WANT verdict's title is not a title ($(printf '%s' "$TITLE" | wc -c) bytes) — the judge bent the form, nothing is formed"
+        return 0
+    fi
+
+    # A title the drawer already carries, matched casefolded in ANY state,
+    # is not re-recorded (rule 53i): the standing want is the want, and
+    # wanting again what was retired is a new want by HER hand, never this
+    # phase's (specs/wants.md rule 4).
+    local EXISTING
+    EXISTING="$(printf '%s\n' "$DRAWER" | sed -E 's/^[[:alnum:]-]+[[:space:]]+//; s/ \[[^]]*\].*$//')"
+    if printf '%s\n' "$EXISTING" | tr '[:upper:]' '[:lower:]' \
+            | grep -Fxq "$(printf '%s' "$TITLE" | tr '[:upper:]' '[:lower:]')"; then
+        say "the drawer already carries '$TITLE' — nothing new is written; the standing want is the want"
+        return 0
+    fi
+
+    # Her first-person sentences, below the verdict line, become the opening
+    # body — with the reflection's provenance named in it, so the document
+    # says where it rose from.
+    local BODY MORE
+    BODY="$(printf '%s\n' "$OUT" \
+        | awk 'seen { print; next } /^(NOTHING|WANT)([^A-Za-z0-9]|$)/ { seen=1 }' \
+        | sed -e '/./,$!d' | sed -e :a -e '/^[[:space:]]*$/{$d;N;ba' -e '}')"
+    MORE="$(printf '%s\n' "$BODY" | grep -cE '^WANT([^A-Za-z0-9]|$)' || true)"
+    if [ "${MORE:-0}" -gt 0 ]; then
+        say "the judge offered more than one want — a night forms at most one, and only the first is read"
+        BODY="$(printf '%s\n' "$BODY" | sed -E '/^WANT([^A-Za-z0-9]|$)/,$d')"
+    fi
+    [ -n "$BODY" ] || BODY="This rose from the day of $DAY, in the night's reflection."
+    BODY="$BODY
+
+(Risen in the nightly want reflection, from the day of $DAY. Keeping it, resting it, or retiring it stays mine.)"
+
+    # The one write, through the wants tool and only through it: the tool
+    # declares the writes, resolves the slug, and appends the shelf line
+    # where a shelf is configured (specs/wants.md rules 6-7). Its own lines
+    # land on the night log below.
+    local NEW_OUT NEW_RC ID
+    NEW_OUT="$(python3 "$SCRIPT_DIR/lib/eng" --kind want new "$TITLE" \
+        --summary "risen from the day of $DAY, in the night's want reflection" \
+        --body "$BODY" 2>&1)"; NEW_RC=$?
+    printf '%s\n' "$NEW_OUT"
+    if [ "$NEW_RC" -ne 0 ]; then
+        say "the wants tool refused the want ('$TITLE') — nothing is recorded tonight"
+        return 0
+    fi
+    ID="$(printf '%s\n' "$NEW_OUT" | tail -1)"
+    say "formed one want tonight: '$TITLE' [$ID] — on the drawer through the wants tool, hers to keep or put down"
+    return 0
+}
+
+# Sourceable for tests: `source lib/want-reflect` defines the functions and
+# dispatches nothing, exactly as lib/sleep-nightly does. Executed, the case
+# below is the CLI.
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+    case "${1:-}" in
+        run) shift; cmd_run "$@" ;;
+        *)   echo "Usage: want-reflect run [YYYY-MM-DD]" >&2; exit 2 ;;
+    esac
+fi

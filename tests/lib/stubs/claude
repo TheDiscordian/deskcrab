@@ -1,0 +1,21 @@
+#!/bin/bash
+# The CLI itself — the spend gate. A test that dispatches work must never
+# start a real model session, so this stands in for it unconditionally and
+# answers in the two shapes the callers parse: a stream-json run gets one
+# assistant text block and a result event; a plain -p run gets a line.
+#
+# A test that needs a particular answer replaces this file through
+# sandbox_stub, which keeps the stub list a single directory.
+printf '%s\n' "$*" >> "${SANDBOX_CLAUDE_LOG:-/dev/null}"
+case "$*" in
+    *--output-format*)
+        cat > /dev/null
+        printf '%s\n' '{"type":"assistant","message":{"model":"stub","content":[{"type":"text","text":"stub reply."}]}}'
+        printf '%s\n' '{"type":"result","result":"stub reply."}'
+        ;;
+    *)
+        cat > /dev/null
+        printf 'stub reply.\n'
+        ;;
+esac
+exit 0

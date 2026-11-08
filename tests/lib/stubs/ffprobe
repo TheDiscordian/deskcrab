@@ -1,0 +1,4 @@
+#!/bin/bash
+# The media tools. Consume the input, produce nothing that plays.
+cat > /dev/null 2>/dev/null
+exit 0

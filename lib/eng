@@ -1,0 +1,1526 @@
+#!/usr/bin/env python3
+"""Engineering records: threads with STATE, not appended prose (specs/engineering-records.md).
+
+One file per thread in $DESKCRAB_ENG_DIR (default ~/.local/share/deskcrab/
+engineering/records/): YAML frontmatter carrying id, title, opened,
+last_touched, state (open|settled|dead), settled_at, settled_by, summary;
+below it free prose, newest entries first, each headed with its own datetime.
+State moves ONLY through this tool, and every write that adds an entry bumps
+last_touched in the same motion — that pairing is what the job hook trusts.
+
+    eng new <title> [--summary <line>] [--body <text>] [--opened <datetime>]
+    eng list [--state open|review|settled|dead|all]
+    eng show <id>
+    eng touch <id> <note...>
+    eng amend <id> --supersedes <text>... <note...>
+                                        a touch that RETIRES the named
+                                        paragraph(s): marked superseded in
+                                        place, words kept (rule 7a)
+    eng current <id>                    the record as it currently instructs:
+                                        a superseded paragraph is its stub
+    eng quotes-superseded <id> [<file>] exit 0 iff the text quotes a sentence
+                                        of a superseded paragraph
+    eng review <id> <claim...>          submit completed work: open -> review;
+                                        the record is NOT settled by this
+    eng accept <id> <verified...>       the review's yes: review -> settled
+    eng reject <id> <missing...>        the review's no: review -> open, the
+                                        missing requirements preserved and
+                                        redispatched through the job door
+    eng settle <id> <what-settled-it...>
+    eng kill <id> [reason...]
+    eng search <words...>
+    eng field <id> <key>
+    eng touched-since <id> <epoch>     exit 0 iff last_touched is newer
+    eng prompt                          the shelves-layer block, or nothing
+    eng migrate <prose file>            one record per ## entry or index
+                                        bullet of the old prose, once
+
+Inside a builder session (lib/job-runner exports DESKCRAB_ENG_ROLE=builder)
+settle, kill, accept and reject are refused — a builder submits with `review`
+and the completion review judges the claim (rules 16-16d).
+
+Why this exists: an engineering note used to be undated prose with no state,
+so a worry written before a question was settled kept reading as present-tense
+fact — and twice on 2026-08-10 it was announced as a live code flaw that did
+not exist. A settled thing must read as settled at a glance. Stdlib only,
+like job-status: this must run on an offline machine with nothing installed.
+
+This file is also the SPINE of the wants drawer (specs/wants.md): the same
+parser, atomic writer, write declaration and search, parameterized by kind —
+`--kind want` ahead of the verb, which is what `crab want` passes. One
+substrate in code, two drawers on disk; kind `eng` is byte-for-byte the
+behaviour documented above.
+"""
+
+import os
+import re
+import subprocess
+import sys
+import time
+
+FIELDS = ["id", "title", "opened", "last_touched", "state",
+          "settled_at", "settled_by", "summary"]
+STATES = ("open", "review", "settled", "dead")
+TIMEFMT = "%Y-%m-%d %H:%M:%S"
+
+# The kind table — the whole of what differs between the two drawers is data
+# (specs/wants.md, the substrate decision). KIND is set once in main() and the
+# vocabulary globals below are re-pointed with it; every function reads them.
+KIND = "eng"
+WANT_FIELDS = ["id", "title", "opened", "last_touched", "state",
+               "retired_at", "retired_by", "links", "summary"]
+WANT_STATES = ("live", "dormant", "grown-into-me", "retired")
+WANT_TERMINAL = ("grown-into-me", "retired")
+OPEN_STATE = "open"          # want: "live"
+CLOSED_AT = "settled_at"     # want: "retired_at"
+CLOSED_BY = "settled_by"     # want: "retired_by"
+CLOSED_STATES = ("settled", "dead")   # want: WANT_TERMINAL
+
+WANT_USAGE = """Wants: the record spine of `eng` under kind `want` (specs/wants.md).
+
+    want new <title> [--summary <line>] [--body <text>] [--opened <datetime>]
+    want list [--state live|dormant|grown-into-me|retired|all]
+    want show <id>
+    want touch <id> <note...>           appends at the END: a want document
+                                        is a journal, newest last
+    want dormant <id> [why...]          resting on purpose, not gone
+    want revive <id> [note...]          back to live
+    want grown <id> <how...>            terminal: it became part of her
+    want retire <id> <reason...>        terminal: put down honestly; the
+                                        reason is required
+    want link <id> <job:<id>|eng:<id>>...
+    want search <words...>
+    want field <id> <key>
+    want touched-since <id> <epoch>
+    want migrate [<shelf file>]         frontmatter onto the drawer, once;
+                                        bodies byte-for-byte untouched
+"""
+
+
+def kind_dir(kind):
+    """The drawer for a kind, from the environment or the data home."""
+    env = {"eng": "DESKCRAB_ENG_DIR", "want": "DESKCRAB_WANTS_DIR"}[kind]
+    sub = {"eng": os.path.join("engineering", "records"), "want": "wants"}[kind]
+    d = os.environ.get(env)
+    if not d:
+        data = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+        d = os.path.join(data, "deskcrab", sub)
+    return d
+
+
+def eng_dir():
+    return kind_dir(KIND)
+
+
+def now():
+    return time.strftime(TIMEFMT)
+
+
+def die(msg):
+    print("eng: %s" % msg, file=sys.stderr)
+    sys.exit(2)
+
+
+def slugify(title):
+    s = re.sub(r"[^a-z0-9]+", "-", title.lower()).strip("-")
+    return s[:48].rstrip("-") or "untitled"
+
+
+def rec_path(rid):
+    return os.path.join(eng_dir(), rid + ".md")
+
+
+def quote(v):
+    """One line, quoted only when YAML would misread it bare."""
+    v = " ".join(str(v).split())
+    if v and (":" in v or v[0] in "-?[]{}#&*!|>'\"%@`"):
+        return '"%s"' % v.replace("\\", "\\\\").replace('"', '\\"')
+    return v
+
+
+def unquote(v):
+    v = v.strip()
+    if len(v) >= 2 and v[0] == '"' and v[-1] == '"':
+        return v[1:-1].replace('\\"', '"').replace("\\\\", "\\")
+    return v
+
+
+def parse(path):
+    """-> (meta dict, body str) or None if the file is not a record."""
+    try:
+        with open(path, encoding="utf-8", errors="replace") as f:
+            text = f.read()
+    except OSError:
+        return None
+    if not text.startswith("---\n"):
+        return None
+    end = text.find("\n---\n", 4)
+    if end < 0:
+        return None
+    meta = {}
+    for line in text[4:end].splitlines():
+        if ":" not in line:
+            continue
+        k, _, v = line.partition(":")
+        meta[k.strip()] = unquote(v)
+    body = text[end + 5:].lstrip("\n")
+    if "id" not in meta:
+        return None
+    return meta, body
+
+
+def declare_write(*paths):
+    """Tell the self-change watcher these paths are about to move by my hand.
+
+    The records directory is in lib/notice-selfchange's watch set, and an
+    undeclared write there is reported back as an intruder's change to her
+    own files. On 2026-08-11 at 11:22 a `crab eng touch` made from a live
+    wake did exactly that: at 11:23 the watcher booked a wake about the very
+    record this tool had just written. So every write goes out declared
+    FIRST, through `crab touching` — the CLI face of touch_suppress in
+    lib/common.sh, the same door every other writing hand of hers uses —
+    with the same short window the day journal's declaration takes
+    (day_journal_append, lib/common.sh). The watcher itself stays untouched:
+    a genuinely external edit to the same file still surfaces.
+
+    Best-effort, like every existing caller's `2>/dev/null`: a missing or
+    failing crab must never cost the record write itself.
+    """
+    crab = os.path.join(os.path.dirname(os.path.realpath(__file__)),
+                        os.pardir, "crab")
+    if not os.access(crab, os.X_OK):
+        return
+    try:
+        subprocess.run(
+            [crab, "touching", "-w", "300"]
+            + [os.path.abspath(p) for p in paths],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def write(path, meta, body):
+    """Atomic, like job-status: a concurrent prompt build never reads half."""
+    lines = ["---"]
+    for k in FIELDS:
+        lines.append("%s: %s" % (k, quote(meta.get(k, ""))))
+    lines.append("---")
+    text = "\n".join(lines) + "\n\n" + body.rstrip("\n") + "\n"
+    tmp = "%s.tmp.%d" % (path, os.getpid())
+    # Every path this write moves — the record and the temporary it is
+    # atomically replaced from — declared before a byte lands (rule 10a).
+    declare_write(path, tmp)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(text)
+    os.replace(tmp, path)
+
+
+def load(rid):
+    got = parse(rec_path(rid))
+    if got is None:
+        die("no record '%s' in %s (ids: crab eng list)" % (rid, eng_dir()))
+    return got
+
+
+def all_records():
+    d = eng_dir()
+    out = []
+    if os.path.isdir(d):
+        for name in sorted(os.listdir(d)):
+            if not name.endswith(".md"):
+                continue
+            got = parse(os.path.join(d, name))
+            if got is not None:
+                out.append(got)
+    return out
+
+
+def touched_epoch(meta):
+    for key in ("last_touched", "opened"):
+        v = (meta.get(key) or "").strip()
+        for fmt in (TIMEFMT, "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+            try:
+                return int(time.mktime(time.strptime(v, fmt)))
+            except ValueError:
+                continue
+    return 0
+
+
+def add_entry(body, note, stamp=None):
+    """Records read newest FIRST: the fresh entry goes above whatever is
+    already there. A want document is a journal and reads newest LAST
+    (specs/wants.md rule 3), so kind want appends instead — the tool follows
+    the shape every existing document already has."""
+    entry = "## %s\n\n%s\n" % (stamp or now(), note.strip())
+    if KIND == "want":
+        return (body.rstrip("\n") + "\n\n" + entry) if body.strip() else entry
+    return entry + ("\n" + body if body.strip() else "")
+
+
+# --- supersession (specs/engineering-records.md rules 7a and 9a) -------------
+# An amendment that retires an earlier instruction marks the paragraph where
+# it stands: the words stay, under a dated marker, as a blockquote. Nothing is
+# inferred from position — a newer entry never supersedes an older one on its
+# own; only `amend`, naming the paragraph, retires anything. The origin
+# (2026-08-21 18:22): the store brief was rewritten to drop the exact block
+# from the move prompt, and the builder dispatched thirty seconds later still
+# carried the old plan, composed from the record's first entry with nothing on
+# the record marking the dropped paragraph as dead.
+
+SUPERSEDED_HEAD = "> SUPERSEDED %s (history, not an instruction):"
+SUPERSEDED_RE = re.compile(
+    r"^> SUPERSEDED (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) "
+    r"\(history, not an instruction\):$")
+# Blocks are blank-line separated; the separators are kept so a body with
+# nothing superseded reassembles byte for byte.
+BLOCK_SEP_RE = re.compile(r"(\n[ \t]*\n+)")
+
+
+def split_blocks(body):
+    """-> list alternating [block, sep, block, sep, ..., block]."""
+    return BLOCK_SEP_RE.split(body)
+
+
+def block_kind(block):
+    """'heading' for an entry heading, 'superseded' for a retired paragraph
+    (with its stamp and text), 'para' for a live paragraph, 'blank' for
+    whitespace."""
+    if not block.strip():
+        return "blank", None
+    lines = block.split("\n")
+    if lines[0].startswith("## "):
+        return "heading", None
+    m = SUPERSEDED_RE.match(lines[0])
+    if m:
+        text = "\n".join(l[2:] if l.startswith("> ") else l.lstrip(">")
+                         for l in lines[1:])
+        return "superseded", (m.group(1), text)
+    return "para", None
+
+
+def norm_text(s):
+    """Case-folded, every run of punctuation or whitespace one space: the
+    comparison that finds a retired clause through a paraphraser's
+    typography — emphasis, quotes, a dropped final period, a re-wrapped
+    line. Word characters alone carry identity."""
+    return " ".join(re.sub(r"[^\w\s]+", " ", s.lower()).split())
+
+
+def mark_superseded(block, stamp):
+    return "\n".join([SUPERSEDED_HEAD % stamp]
+                     + ["> " + l for l in block.split("\n")])
+
+
+def superseded_stub(stamp, rid):
+    return ("(a paragraph here was superseded by the amendment of %s "
+            "\u2014 history, not an instruction; crab eng show %s keeps it)"
+            % (stamp, rid))
+
+
+def superseded_sentences(body, min_words=5):
+    """Every clause of every superseded paragraph long enough to be a
+    quotation rather than a coincidence: split at sentence and clause
+    punctuation and at line ends, five words the floor."""
+    out = []
+    for block in split_blocks(body):
+        kind, info = block_kind(block)
+        if kind != "superseded":
+            continue
+        pieces = [" ".join(info[1].split())]
+        pieces += re.split(r"(?<=[.!?;:])\s+|\n", info[1])
+        pieces += re.split(r"(?<=[.!?;:,])\s+|\n", info[1])
+        for piece in pieces:
+            piece = piece.strip()
+            if len(piece.split()) >= min_words and piece not in out:
+                out.append(piece)
+    # Longest first: the night log names the biggest chunk the brief quoted.
+    return sorted(out, key=len, reverse=True)
+
+
+def current_text(rid):
+    """The record as it currently instructs (rule 9a): the file byte for
+    byte, each superseded paragraph standing as its stub."""
+    path = rec_path(rid)
+    if parse(path) is None:
+        die("no record '%s' in %s (ids: crab eng list)" % (rid, eng_dir()))
+    with open(path, encoding="utf-8", errors="replace") as f:
+        text = f.read()
+    end = text.find("\n---\n", 4)
+    head, body = text[:end + 5], text[end + 5:]
+    parts = split_blocks(body)
+    changed = False
+    for i, block in enumerate(parts):
+        kind, info = block_kind(block)
+        if kind == "superseded":
+            parts[i] = superseded_stub(info[0], rid)
+            changed = True
+    return head + "".join(parts) if changed else text
+
+
+def cmd_amend(argv):
+    if KIND != "eng":
+        die("amend is the engineering drawer's door; a want is a journal "
+            "(crab want touch)")
+    args, needles, rest = list(argv), [], []
+    rid = args.pop(0) if args else None
+    while args:
+        a = args.pop(0)
+        if a == "--supersedes" and args:
+            needles.append(args.pop(0))
+        else:
+            rest.append(a)
+    note = " ".join(rest).strip()
+    if not rid or not note:
+        die("usage: eng amend <id> --supersedes <text>... <note>")
+    if not [n for n in needles if n.strip()]:
+        die("amend retires a paragraph and must name it: --supersedes "
+            "<text>; a note that retires nothing is `eng touch`")
+    meta, body = load(rid)
+    parts = split_blocks(body)
+    # Every candidate, with the entry it sits in and its place there, so the
+    # note can name what it retired without quoting the retired words.
+    heading, ordinal, places = "(undated)", 0, {}
+    for i, block in enumerate(parts):
+        kind, info = block_kind(block)
+        if kind == "heading":
+            heading, ordinal = block.split("\n")[0][3:].strip(), 0
+        elif kind in ("para", "superseded"):
+            ordinal += 1
+            places[i] = (kind, heading, ordinal, info)
+    chosen = {}
+    for needle in needles:
+        want = norm_text(needle)
+        if not want:
+            die("--supersedes needs text to match")
+        live = [i for i, (k, _, _, _) in places.items()
+                if k == "para" and want in norm_text(parts[i])]
+        gone = [i for i, (k, _, _, _) in places.items()
+                if k == "superseded" and want in norm_text(places[i][3][1])]
+        if len(live) > 1:
+            die("ambiguous: %d live paragraphs of '%s' read \"%s\" — quote "
+                "more of the one you mean; nothing written"
+                % (len(live), rid, needle))
+        if not live:
+            if gone:
+                die("that paragraph of '%s' is already superseded (by the "
+                    "amendment of %s); nothing written"
+                    % (rid, places[gone[0]][3][0]))
+            die("no live paragraph of '%s' reads \"%s\"; nothing written"
+                % (rid, needle))
+        if live[0] in chosen:
+            die("two --supersedes texts name the same paragraph of '%s'; "
+                "nothing written" % rid)
+        chosen[live[0]] = needle
+    stamp = now()
+    named = []
+    for i in sorted(chosen):
+        _, entry, nth, _ = places[i]
+        parts[i] = mark_superseded(parts[i], stamp)
+        named.append("paragraph %d of the %s entry" % (nth, entry))
+    note += ("\n\nSupersedes %s — marked where %s stand%s, words kept."
+             % (", ".join(named), "it" if len(named) == 1 else "they",
+                "s" if len(named) == 1 else ""))
+    # The ending gate (rule 15) holds here exactly as it does on touch.
+    gate_line, gate_job = ending_gate(rid, note)
+    note += gate_line
+    meta["last_touched"] = stamp
+    write(rec_path(rid), meta, add_entry("".join(parts), note, stamp))
+    print("%s amended %s: %d paragraph%s superseded" % (
+        rid, stamp, len(named), "" if len(named) == 1 else "s"))
+    if gate_line:
+        print(gate_line.strip())
+    if gate_job:
+        try:
+            epoch = int(time.mktime(time.strptime(stamp, TIMEFMT)))
+        except (ValueError, OverflowError):
+            epoch = int(time.time())
+        _stamp_attach_epoch(gate_job, epoch)
+
+
+def cmd_current(argv):
+    if not argv:
+        die("usage: eng current <id>")
+    sys.stdout.write(current_text(argv[0]))
+
+
+def cmd_quotes_superseded(argv):
+    if not argv or len(argv) > 2:
+        die("usage: eng quotes-superseded <id> [<file>|-]")
+    _, body = load(argv[0])
+    src = argv[1] if len(argv) == 2 else "-"
+    try:
+        if src == "-":
+            text = sys.stdin.read()
+        else:
+            with open(src, encoding="utf-8", errors="replace") as f:
+                text = f.read()
+    except OSError as e:
+        die("cannot read %s: %s" % (src, e))
+    hay = norm_text(text)
+    for sentence in superseded_sentences(body):
+        if norm_text(sentence) in hay:
+            print(sentence)
+            sys.exit(0)
+    sys.exit(1)
+
+
+# --- the ending gate (specs/engineering-records.md rules 15-15c) ------------
+# A record must not END at "I cannot do this", nor at a chore for the user.
+# The origin (2026-08-25 04:38): the stale-tidy-unit record was closed for
+# the night with two command lines for the user to run — one of them, "Also
+# unset: TIDY_CLAIMS_ROOTS", a statement phrased so it READ as an instruction
+# — and he woke at 09:51 to a chore his own machine could have run. So a
+# touch whose note ends that way, with no job id attached, dispatches a
+# builder against this record through the job door and lands the id on the
+# very entry, in the same write. Kind `eng` only; settle and kill are
+# decisions about a thread and stay out of it.
+
+JOB_ID_RE = re.compile(r"\b\d{8}-\d{6}-\d+\b")
+
+
+def _lib_path(name):
+    return os.path.join(os.path.dirname(os.path.realpath(__file__)), name)
+
+
+def _scan(mode, text):
+    """lib/chore-scan's verdict — the ONE detector, shared with the delivery
+    gate — or None when the scanner cannot answer (then the gate stands
+    down: fail open, never a lost write)."""
+    scan = _lib_path("chore-scan")
+    if not os.access(scan, os.X_OK):
+        return None
+    try:
+        r = subprocess.run([scan, mode], input=text.encode("utf-8"),
+                           stdout=subprocess.DEVNULL,
+                           stderr=subprocess.DEVNULL, timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return r.returncode == 0
+
+
+def _job_against(rid):
+    """A queued, dispatched or running job already standing against this
+    record (rule 15a): its id, or ''. This is what ends the chain — the
+    builder such a job runs can write its own inability onto the record
+    without dispatching a successor for itself."""
+    import json
+    d = jobs_dir()
+    try:
+        names = sorted(os.listdir(d))
+    except OSError:
+        return ""
+    for n in names:
+        if not n.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(d, n), encoding="utf-8") as f:
+                j = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if (j.get("record") == rid
+                and j.get("state") in ("queued", "dispatched", "running")):
+            return j.get("id") or n[:-5]
+    return ""
+
+
+def _stamp_attach_epoch(jid, epoch):
+    """Rule 15b: the attach write postdates the dispatch, which is exactly
+    the shape the job hook trusts — stamp its epoch on the sidecar so the
+    runner's rule-27 floor can discount this tool's own hand. Best-effort,
+    like the write declaration: a failure costs the floor, never the
+    record."""
+    status = _lib_path("job-status")
+    sidecar = os.path.join(jobs_dir(), jid + ".json")
+    if not (os.access(status, os.X_OK) and os.path.exists(sidecar)):
+        return
+    try:
+        subprocess.run([status, "set", sidecar,
+                        "record_attached_epoch=%d" % epoch],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       timeout=20)
+    except (OSError, subprocess.SubprocessError):
+        pass
+
+
+def ending_gate(rid, note):
+    """-> (line to append to the entry or '', dispatched job id or '')."""
+    if KIND != "eng" or os.environ.get("DESKCRAB_ENG_ENDING_GATE", "1") != "1":
+        return "", ""
+    if JOB_ID_RE.search(note):
+        return "", ""    # a job id is attached; the ending is answered
+    if _scan("ends-chore", note):
+        ending = "a chore for the user"
+    elif _scan("inability", note):
+        ending = "inability"
+    else:
+        return "", ""
+    live = _job_against(rid)
+    if live:
+        return ("\n\n(ending gate: job %s already stands against this "
+                "record — the ending above is its brief, not the user's)"
+                % live), ""
+    crab = os.path.join(os.path.dirname(os.path.realpath(__file__)),
+                        os.pardir, "crab")
+    out = ""
+    if os.access(crab, os.X_OK):
+        task = ("Engineering record '%s' just ended at %s with nothing "
+                "dispatched. Do the work its latest entry names — from this "
+                "machine, never as advice for the user — verify it, and "
+                "write the outcome onto the record: %s"
+                % (rid, ending, " ".join(note.split())[:600]))
+        try:
+            r = subprocess.run([crab, "job", "--record", rid, task],
+                               stdout=subprocess.PIPE,
+                               stderr=subprocess.STDOUT, timeout=90)
+            out = r.stdout.decode("utf-8", "replace")
+        except (OSError, subprocess.SubprocessError):
+            out = ""
+    m = re.search(r"^Job (\S+) (QUEUED|dispatched)", out, re.M)
+    if m:
+        how = ("queued for the night" if m.group(2) == "QUEUED"
+               else "dispatched")
+        return ("\n\n(ending gate: this entry ended at %s, so job %s now "
+                "carries the work — %s)" % (ending, m.group(1), how)), \
+            m.group(1)
+    # Fail open, loudly, ON the record (rule 15c): the write is never lost
+    # to the gate, and the record never ends at "I can't" silently.
+    first = (out.strip().splitlines()[0] if out.strip()
+             else "the door produced nothing")
+    return ("\n\n(ending gate: a job was owed here — the entry ends at %s — "
+            "and the dispatch did not land: %s)" % (ending, first)), ""
+
+
+# --- the completion review (specs/engineering-records.md rules 16-16d) ------
+# A builder never settles the ask it was dispatched against. The origin
+# (2026-08-26, record the-chess-table-maintains-a-second-conversation): the
+# ask was the chess table as a thin client of the phone's VISIBLE conversation
+# interface; the builder delivered shared audio plumbing — a clip-queue module
+# both pages load — and settled the record on it as "shared-primitive parity".
+# Narrowed work that settles its own ask reads as the ask delivered, and
+# nobody is ever brought back to the gap. So completed work is SUBMITTED
+# (state `review`), the completion wake is the review, and the verdict verbs
+# — accept, reject — belong to the review alone.
+
+def builder_role():
+    """Rule 16d: the gate is the ROLE marker, exported by lib/job-runner and
+    by nothing else. Without it every hand keeps every verb."""
+    return os.environ.get("DESKCRAB_ENG_ROLE", "") == "builder"
+
+
+def refuse_builder(verb, rid):
+    if KIND == "eng" and builder_role():
+        die("a builder does not %s the ask it was dispatched against "
+            "(specs/engineering-records.md rule 16). Submit the work for "
+            "review instead: crab eng review %s '<what you delivered and "
+            "how you verified it>' — the review that wakes on your "
+            "completion accepts or rejects it. An honest inability is also "
+            "a submission." % (verb, rid))
+
+
+def _record_workdir(rid):
+    """Rule 16b: the redispatch is PLACED where the originating build ran.
+    Every dispatch records its workdir on the sidecar (jobs.md rule 7a),
+    and the sidecar carries the record it was dispatched against — so the
+    newest sidecar against this record whose directory still exists names
+    the repository that owns the artefact. The reviewing session's own cwd
+    is a different project (live 2026-08-26: a rejected deskcrab build was
+    redispatched into the reviewer's project directory), and each `-C`
+    lands on the new sidecar in turn, so the placement survives a chain of
+    rejections. -> the directory, or '' when no sidecar offers a live
+    one."""
+    import json
+    d = jobs_dir()
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return ""
+    found = []
+    for n in names:
+        if not n.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(d, n), encoding="utf-8") as f:
+                j = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if j.get("record") != rid or not j.get("workdir"):
+            continue
+        stamp = j.get("started_epoch") or j.get("queued_epoch") or 0
+        found.append((stamp, n, j["workdir"]))
+    for _, _, wd in sorted(found, reverse=True):
+        if os.path.isdir(wd):
+            return wd
+    return ""
+
+
+def reject_dispatch(rid, missing):
+    """Rule 16b: the missing requirements ride the new brief VERBATIM,
+    through the job door with the reviewer's own deliberate force (jobs.md
+    rule 31) — work already chosen once does not queue behind the night a
+    second time — and placed with -C in the originating job's workdir when
+    a sidecar against the record still names one that exists.
+    -> (job id or '', the door's own line)."""
+    crab = os.path.join(os.path.dirname(os.path.realpath(__file__)),
+                        os.pardir, "crab")
+    if not os.access(crab, os.X_OK):
+        return "", "no job door (crab is not executable here)"
+    task = ("Engineering record '%s' went through its completion review and "
+            "was REJECTED: the submitted work did not deliver the full ask. "
+            "Missing, per the review: %s. Read the record first (crab eng "
+            "show %s) — its opening entry is the original ask and the "
+            "acceptance criteria. Deliver what is missing, verify it with "
+            "real tests or greps, and submit again: crab eng review %s "
+            "'<what you delivered and how you verified it>'."
+            % (rid, " ".join(missing.split()), rid, rid))
+    wd = _record_workdir(rid)
+    cmd = [crab, "job", "-f", "--record", rid]
+    if wd:
+        cmd += ["-C", wd]
+    cmd.append(task)
+    try:
+        r = subprocess.run(cmd,
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                           timeout=90)
+        out = r.stdout.decode("utf-8", "replace")
+    except (OSError, subprocess.SubprocessError) as e:
+        return "", "the door raised: %s" % e
+    m = re.search(r"^Job (\S+) (QUEUED|dispatched)", out, re.M)
+    if m:
+        line = ("queued for the night" if m.group(2) == "QUEUED"
+                else "dispatched")
+        if wd:
+            line += ", in the originating workdir %s" % wd
+        return m.group(1), line
+    first = (out.strip().splitlines()[0] if out.strip()
+             else "the door produced nothing")
+    return "", first
+
+
+def cmd_review(argv):
+    """Submit completed work (rule 16): open -> review, the claim on the
+    entry, last_touched bumped in the same write. The record is NOT settled
+    by this — it reads, at a glance, as work claimed and not yet judged."""
+    if len(argv) < 2:
+        die("usage: eng review <id> <claim — what was delivered, how it was "
+            "verified>")
+    rid, claim = argv[0], " ".join(argv[1:])
+    meta, body = load(rid)
+    if meta.get("state") in CLOSED_STATES:
+        die("%s is already %s — a terminal state refuses a new submission; "
+            "a new ask is a new record" % (rid, meta["state"]))
+    stamp = now()
+    meta["state"] = "review"
+    meta["last_touched"] = stamp
+    write(rec_path(rid), meta,
+          add_entry(body, "Submitted for review: %s" % claim, stamp))
+    print("%s in review %s — the record is NOT settled; the completion "
+          "review accepts or rejects the claim" % (rid, stamp))
+
+
+def cmd_accept(argv):
+    """The review's yes (rule 16a): only a submitted record, never a
+    builder's own hand. settled_by carries the verdict."""
+    if len(argv) < 2:
+        die("usage: eng accept <id> <what the review verified>")
+    refuse_builder("accept", argv[0])
+    meta, _ = load(argv[0])
+    if meta.get("state") != "review":
+        die("%s is %s, not in review — accept judges a submission "
+            "(crab eng review first; settle is the door for everything else)"
+            % (argv[0], meta.get("state") or "?"))
+    _close(argv[0], "settled", "review accepted: %s" % " ".join(argv[1:]),
+           "Settled")
+
+
+def cmd_reject(argv):
+    """The review's no (rules 16a-16b): back to open, the missing
+    requirements preserved verbatim on the entry AND redispatched at once —
+    in that order. The rejection is ON DISK, open, before the job door is
+    opened, because the dispatch runs a builder against this very record: a
+    forced redispatch can have its builder touching — or submitting — within
+    seconds, and the old shape (load, dispatch, then write the pre-dispatch
+    body back) erased whatever landed in that window. The job id and the
+    door's outcome are added afterwards by RE-READING the record, so every
+    concurrent entry, the current state, and the current last_touched
+    survive. A dispatch the door refuses is named the same way and the
+    reopen stands from the first write — the rejection is never lost to its
+    own dispatch."""
+    if len(argv) < 2:
+        die("usage: eng reject <id> <the missing requirements>")
+    refuse_builder("reject", argv[0])
+    rid, missing = argv[0], " ".join(argv[1:])
+    meta, body = load(rid)
+    if meta.get("state") != "review":
+        die("%s is %s, not in review — reject judges a submission"
+            % (rid, meta.get("state") or "?"))
+    # First write, BEFORE the dispatch: the reopen and the missing
+    # requirements, verbatim. The builder the dispatch starts reads an open
+    # record already carrying what it owes.
+    note = ("Review rejected — the full ask was not delivered. Missing: %s"
+            % missing)
+    stamp = now()
+    meta["state"] = "open"
+    meta["last_touched"] = stamp
+    write(rec_path(rid), meta, add_entry(body, note, stamp))
+    jid, doorline = reject_dispatch(rid, missing)
+    if jid:
+        outcome = ("(review: job %s now carries the missing requirements "
+                   "— %s)" % (jid, doorline))
+    else:
+        outcome = ("(review: the redispatch did not land — %s. The "
+                   "rejection stands, the record is OPEN again, and the "
+                   "next hand owes the dispatch.)" % doorline)
+    # Second write, AFTER the dispatch: re-read and annotate. The entry is
+    # located by the exact text the first write put down; the outcome lands
+    # inside it without touching state or last_touched, so a fast builder's
+    # concurrent touch or submission stands whole. Only when the entry
+    # cannot be found (a concurrent hand rewrote it) does the outcome fall
+    # back to a fresh dated entry — and only THAT write, which postdates the
+    # dispatch and bumps last_touched, needs its epoch stamped for the
+    # runner's floor (rule 15b's discipline); the first write predates the
+    # dispatch, which is the floor already.
+    meta2, body2 = load(rid)
+    # add_entry strips the note on the way in; the anchor must match what
+    # was actually written, not what was handed over.
+    anchor = "## %s\n\n%s" % (stamp, note.strip())
+    attach = stamp
+    if anchor in body2:
+        write(rec_path(rid), meta2,
+              body2.replace(anchor, anchor + "\n\n" + outcome, 1))
+    else:
+        attach = now()
+        meta2["last_touched"] = attach
+        write(rec_path(rid), meta2, add_entry(body2, outcome, attach))
+    print("%s rejected, open again %s" % (rid, stamp))
+    print("missing, preserved on the record: %s" % missing)
+    if jid:
+        print("redispatched as job %s (%s)" % (jid, doorline))
+        try:
+            epoch = int(time.mktime(time.strptime(attach, TIMEFMT)))
+        except (ValueError, OverflowError):
+            epoch = int(time.time())
+        _stamp_attach_epoch(jid, epoch)
+    else:
+        print("redispatch did not land: %s" % doorline)
+
+
+# --- the commands ----------------------------------------------------------
+
+def cmd_new(argv):
+    title, summary, body, opened = None, "", "", ""
+    args = list(argv)
+    rest = []
+    while args:
+        a = args.pop(0)
+        if a == "--summary" and args:
+            summary = args.pop(0)
+        elif a == "--body" and args:
+            body = args.pop(0)
+        elif a == "--opened" and args:
+            opened = args.pop(0)
+        else:
+            rest.append(a)
+    title = " ".join(rest).strip()
+    if not title:
+        die("usage: eng new <title> [--summary <line>] [--body <text>]")
+    rid = slugify(title)
+    n = 2
+    while os.path.exists(rec_path(rid)):
+        rid = "%s-%d" % (slugify(title), n)
+        n += 1
+    stamp = opened or now()
+    meta = {k: "" for k in FIELDS}
+    meta.update({"id": rid, "title": title, "opened": stamp,
+                 "last_touched": stamp, "state": OPEN_STATE,
+                 "summary": summary})
+    write(rec_path(rid), meta, add_entry("", body or "Opened.", stamp))
+    if KIND == "want":
+        shelf_append(rid, title)
+    print(rid)
+
+
+def one_line(meta):
+    state = meta.get("state", OPEN_STATE)
+    if state in CLOSED_STATES:
+        return "%s [%s] — %s %s: %s" % (
+            meta.get("title", "?"), meta["id"], state,
+            meta.get(CLOSED_AT) or "(undated)",
+            meta.get(CLOSED_BY) or "(unrecorded)")
+    line = "%s [%s] — opened %s, last touched %s" % (
+        meta.get("title", "?"), meta["id"],
+        meta.get("opened") or "(undated)",
+        meta.get("last_touched") or "(undated)")
+    if state == "review":
+        # Rule 16c: a completion claim awaiting judgement is live, and must
+        # never read as settled. The review verbs are named right here.
+        line += (" (in review — completion claimed, NOT settled: inspect "
+                 "the artefact against the original ask, then crab eng "
+                 "accept or reject)")
+    return line
+
+
+def state_rank(meta):
+    """List order: the pursued before the resting before the closed."""
+    s = meta.get("state", "")
+    if KIND == "want":
+        return {"live": 0, "dormant": 1}.get(s, 2)
+    return 0 if s in ("open", "review") else 1
+
+
+def cmd_list(argv):
+    want = "all"
+    if "--state" in argv:
+        i = argv.index("--state")
+        want = argv[i + 1] if i + 1 < len(argv) else "all"
+    recs = [m for m, _ in all_records()]
+    if want != "all":
+        recs = [m for m in recs if m.get("state") == want]
+    recs.sort(key=lambda m: (state_rank(m), -touched_epoch(m)))
+    for m in recs:
+        print("%-7s  %s" % (m.get("state", "?"), one_line(m)))
+
+
+def cmd_show(argv):
+    if not argv:
+        die("usage: eng show <id>")
+    load(argv[0])
+    with open(rec_path(argv[0]), encoding="utf-8", errors="replace") as f:
+        sys.stdout.write(f.read())
+
+
+def cmd_touch(argv):
+    if len(argv) < 2:
+        die("usage: eng touch <id> <note>")
+    rid, note = argv[0], " ".join(argv[1:])
+    meta, body = load(rid)
+    # The ending gate (rule 15) runs before the write: a note ending at a
+    # chore for the user or at "I can't", with no job id attached, earns a
+    # builder against this record, and the id lands on this very entry.
+    gate_line, gate_job = ending_gate(rid, note)
+    note += gate_line
+    # One stamp for both writes: the entry's heading and last_touched are the
+    # same instant by construction, never a second apart across a boundary.
+    stamp = now()
+    meta["last_touched"] = stamp
+    write(rec_path(rid), meta, add_entry(body, note, stamp))
+    print("%s touched %s" % (rid, stamp))
+    if gate_line:
+        print(gate_line.strip())
+    if gate_job:
+        # Rule 15b: this very write postdates the dispatch — stamp its epoch
+        # on the sidecar so the runner's floor can discount it.
+        try:
+            epoch = int(time.mktime(time.strptime(stamp, TIMEFMT)))
+        except (ValueError, OverflowError):
+            epoch = int(time.time())
+        _stamp_attach_epoch(gate_job, epoch)
+
+
+def _close(rid, state, by, verb):
+    meta, body = load(rid)
+    stamp = now()
+    meta["state"] = state
+    meta[CLOSED_AT] = stamp
+    meta[CLOSED_BY] = by
+    meta["last_touched"] = stamp
+    write(rec_path(rid), meta, add_entry(body, "%s: %s" % (verb, by)))
+    print("%s %s %s: %s" % (rid, state, stamp, by))
+
+
+def cmd_settle(argv):
+    if len(argv) < 2:
+        die("usage: eng settle <id> <what-settled-it>")
+    refuse_builder("settle", argv[0])
+    _close(argv[0], "settled", " ".join(argv[1:]), "Settled")
+
+
+def cmd_kill(argv):
+    if not argv:
+        die("usage: eng kill <id> [reason]")
+    refuse_builder("kill", argv[0])
+    _close(argv[0], "dead", " ".join(argv[1:]) or "abandoned", "Killed")
+
+
+def cmd_search(argv):
+    if not argv:
+        die("usage: eng search <words>")
+    words = [w.lower() for w in argv]
+    hit = False
+    for meta, body in all_records():
+        text = ("%s %s %s %s" % (meta.get("title", ""), meta.get("summary", ""),
+                                 meta.get("settled_by", ""), body)).lower()
+        if all(w in text for w in words):
+            hit = True
+            print("%-7s  %s" % (meta.get("state", "?"), one_line(meta)))
+    sys.exit(0 if hit else 1)
+
+
+def cmd_field(argv):
+    if len(argv) != 2:
+        die("usage: eng field <id> <key>")
+    meta, _ = load(argv[0])
+    print(meta.get(argv[1], ""))
+
+
+def cmd_touched_since(argv):
+    if len(argv) != 2:
+        die("usage: eng touched-since <id> <epoch>")
+    meta, _ = load(argv[0])
+    try:
+        cut = int(argv[1])
+    except ValueError:
+        die("not an epoch: %s" % argv[1])
+    sys.exit(0 if touched_epoch(meta) > cut else 1)
+
+
+# --- the wants drawer (kind want, specs/wants.md) ---------------------------
+
+def wants_shelf():
+    return os.environ.get("DESKCRAB_WANTS_FILE") or ""
+
+
+def _shelf_replace(shelf, text):
+    """Atomic and declared, like every other write this tool makes."""
+    tmp = "%s.tmp.%d" % (shelf, os.getpid())
+    declare_write(shelf, tmp)
+    with open(tmp, "w", encoding="utf-8") as f:
+        f.write(text)
+    os.replace(tmp, shelf)
+
+
+def shelf_append(rid, title):
+    """Rule 7: the one-line pointer, appended whole, in the shape the one
+    shelf reader (wants_titles) already matches. A missing shelf is reported
+    and never created — the shelf is hers; the want exists either way."""
+    shelf = wants_shelf()
+    if not shelf:
+        print("no shelf is configured; the want has no shelf line yet")
+        return
+    if not os.path.isfile(shelf):
+        print("the shelf at %s does not exist; not created — the want has "
+              "no shelf line yet" % shelf)
+        return
+    try:
+        with open(shelf, encoding="utf-8", errors="replace") as f:
+            text = f.read()
+    except OSError as e:
+        print("could not read the shelf: %s" % e)
+        return
+    line = "- **%s** → %s.md" % (" ".join(title.split()), rid)
+    if text and not text.endswith("\n"):
+        text += "\n"
+    _shelf_replace(shelf, text + line + "\n")
+    print("shelved: %s" % line)
+
+
+def shelf_remove(rid, title):
+    """Rule 11: take the want's own entry line off the shelf — matched by its
+    pointer or its bold title, at most ONE line, only an entry line — and hand
+    the removed line back so the caller can preserve it verbatim. Returns None
+    when there is no shelf or no matching line."""
+    shelf = wants_shelf()
+    if not shelf or not os.path.isfile(shelf):
+        return None
+    try:
+        with open(shelf, encoding="utf-8", errors="replace") as f:
+            lines = f.read().splitlines(True)
+    except OSError:
+        return None
+    doc = "→ %s.md" % rid
+    removed, kept = None, []
+    for ln in lines:
+        bare = ln.replace("`", "")
+        if removed is None and ln.startswith("- ") and (
+                bare.rstrip().endswith(doc) or (doc + " ") in bare
+                or (title and "**%s**" % title in ln)):
+            removed = ln.rstrip("\n")
+            continue
+        kept.append(ln)
+    if removed is None:
+        return None
+    _shelf_replace(shelf, "".join(kept))
+    return removed
+
+
+def refuse_terminal(meta, rid):
+    """Rule 4: a terminal state is final. Wanting it again is a new want."""
+    if meta.get("state") in WANT_TERMINAL:
+        die("%s is already %s (%s: %s) — a terminal state is final; wanting "
+            "it again is a new want, linked to this one"
+            % (rid, meta["state"], meta.get(CLOSED_AT) or "(undated)",
+               meta.get(CLOSED_BY) or "(unrecorded)"))
+
+
+def _shift_state(rid, state, note, verb):
+    meta, body = load(rid)
+    refuse_terminal(meta, rid)
+    stamp = now()
+    meta["state"] = state
+    meta["last_touched"] = stamp
+    write(rec_path(rid), meta, add_entry(body, "%s: %s" % (verb, note), stamp))
+    print("%s %s %s" % (rid, state, stamp))
+
+
+def cmd_dormant(argv):
+    if not argv:
+        die("usage: want dormant <id> [why]")
+    _shift_state(argv[0], "dormant", " ".join(argv[1:]) or "resting", "Dormant")
+
+
+def cmd_revive(argv):
+    if not argv:
+        die("usage: want revive <id> [note]")
+    _shift_state(argv[0], "live", " ".join(argv[1:]) or "picked back up",
+                 "Live again")
+
+
+def _close_want(rid, state, by, verb):
+    """The terminal transitions: stamp, entry, and the honest way off the
+    shelf — the removed line preserved verbatim so retirement loses no words
+    (rule 11). The shelf edit happens first so the entry can carry the line;
+    both writes are atomic and declared."""
+    meta, body = load(rid)
+    refuse_terminal(meta, rid)
+    stamp = now()
+    meta["state"] = state
+    meta[CLOSED_AT] = stamp
+    meta[CLOSED_BY] = by
+    meta["last_touched"] = stamp
+    note = "%s: %s" % (verb, by)
+    removed = shelf_remove(rid, meta.get("title", ""))
+    if removed is not None:
+        note += "\n\nShelf line at closing, preserved: %s" % removed
+    write(rec_path(rid), meta, add_entry(body, note, stamp))
+    print("%s %s %s: %s" % (rid, state, stamp, by))
+    if removed is not None:
+        print("shelf line removed; preserved verbatim in the document")
+    elif wants_shelf():
+        print("no shelf line found to remove for %s — the state change stands"
+              % rid)
+
+
+def cmd_grown(argv):
+    if len(argv) < 2:
+        die("usage: want grown <id> <how-it-grew-into-her>")
+    _close_want(argv[0], "grown-into-me", " ".join(argv[1:]), "Grown into me")
+
+
+def cmd_retire(argv):
+    if len(argv) < 2:
+        die("usage: want retire <id> <reason> (the reason is the honesty)")
+    _close_want(argv[0], "retired", " ".join(argv[1:]), "Retired")
+
+
+LINK_RE = re.compile(r"^(job|eng):([A-Za-z0-9][A-Za-z0-9._-]*)$")
+
+
+def jobs_dir():
+    d = os.environ.get("JOBS_DIR")
+    if not d:
+        data = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
+        d = os.path.join(data, "deskcrab", "jobs")
+    return d
+
+
+def _link_target_missing(ref):
+    """Rule 12: the target must exist — a link that cannot be verified is
+    refused, never invented (the wants_match door policy). Returns the
+    refusal, or '' when the target is real."""
+    what, _, ident = ref.partition(":")
+    if what == "eng":
+        if parse(os.path.join(kind_dir("eng"), ident + ".md")) is None:
+            return "no engineering record '%s' in %s" % (ident, kind_dir("eng"))
+        return ""
+    d = jobs_dir()
+    try:
+        names = os.listdir(d)
+    except OSError:
+        return "no jobs directory at %s" % d
+    if not any(n == ident or n.startswith(ident + ".") for n in names):
+        return "no job '%s' in %s" % (ident, d)
+    return ""
+
+
+def cmd_link(argv):
+    if len(argv) < 2:
+        die("usage: want link <id> <job:<job-id>|eng:<record-id>>...")
+    rid, refs = argv[0], argv[1:]
+    meta, body = load(rid)
+    for ref in refs:
+        if not LINK_RE.match(ref):
+            die("not a linkable ref: '%s' (job:<job-id> or eng:<record-id>)"
+                % ref)
+        missing = _link_target_missing(ref)
+        if missing:
+            die("%s — a link that cannot be verified is refused, never "
+                "invented" % missing)
+    have = [l for l in (meta.get("links") or "").split() if l]
+    fresh = [r for r in refs if r not in have]
+    if not fresh:
+        print("%s already carries %s" % (rid, " ".join(refs)))
+        return
+    meta["links"] = " ".join(have + fresh)
+    stamp = now()
+    meta["last_touched"] = stamp
+    write(rec_path(rid), meta,
+          add_entry(body, "Linked: %s" % " ".join(fresh), stamp))
+    print("%s links: %s" % (rid, meta["links"]))
+
+
+# --- wants migration (rules 17-19) ------------------------------------------
+
+SHELF_ENTRY_RE = re.compile(r"^- (?:\S+ )?\*\*(.+?)\*\*(.*)$")
+POINTER_RE = re.compile("→ *`?([^ `]+\\.md)`?")
+DOC_DATE_RE = re.compile(r"\b(2\d{3}-\d{2}-\d{2})\b")
+# The journal forms in which a document names a date AS ITS OWN (rule 18):
+# a dated entry heading, a dated log bullet, an explicit opened phrase.
+EVIDENCE_LINE_RE = re.compile(
+    r"^## .*\b2\d{3}-\d{2}-\d{2}\b"
+    r"|^- (?:\*\*)?2\d{3}-\d{2}-\d{2}\b"
+    r"|\bopened\b\D{0,40}2\d{3}-\d{2}-\d{2}\b",
+    re.IGNORECASE)
+
+
+def _evidence_date(d):
+    """A named date is evidence only when it is real, not before 2000, and
+    not in the future (rule 18)."""
+    try:
+        t = time.mktime(time.strptime(d, "%Y-%m-%d"))
+    except (ValueError, OverflowError):
+        return False
+    return t <= time.time() + 86400
+
+
+def _named_dates(text):
+    """The dates the document names as its own, earliest first. A date in
+    running prose is a CITATION, never an origin — the real drawer's
+    documents cite conversations, stores, and filenames months older than
+    any want, and the flat minimum dated three wants into an era before the
+    drawer existed (rule 18)."""
+    out = set()
+    for line in text.splitlines():
+        if EVIDENCE_LINE_RE.search(line):
+            out.update(DOC_DATE_RE.findall(line))
+    return sorted(d for d in out if _evidence_date(d))
+
+
+def _git_first_date(path):
+    """The file's earliest commit date, empty outside a repo or uncommitted."""
+    try:
+        r = subprocess.run(
+            ["git", "-C", os.path.dirname(os.path.abspath(path)) or ".",
+             "log", "--follow", "--format=%ad",
+             "--date=format:%Y-%m-%d %H:%M:%S", "--", os.path.basename(path)],
+            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+            timeout=15)
+        if r.returncode == 0:
+            dates = [l.strip() for l in r.stdout.decode("utf-8", "replace")
+                     .splitlines() if l.strip()]
+            if dates:
+                return dates[-1]
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return ""
+
+
+def _birth_time(path):
+    try:
+        r = subprocess.run(["stat", "-c", "%W", path],
+                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                           timeout=10)
+        w = int(r.stdout.decode().strip())
+        if w > 0:
+            return time.strftime(TIMEFMT, time.localtime(w))
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass
+    return ""
+
+
+def derive_opened(path, text):
+    """Rule 18: the earliest EVIDENCE, never today's clock — git history first
+    where there is any, else the earlier of the earliest date the document
+    names as its own and the file's birth time, else the file's mtime."""
+    cands = []
+    g = _git_first_date(path)
+    if g:
+        cands.append(g)
+    named = _named_dates(text)
+    if named:
+        cands.append(named[0] + " 00:00:00")
+    b = _birth_time(path)
+    if b:
+        cands.append(b)
+    if cands:
+        return min(cands)
+    return time.strftime(TIMEFMT, time.localtime(os.path.getmtime(path)))
+
+
+def cmd_migrate_want(argv):
+    """Frontmatter onto the drawer the shelf names, once (rules 17-19): the
+    block is PREPENDED and the body below it is the original file
+    byte-for-byte — analysis decodes a copy, the write concatenates raw
+    bytes, so no word can be lost or reworded. Idempotent: a document
+    already carrying frontmatter is skipped. A document the shelf does not
+    name is NAMED and left untouched — whether it is a want is her call."""
+    shelf = argv[0] if argv else wants_shelf()
+    if not shelf:
+        die("usage: want migrate [<shelf file>] (or configure the shelf)")
+    try:
+        with open(shelf, encoding="utf-8", errors="replace") as f:
+            shelf_lines = f.read().splitlines()
+    except OSError as e:
+        die(str(e))
+    drawer = eng_dir()
+    migrated = kept = entries = 0
+    missing, named = [], set()
+    for line in shelf_lines:
+        m = SHELF_ENTRY_RE.match(line)
+        if not m:
+            continue
+        entries += 1
+        shelf_title, tail = m.group(1).strip(), m.group(2)
+        pm = POINTER_RE.search(line)
+        if not pm:
+            print("shelf line points at no document, left as it stands: %s"
+                  % line)
+            continue
+        doc = os.path.basename(pm.group(1))
+        named.add(doc)
+        path = os.path.join(drawer, doc)
+        if not os.path.isfile(path):
+            missing.append(doc)
+            continue
+        if parse(path) is not None:
+            kept += 1
+            continue
+        with open(path, "rb") as f:
+            raw = f.read()
+        text = raw.decode("utf-8", errors="replace")
+        title = shelf_title
+        for tl in text.splitlines():
+            if tl.startswith("# "):
+                title = tl[2:].strip()
+                break
+        clause = tail.split("→")[0].strip()
+        clause = clause.lstrip("—–-").strip()
+        meta = {k: "" for k in FIELDS}
+        meta.update({
+            "id": re.sub(r"\.md$", "", doc),
+            "title": title,
+            "opened": derive_opened(path, text),
+            "last_touched": time.strftime(
+                TIMEFMT, time.localtime(os.path.getmtime(path))),
+            "state": OPEN_STATE,
+            "summary": clause,
+        })
+        head = "\n".join(["---"] + ["%s: %s" % (k, quote(meta.get(k, "")))
+                                    for k in FIELDS] + ["---"]) + "\n\n"
+        tmp = "%s.tmp.%d" % (path, os.getpid())
+        declare_write(path, tmp)
+        with open(tmp, "wb") as f:
+            f.write(head.encode("utf-8") + raw)
+        os.replace(tmp, path)
+        migrated += 1
+    print("migrated %s: %d wants given frontmatter, %d already carried it, "
+          "%d shelf entries read"
+          % (os.path.basename(shelf), migrated, kept, entries))
+    for doc in missing:
+        print("shelf points at a missing document, left as it stands: %s"
+              % doc)
+    try:
+        drawer_docs = sorted(n for n in os.listdir(drawer)
+                             if n.endswith(".md"))
+    except OSError:
+        drawer_docs = []
+    for n in drawer_docs:
+        if n not in named:
+            print("in the drawer but not on the shelf, left untouched: %s"
+                  % n)
+
+
+def cmd_prompt(argv):
+    """The shelves-layer pointer (prompt-assembly rule 21a).
+
+    Counts and retrieval doors only, identical on every profile: no record's
+    title, dates, or prose rides the prompt. The record on disk is the only
+    current account of a thread, and the block says to read it first, every
+    single time. Empty drawer, no block.
+    """
+    recs = [m for m, _ in all_records()]
+    if not recs:
+        return
+    live = [m for m in recs if m.get("state") in ("open", "review")]
+    review = sum(1 for m in live if m.get("state") == "review")
+    closed = len(recs) - len(live)
+    counts = "%d live thread%s" % (len(live), "s" if len(live) != 1 else "")
+    if review:
+        counts += (" (%d of them in review — completion claimed, NOT "
+                   "settled: inspect, then crab eng accept or reject)"
+                   % review)
+    counts += " and %d closed" % closed
+    print("YOUR ENGINEERING RECORDS — one thread per file in %s: %s. Never "
+          "speak about or act on a thread from memory or from an earlier "
+          "reading: read the record first, every single time — 'crab eng "
+          "search <words>' finds it, 'crab eng show <id>' is the whole of "
+          "it, 'crab eng list --state all' the full drawer. A closed "
+          "record is history, never a present-tense fact. Every state "
+          "change goes through 'crab eng' (touch/settle/kill), never a "
+          "hand edit, so the dates stay true; a correction that drops an "
+          "earlier instruction is 'crab eng amend <id> --supersedes "
+          "<its text> <note>', which marks that paragraph superseded so "
+          "no later hand builds from it." % (eng_dir(), counts))
+
+
+# --- migration -------------------------------------------------------------
+
+HEAD_RE = re.compile(r"^(\d{4}-\d{2}-\d{2})(?:[ T](\d{2}:\d{2})(?::\d{2})?)?"
+                     r"\s*[—-]+\s*(.+)$")
+ANY_DATE_RE = re.compile(r"(\d{4}-\d{2}-\d{2})(?:[ T](\d{2}:\d{2}))?")
+# The archive index's own shape (engineering/INDEX.md): a bullet linking a
+# thread's file, an em-dash, a description that may wrap onto indented lines.
+BULLET_RE = re.compile(r"^- \[([^\]]+)\]\([^)]*\)\s*[—-]+\s*(.*)$")
+SETTLED_RE = re.compile(r"(?i)^settled\b|\((?:closed|settled|done)\)\s*$")
+
+
+def _heading_date(heading):
+    m = HEAD_RE.match(heading)
+    if m:
+        return ("%s %s:00" % (m.group(1), m.group(2)) if m.group(2)
+                else "%s 00:00:00" % m.group(1)), m.group(3).strip()
+    m = ANY_DATE_RE.search(heading)
+    if m:
+        return ("%s %s:00" % (m.group(1), m.group(2)) if m.group(2)
+                else "%s 00:00:00" % m.group(1)), heading.strip()
+    return "", heading.strip()
+
+
+def cmd_migrate(argv):
+    """One record per '## ' entry of a prose thread file, and one per
+    '- [file](file) — description' bullet of the archive index. Dates come
+    off the entry's own heading or description and are left blank rather than
+    guessed; state stays open unless the ENTRY ITSELF says settled or closed
+    — prose is never interpreted. Idempotent: an existing slug is skipped,
+    never overwritten. The source file is read only; it stays in place as
+    the archive."""
+    if not argv:
+        die("usage: eng migrate <prose file>")
+    src = argv[0]
+    try:
+        with open(src, encoding="utf-8", errors="replace") as f:
+            lines = f.read().splitlines()
+    except OSError as e:
+        die(str(e))
+    entries = []  # (heading, [body lines]) — the '## ' thread-log shape
+    bullets = []  # [linked file, description] — the INDEX.md list shape
+    cur = bullet = None
+    for line in lines:
+        m = BULLET_RE.match(line)
+        if line.startswith("## "):
+            cur, bullet = (line[3:].strip(), []), None
+            entries.append(cur)
+        elif m:
+            cur, bullet = None, [m.group(1), m.group(2).strip()]
+            bullets.append(bullet)
+        elif bullet is not None and line.startswith("  ") and line.strip():
+            # The description wraps onto indented lines; unwrap it.
+            bullet[1] = ("%s %s" % (bullet[1], line.strip())).strip()
+        else:
+            bullet = None
+            if cur is not None:
+                cur[1].append(line)
+    created = skipped = 0
+    for heading, body_lines in entries:
+        opened, title = _heading_date(heading)
+        rid = slugify(title)
+        if os.path.exists(rec_path(rid)):
+            skipped += 1
+            continue
+        state, settled_at, settled_by = "open", "", ""
+        if SETTLED_RE.search(title):
+            state = "settled"
+            settled_at = opened
+            settled_by = ("its own heading marks it settled "
+                          "(migrated from %s)" % os.path.basename(src))
+        meta = {"id": rid, "title": title, "opened": opened,
+                "last_touched": opened, "state": state,
+                "settled_at": settled_at, "settled_by": settled_by,
+                "summary": title}
+        body = "## %s — migrated from %s\n\n%s\n" % (
+            opened or "(undated)", os.path.basename(src),
+            "\n".join(body_lines).strip())
+        write(rec_path(rid), meta, body)
+        created += 1
+    for fname, desc in bullets:
+        # An index entry names a thread whose prose lives in its own file, so
+        # the record keeps the file's own name as id and title and points back
+        # at it — the archive stays the body's home, the record carries the
+        # state the archive never could.
+        stem = re.sub(r"\.md$", "", os.path.basename(fname))
+        rid = slugify(stem)
+        if os.path.exists(rec_path(rid)):
+            skipped += 1
+            continue
+        opened = ""
+        m = ANY_DATE_RE.search(desc)
+        if m:
+            opened = ("%s %s:00" % (m.group(1), m.group(2)) if m.group(2)
+                      else "%s 00:00:00" % m.group(1))
+        state, settled_at, settled_by = "open", "", ""
+        if SETTLED_RE.search(desc):
+            state = "settled"
+            settled_at = opened
+            settled_by = ("its own index entry marks it settled "
+                          "(migrated from %s)" % os.path.basename(src))
+        meta = {"id": rid, "title": stem, "opened": opened,
+                "last_touched": opened, "state": state,
+                "settled_at": settled_at, "settled_by": settled_by,
+                "summary": desc}
+        body = ("## %s — migrated from %s\n\n%s\n\nThe thread's own prose is "
+                "%s, beside the index in the read-only archive.\n" % (
+                    opened or "(undated)", os.path.basename(src), desc, fname))
+        write(rec_path(rid), meta, body)
+        created += 1
+    print("migrated %s: %d records created, %d already existed, %d entries read"
+          % (os.path.basename(src), created, skipped,
+             len(entries) + len(bullets)))
+
+
+def main():
+    global KIND, FIELDS, OPEN_STATE, CLOSED_AT, CLOSED_BY, CLOSED_STATES
+    argv = sys.argv[1:]
+    if argv and argv[0] == "--kind":
+        if len(argv) < 2 or argv[1] not in ("eng", "want"):
+            die("--kind takes 'eng' or 'want'")
+        KIND = argv[1]
+        argv = argv[2:]
+    if KIND == "want":
+        FIELDS = WANT_FIELDS
+        OPEN_STATE, CLOSED_AT, CLOSED_BY = "live", "retired_at", "retired_by"
+        CLOSED_STATES = WANT_TERMINAL
+    shared = {"new": cmd_new, "list": cmd_list, "show": cmd_show,
+              "touch": cmd_touch, "search": cmd_search, "field": cmd_field,
+              "touched-since": cmd_touched_since}
+    if KIND == "want":
+        cmds = dict(shared, dormant=cmd_dormant, revive=cmd_revive,
+                    grown=cmd_grown, retire=cmd_retire, link=cmd_link,
+                    migrate=cmd_migrate_want)
+        usage = WANT_USAGE
+    else:
+        cmds = dict(shared, settle=cmd_settle, kill=cmd_kill,
+                    review=cmd_review, accept=cmd_accept, reject=cmd_reject,
+                    prompt=cmd_prompt, migrate=cmd_migrate,
+                    amend=cmd_amend, current=cmd_current)
+        cmds["quotes-superseded"] = cmd_quotes_superseded
+        usage = __doc__
+    # A verb of the other kind is refused with THIS kind's usage (wants
+    # rule 14): the states differ, so a silent alias would write a state
+    # the drawer does not have.
+    if not argv or argv[0] not in cmds:
+        sys.exit(usage.strip())
+    cmds[argv[0]](argv[1:])
+
+
+if __name__ == "__main__":
+    main()

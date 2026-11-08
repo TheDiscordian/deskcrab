@@ -1,0 +1,21 @@
+#!/bin/bash
+# The codex CLI — the spend gate's second engine (specs/test-harness.md rule
+# 10). The night judge defaults to a codex name (specs/nightly.md rule 14c),
+# so a test that runs a nightly phase unpinned would otherwise boot the LIVE
+# ChatGPT subscription. This stands in unconditionally and answers in the
+# exec road's event shapes every caller parses; the app-server road answers
+# exit 75 — the protocol-refused-before-any-turn shape that legitimately
+# falls through to exec (specs/model-backends.md rule 11a).
+#
+# A test that needs a particular answer replaces this file through
+# sandbox_stub, which keeps the stub list a single directory.
+printf '%s\n' "$*" >> "${SANDBOX_CODEX_LOG:-/dev/null}"
+if [ "${1:-}" = "app-server" ]; then
+    exit 75
+fi
+cat > /dev/null
+printf '%s\n' '{"type":"thread.started","thread_id":"stub-thread"}'
+printf '%s\n' '{"type":"turn.started"}'
+printf '%s\n' '{"type":"item.completed","item":{"id":"item_0","type":"agent_message","text":"stub reply."}}'
+printf '%s\n' '{"type":"turn.completed","usage":{"input_tokens":10,"cached_input_tokens":0,"cache_write_input_tokens":0,"output_tokens":2}}'
+exit 0

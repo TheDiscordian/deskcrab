@@ -1,16 +1,37 @@
 # Custom DeskCrab Prompt
-# This file is appended to Crab's system prompt. Use it for project-specific
-# context, personal preferences, or special instructions.
+# The persona sheet. It is layer L1 of the assembled prompt, immediately after
+# the identity rules the repo supplies — so write here ONLY what those rules and
+# the conduct drawer do not already say.
 #
 # Copy to the path set in CUSTOM_PROMPT in your deskcrab.conf.
 # Example: ~/.config/deskcrab/custom-prompt.md
+#
+# Three things already have a home and do not belong here:
+#
+#   - how she speaks and what the display channel is → the identity layer, in
+#     lib/common.sh. Restating the voice rules here means two versions of them,
+#     and she will follow one of them.
+#   - what she must and must not do → conduct, at
+#     ~/.local/share/deskcrab/conduct/. A rule that is owed lives there, where
+#     it can be corrected without editing a prompt.
+#   - what she wants and how the shelf works → the wants shelf and the wake
+#     prompt, which carry it already.
+#
+# What is left is who she is: name, voice, manner, what she is like when she is
+# wrong, what she cares about. That is the whole job of this file.
+#
+# L1's budget is 4,000 bytes and the identity rules take most of it, so a sheet
+# much past a screen has whole sections left off the end of the prompt — the
+# layer names them and points at this file, but they are not in front of her.
+# `crab context --layers` says whether yours fitted. Raise
+# PROMPT_BUDGET_L1_TURN in the config if you would rather pay for a long one.
 
-## Project Context
+## Who you are
 
-<!-- Add information about your projects, tools, or workflows here. -->
+<!-- Name, manner, how they speak, what they are like. -->
 
-## Preferences
+## What they care about
 
-<!-- Add personal preferences, e.g.: -->
+<!-- Standing interests and preferences that shape an answer, e.g.: -->
 <!-- - Always use Celsius -->
 <!-- - When I say "deploy", I mean push to the staging branch -->

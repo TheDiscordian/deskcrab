@@ -1,0 +1,932 @@
+# Spec: detached jobs
+
+## PURPOSE
+
+A job is work that must outlive the turn that asked for it. It runs as its own headless session owned
+by systemd, not by the conversation, so the user can keep talking while it builds. This spec owns
+dispatch, the state sidecar, the blocked-versus-failed distinction, the queue and the dispatch
+policy, collection of a finished builder's work, the correction channel into a running builder,
+and the completion channel a job has back to her.
+
+## CONTRACT
+
+### Dispatch
+
+1. Background work MUST be a detached job, never a subagent. A subagent dies with its turn, and
+   while it lives it holds the turn open so the user cannot speak.
+1a. A task whose whitespace-stripped form is empty, or is exactly `null`, `None`, or `undefined`,
+   MUST be refused before any sidecar or unit exists. Those strings are what a broken command
+   substitution says, never what work sounds like: on 2026-08-11 a re-dispatch loop read `.task`
+   out of sidecars whose field is `.description`, jq answered the literal word `null` three times,
+   and three real builders woke with no brief and burned tokens investigating their own emptiness.
+   The refusal MUST say the task looks like a broken substitution, not a brief, and MUST name the
+   real field.
+1b. An immediate local control command MUST run in the requesting turn, never become a detached
+   builder job. In particular, a brief containing the installed `betty-openrsc steer` command
+   MUST be refused before any sidecar or unit exists, and the refusal MUST direct the caller to
+   handle a valid immediate redirection in the requesting turn. This rule does not make
+   steering appropriate for general messages, lessons, repair reports, or recurring behavioural
+   defects; those require the relevant memory or implementation work. Steering is part of the
+   live ACTIONS control path.
+2. A job MUST be dispatched to the user manager with the collect option and its own unit name, with
+   a fallback to a detached session when no user manager is running.
+2a. A job unit MUST be dispatched at background CPU priority — the same weight and niceness the
+   wake queue books with ([wake-queue.md](wake-queue.md) rule 12a, `BACKGROUND_CPU_WEIGHT`,
+   `BACKGROUND_NICE`). A builder chewing a compile beside a spoken turn is the measured case: the
+   phone server alone burned 49 CPU-minutes in a 46-minute window on 2026-08-09 while turns ran
+   beside wakes and builders. Priority only — a job is never paused or killed for a turn.
+3. Dispatch MUST return immediately. The turn that asked MUST NOT wait on it.
+4. A job MUST receive every instance redirect explicitly: config path, state prefix, jobs directory,
+   wakes directory, memory directory, account state file, and the current login. A user unit gets
+   a bare environment, and a scratch instance's jobs must stay in the scratch instance.
+5. A job MUST be dispatched with the account the selection answers with now, and MUST walk the
+   flat list itself from there.
+5a. A builder runs on the model the dispatch named — the per-job request of rule 5c, else
+   `JOB_MODEL` — and within a family NOTHING may downgrade or substitute it: not a retry, not
+   the block retry, not any attempt of the account walk. A model-limit refusal ("You've reached
+   your <model> limit") is an ACCOUNT that ran dry, not a model to swap out: it matches the
+   shared limit signature and rotates the walk to the next account exactly as any limit refusal
+   does ([account-fallback.md](account-fallback.md) rules 7 and 12), with `--model` unchanged on
+   every attempt. A SILENTLY substituted model is worse than a blocked job, because a blocked
+   job says so; the one sanctioned move between families is rule 5b's ordered walk, which is
+   loud everywhere a reader could look. When every family in that walk has been refused on every
+   offered account, the job is `blocked` — terminally, past the one automatic retry of rule 18b:
+   no re-queue, no additional wakes, nothing that accumulates and mass-fires when credit
+   returns.
+5b. One family's dry spell MUST NOT stop all builder work. The 2026-08-28 night is the measured
+   case (the record `every-builder-job-is-pinned-to-fable-so-one-mode`): nine fable dispatches
+   refused in four seconds each across seven hours, zero builder starts — while the very
+   accounts that refused them answered opus immediately, and the refusal wording itself said
+   "switch models with /model". So when EVERY offered account refuses at a family — the
+   whole-list refusal that used to be terminal — the worker walks to the NEXT family in the
+   job's ordered list and runs the whole account walk again there. The list is the job's own
+   model first, then `JOB_MODEL_FALLBACK` in the configured order (default `opus sonnet`; set
+   it empty to restore the terminal block at the pinned family), duplicates dropped by family
+   key. The walk crosses engines by the same rule every model knob routes by
+   ([model-backends.md](model-backends.md) rule 14): a codex family that is refused or cooling
+   walks on exactly as a dry Claude family does. Every move is LOUD: the job log names both
+   families, the `attempts` record carries the move, and the sidecar's `model` is re-stamped to
+   what the builder actually ran (rule 35) — collection and the completion wake therefore
+   report the family used, never merely the one that was asked for. A genuine build failure
+   (rule 15) ends the job at the family it happened on: the walk exists for refusals, not for
+   papering over a broken build with a second opinion.
+5c. `crab job --model <name>` pins ONE job to a model, overriding `JOB_MODEL` for that job
+   only: the request is recorded on the sidecar as `model_request`, the dispatch stamps `model`
+   from it, and the worker reads it back from the sidecar — the conf's own `JOB_MODEL`
+   assignment overwrites any inherited environment when the library sources it, so the sidecar
+   is the one carrier that survives into a detached worker. Requeue and the automatic block
+   retry (rules 7a, 18b) carry the request exactly as they carry the record and the slug. The
+   conf is never edited and a dispatch without the flag behaves exactly as before. The name is
+   validated at the door (the same token as [wake-queue.md](wake-queue.md) rule 13b), and rule
+   5b's walk starts from the override when one is given.
+6. A job MUST be silent by contract: no speech, no notifications, no windows.
+7. A job's only channel back to her is one event wake on completion, carrying the outcome as its
+   reason.
+7a. `crab job requeue <id>` MUST re-dispatch a recorded job from its own sidecar: the description
+   and the workdir come off the record, so neither a human nor a session ever retypes a field name
+   — the failure mode of rule 1a cannot arise. To make that possible, dispatch MUST record the
+   workdir in the sidecar. A missing sidecar, a description rule 1a would refuse, or a sidecar with
+   no recorded workdir (one written before the field existed) MUST be an error, never a dispatch.
+   Requeue goes through the same preflight as any other dispatch: the block marker still holds it,
+   and the redispatch is a new job with its own id.
+7c. The completion wake's delivery may be DELAYED by a busy user or an in-flight interactive turn,
+   never consumed by either. Rule 7 makes the wake the job's only channel back, so a delivery gate
+   that mutes it without re-booking erases the only notification the job will ever send — on
+   2026-08-25 the 09:57 install build's verified result was muted for a busy moment and lived in
+   the session journal alone until the user asked, and the 02:06 clock build's sat in a flat
+   five-minute hold past the moment he asked. [wake-queue.md](wake-queue.md) rule 27d carries the
+   discipline: a bounded in-process wait for the recording, utterance or in-flight reply to clear,
+   prompt delivery the moment it does, and a re-book of the ORIGINAL reason under the runner's own
+   booking identity when it does not — stamped for the staleness gate, so news he learned some
+   other way while it waited is retired loudly rather than said twice. The journal record stands
+   either way, and is never the delivery.
+7b. `crab job --record <id>` dispatches a builder AGAINST an engineering record
+   ([engineering-records.md](engineering-records.md)). An id the records drawer does not know MUST
+   be refused before any sidecar or unit exists; a known one is recorded in the sidecar as
+   `record`. Requeue and the automatic block retry carry the record along off the sidecar, so a
+   re-dispatched brief keeps the obligation its original carried.
+7d. `crab job steer <id> <correction>` is the only command that sends new instructions to a
+    detached builder already in flight. It MUST target that job's durable inbox and MUST NOT book
+    a wake, start a second builder, stop the builder, or alter another job. A job accepts steering
+    only when its sidecar says it is `dispatched` or `running`, its model uses the Claude backend,
+    and the worker marked the run `steerable`; a job launched before the steering hook existed, a
+    Codex job, an ended job, a missing id, or an empty correction is refused in plain words.
+7e. A steerable builder MUST receive only its own inbox through a per-run `PostToolUse` hook. The
+    command writes the correction atomically as `pending`; the hook atomically claims it, injects
+    it as a correction that supersedes conflicting earlier instructions, and records it as
+    `delivered`. A repeated command with the same correction while that correction is still
+    pending MUST coalesce rather than create duplicate instructions. The hook's empty path is
+    silent and MUST NOT read the interactive mid-turn mailbox.
+7f. Queued, delivered, and applied are different claims. `crab job steer` proves that a correction
+    is queued for the named builder. The delivery receipt proves that the builder received it at
+    a tool boundary. Neither proves that the builder applied it or that the resulting work is
+    correct; those claims require the resulting artefact or later builder evidence. A
+    `crab wake-now` booking is a separate assistant wake and NEVER counts as steering a builder.
+7g. A builder MUST NOT finish successfully while its inbox still contains a pending correction.
+    The runner records each such message as undelivered and fails the job in plain words, so the
+    completion path cannot present an off-course result as though the correction reached it.
+7i. Dispatch NAMES the live work that resembles this brief. On 2026-09-02 four builders were
+    dispatched in eight minutes against one Firemaking sequence — two of them found the others
+    mid-implementation in the same shared checkouts and stood down, having spent an account each
+    to discover it. So `crab job` (dispatching or queueing) compares the new brief against every
+    `running` and `queued` sidecar's description and prints the close ones — id, state, and the
+    opening of the description — before it acts. The measure is an idf-weighted OVERLAP
+    COEFFICIENT over the lighter of the two briefs, never Jaccard: Jaccard's score moves with how
+    much anybody happened to type, scoring one real pair 0.21 written short and 0.40 written in
+    full, and the idf weight carries a `+1` floor so that a small corpus, where a common word
+    appears in every sidecar, does not collapse every weight to zero. It is a WARNING and never
+    a refusal. Measured over tonight's dispatches the duplicates sit at 0.67–0.86, a DIFFERENT
+    gap wearing the same brief template at 0.57–0.68, and unrelated work at 0.03–0.37: the two
+    upper bands touch, so no threshold can separate them and a refusal would silently cost real
+    work. The floor is 0.45 — low enough to name a template cousin rather than miss a real twin.
+    The point is that the hand dispatching sees the live sibling at the moment it matters, and
+    the job still goes out.
+7h. A detached builder is neither the user nor the assistant persona. The shared conversation
+    boundary MUST refuse a builder context before it can create a desktop, phone, or autonomous
+    turn, and the `crab` presentation doors (bare message text, `remote`, `notify`, `play`, and
+    wake/display controls) MUST fail closed too. A builder reports through its job log/checkpoint
+    and any attached engineering record; the existing job-completion wake is the labeled path by
+    which Beatrice later learns the result. Builder prose MUST never be written as a `User` block,
+    spoken in Beatrice's voice, or displayed as though Ryan said it.
+7j. A job CARRIES the errand owed at its completion. `crab job --on-done '<errand>' <brief>`
+    records on the sidecar, as `on_done`, what the dispatching hand means to do when the job
+    exits — a message to send, a service to restart, a person to tell — and
+    `crab job on-done <id> '<errand>'` attaches one to a job already `queued`, `dispatched` or
+    `running`. An errand is a line: 1000 characters at most, newlines and tabs flattened to
+    spaces because the wake record is one line, otherwise byte for byte what was typed. An empty
+    one is refused, an identical one already attached coalesces, and the flag may repeat.
+    Attachment goes through the one sidecar writer under the job's own lock with the state
+    re-read inside it, and it REFUSES every state but those three in plain words: the runner
+    reads the list AFTER its final state write, so an errand accepted is an errand carried, and
+    an errand that would have missed the wake is refused rather than silently filed. The list
+    rides requeue and the automatic block retry exactly as the record and the slug do, and a
+    duplicate that stands down (rule 44) hands its errands to the incumbent, whose wake is the
+    news. The origin (2026-08-21): a Signal line queued in conversation for a build's exit —
+    "when this job exits, do X" lived only in the transcript, the 17:56 completion wake arrived
+    holding the log and nothing else, and the message was never sent; the user found out from
+    his phone. An intention that must survive a turn boundary rides the thing that crosses it.
+7k. The completion wake carries the errand as an OWED action. Whatever the outcome — collected,
+    failed, died waiting, blocked, the record untouched or unsubmitted — the wake's reason ends
+    with an `OWED ERRAND` block quoting every attached errand VERBATIM and instructing the
+    waking session to perform it now, or to say plainly in its reply that it was NOT done and
+    why; silently skipping it is the named failure. The event wake prints its reason as the
+    session's agenda ([wake-queue.md](wake-queue.md)), so the prompt holds the errand in the
+    dispatcher's own words. The outcome above the block is context, never permission: a blocked
+    or failed job does not cancel the errand, it changes what honest performance looks like — a
+    "the build landed" message is not sent over a failed build; that is reported undone, with
+    the reason. A job with no errand books exactly the wake it always did, byte for byte; an
+    instance that books no completion wake (no `WANTS_FILE`) says in the job log that the errand
+    cannot be carried; and no historical sidecar is re-read for errands — nothing is replayed.
+
+### State
+
+8. There MUST be exactly one field name for a job's state, one writer of it, and one lock. The
+   schema field is `state`, and every writer uses it. A second field name means the sidecar keeps
+   saying "running" and the next report reaps the job as died.
+9. The state values are: `queued`, `dispatched`, `running`, `finished`, `collected`, `failed`,
+   `stopped`, `blocked`, `died`, `duplicate`, `superseded`. Every value MUST be documented where
+   the schema is documented.
+   `queued` is a brief on the shelf with no unit and no builder (rule 30); `dispatched` is the
+   moment between the dispatch call and the worker's first write, reaped exactly as `running` is
+   when the worker never appears; `collected` is a finished job whose work has been located and
+   recorded (rule 38); `duplicate` is a worker that lost the single-flight race and exited
+   without touching any work file (rule 44); `superseded` is a queued recurring brief dropped at
+   the door because its own next occurrence had arrived (rule 45).
+9a. The sidecar's `steerable` field records whether this run started with the per-job correction
+    hook. Its `steering` history records queued and delivered receipts. These fields describe the
+    correction channel; they never replace or imply the job's `state`.
+10. Writes to the sidecar MUST be atomic, so a concurrent reader or reaper never sees a half-written
+    file.
+11. Any read-modify-write of the sidecar MUST hold the job's lock. The stop path currently races the
+    worker's own termination trap.
+12. `report` MUST reap a hard-killed worker: a sidecar still claiming to run, whose unit is inactive
+    and whose recorded process is gone, is rewritten as died.
+
+### Blocked versus failed
+
+13. A run that exited non-zero having produced only the CLI's own refusal is `blocked`, not
+    `failed`. No work was attempted and the log holds nothing to verify.
+14. `blocked` MUST be judged on the **final attempt's own bytes**, so an earlier refusal kept as
+    history cannot masquerade as the last attempt's outcome. `blocked` means the whole chain was
+    tried.
+15. A real build failure MUST NEVER match the blocked signature. Misreading one as "never ran" hides
+    a broken builder.
+    - The judgement MUST read the stream's **events**, never its raw bytes, and MUST consider only
+      text the CLI itself produced: a result event, a synthetic (api-error) assistant message, or a
+      line that is not JSON at all. A stream carries every byte of every tool result, so a raw
+      signature match says "blocked" for a builder that merely READ a file containing the wording —
+      and one such file is `lib/common.sh`, which holds the signature's own patterns. The
+      consequence is not local: a false block moves the durable current off an account that
+      never refused.
+    - A slice containing genuine model output is NEVER blocked, whatever words passed through it. A
+      run that produced output is a run that happened.
+15a. A limit that cuts a build off MID-RUN (account-fallback.md rule 12a: genuine output, then the
+    CLI's own limit text with nothing genuine after it) MUST ride the walk to the next account
+    exactly as a refusal does, so an interrupted build finishes at once on a login with credit.
+    A FINAL attempt that ends cut stays `failed`, never `blocked` — work was attempted and the log
+    holds it — and four builders died exactly this way on the night of 2026-08-11, each one
+    journalled "failed (exit 1)" with the session-limit line standing as its closing words.
+16. While the block marker is younger than the retry window, dispatch of a MATCHING FAMILY must
+    refuse. The marker records the families whose whole walk refused (rule 5b), and it holds
+    exactly those: a dispatch whose own family — the per-job request of rule 5c, else
+    `JOB_MODEL`, by family key — is not among them passes, because a fable dry spell holding an
+    opus brief is the 2026-08-28 night this scoping ends. A marker scoped `all`, and the
+    two-field marker written before the families field existed, hold every family — the
+    pre-scope behaviour, preserved. The standing policy of dispatching a builder the moment
+    work is noticed otherwise fires builder after builder into the same wall.
+17. The marker MUST expire on its own, so the first dispatch after the window is the retry probe.
+    There MUST be a force flag for a deliberate retry inside the window.
+18. The completion wake for a blocked job MUST say plainly that the task is still undone, rather
+    than sending the next wake to audit an empty log.
+18a. A blocked job's brief MUST NOT wait on the user noticing it. When a job lands blocked, the
+    runner arms one transient timer for the retry window plus a margin — past the marker's own
+    expiry — and when it fires, the recorded brief is re-dispatched in the recorded workdir,
+    through the same preflight as any dispatch, at the account the selection answers with **at
+    fire time**. The login that refused is deliberately not forwarded into the timer's unit: the
+    whole point of firing after the window is that the selection has since moved.
+18b. The retry is exactly one per brief, never a loop. The re-dispatch stamps `retry_of` on the
+    new sidecar and `retry` on the origin's; the fire side refuses any sidecar whose `retry` is
+    already spent, and the runner never arms a timer for a job that itself carries `retry_of`.
+    A retry that blocks too is announced and left, exactly as every blocked job was before this
+    rule existed.
+18c. Only a job that never began is re-fired. The fire side requires state `blocked` exactly: a
+    `failed` job ran, its log holds real work to read, and re-dispatching it would repeat that
+    work on the strength of nobody having looked yet.
+18d. A job older than `JOB_RETRY_MAX_AGE` when the timer fires is abandoned rather than
+    re-fired, and the abandonment is written to both the sidecar and the job's log. A brief
+    that has sat blocked for hours describes a tree the user may since have changed by hand.
+18e. The retry MUST NOT arm and MUST NOT fire from a scratch jobs directory — the same guard
+    the completion wake stands behind — and its fire-time dispatch honours
+    `DESKCRAB_NO_DISPATCH` like any other.
+18f. The re-dispatched job MUST appear in `crab jobs` as its own entry naming the job it came
+    from.
+
+### Context
+
+19. A job MUST arrive knowing the project it is working in. That is the one place the persona
+    separation of [prompt-assembly.md](prompt-assembly.md) does not apply, and it is deliberate.
+20. Project context MUST be a **named excerpt under a byte cap**, not a whole project instruction
+    file loaded by default. See prompt-assembly rule 15.
+21. The suppression of project auto-memory MUST stay per invocation. It MUST NEVER be exported, or
+    it reaches the builder — the one session that should have the project's rules.
+22. A job's output MUST be visible to the live viewer. See [debug-view.md](debug-view.md). Its
+    stream log MUST NOT be reaped by the turn-side sweep of stale session logs: a turn is over in
+    seconds, so three quiet hours means a dead session, while a builder can spend longer than that
+    inside one command without writing a byte. Unlinking a running builder's stream empties the
+    attempt slice, blinds the blocked judgement, and leaves a blocked run with nothing to record. A
+    job's stream is reaped when the JOB has ended, by the side that can ask.
+22a. The tool-call stream MUST outlive the state prefix. The stream is the job's falsifiable
+    trace — the only record of which tools the builder actually ran, against which every claim
+    in its report can be checked — and until 2026-09-27 it lived solely under `/tmp`, where rule
+    22's reaping, the next boot, or three quiet hours after the job ended erased it: exactly the
+    runs whose claims most needed auditing were the ones whose evidence was gone by morning. So
+    the worker writes a durable twin beside the job's own log — `jobs/<id>.stream.log`, fed by
+    the same tee that keeps the live copy byte-identical for the viewer — LIVE, as the events
+    are produced, never copied at exit: a run that ends early (killed, stopped, cut mid-build)
+    retains whatever trace it had produced, because the archive was never waiting on an orderly
+    ending. The sidecar records the path as `stream_archive`; `crab job activity` (rule 25a)
+    falls back to the archive when the live stream is gone, so the evidence door answers after
+    the reap; and the archive is pruned with the record by report's keep-days sweep (never by
+    any stream reaping), so it costs nothing the sidecar and log did not already cost.
+
+### Reporting
+
+23. Running and finished jobs MUST appear in the state block. A later turn must be able to report on
+    work it neither started nor waited for.
+24. A job that ended badly since the last turn is surfaced once, capped, stamped. The stamp MUST NOT
+    be written by a session whose output is suppressed, and a pending stamp left by a renderer that
+    has since exited MUST be swept without spending it. See
+    [self-awareness.md](self-awareness.md) rules 31 and 32.
+25. `crab jobs` MUST list running, finished, and failed jobs. `crab job log <id>` MUST show a job's
+    output.
+25a. `crab job activity <id>` MUST read the job's raw stream and print its newest tool actions in
+     chronological order, including each tool's own description or target when available. It is
+     the evidence door for a question about what a running builder is doing now; the original
+     brief and an older human-log slice cannot answer that question. No matching recent action is
+     an absence of evidence, not proof that a later correction did not reach the work.
+26. The human log MUST fill as the builder writes, never only at completion. It used to be
+    assembled from the stream after each attempt ended, so `crab job log` on a running or stopped
+    job read as empty, and "the job produced nothing" was the natural — and wrong — reading of work
+    that was half done. The worker pipes the builder's live stream through a filter into the log
+    (behind a tee that keeps the raw stream byte-identical for the viewer and the per-attempt
+    refusal slices), so a running job shows its partial report and a stopped one keeps whatever it
+    had said. `crab job log <id>` on a running job whose log is still empty MUST say so explicitly
+    rather than print nothing, and an id with no sidecar MUST be an error — never dispatched as a
+    job whose task begins with the word `log`, the trap `job stop` fell into once.
+
+### The engineering-record hook
+
+27. A job dispatched with `--record <id>` (rule 7b) MUST NOT be marked `finished` unless the
+    record's `last_touched` is newer than the job's dispatch time (`started_epoch`) — the builder
+    updated the record it came from, and there is no other way to that date, because state moves
+    only through `crab eng` and every `touch` bumps it. The comparison is asked of the tool
+    (`eng touched-since`), never re-implemented in the runner. Where the sidecar carries
+    `record_attached_epoch` — the ending gate of
+    [engineering-records.md](engineering-records.md) rule 15 attaches the new job's id to the
+    record in a write that necessarily postdates dispatch — the comparison floors on it: without
+    the floor, the gate's own attach would stand in for the builder's entry and gut this rule for
+    exactly the jobs that exist to enforce follow-through. The floor is read at CHECK time, at the
+    end of the run, never at worker boot, because the attach lands moments after dispatch and a
+    fast worker would otherwise race past it.
+27a. The night's selector MUST attach `--record <id>` when its pick names a live engineering
+    record, so nightly builds carry the same update and submission gates as daytime record
+    builds. It re-reads the record's state immediately before dispatch: only `open` may start
+    a builder; a record moved to `review`, `settled` or `dead` while selection ran is skipped,
+    and a record that moved at all since its brief was composed makes that brief stale — not
+    dispatched, composed again from the record as it now stands ([nightly.md](nightly.md) rule
+    60b, which also refuses a brief quoting an instruction the record has superseded).
+    A promise or wake pick with no engineering record keeps no invented record association.
+28. A clean build whose record was never touched ends `failed`, with a clear reason NAMING the
+    record — in the log, in the sidecar summary, and in the completion wake's reason — so the next
+    reader knows the work may be real and the record is what is owed. A run that failed on its own
+    stays `failed` for its own reason; a `blocked` run never began, so no record was owed. A record
+    the drawer no longer holds fails the same way: an untouchable record cannot pass.
+29. The builder MUST be told, in its system prompt, which record it was dispatched against and
+    that touching it is a condition of success. This pairs with the standing rule that a builder
+    verifies with a real grep or test before claiming done: the record entry is where the
+    verification is written down, dated, on the thread the work came from.
+29a. A clean record build ends SUBMITTED, never self-settled. The builder's completion claim —
+    or its honest inability, which is also a claim for the review to judge — goes through
+    `crab eng review <id> <claim>` ([engineering-records.md](engineering-records.md) rule 16),
+    and `crab eng settle` is refused inside the build (the runner exports
+    `DESKCRAB_ENG_ROLE=builder`), because deciding that the ask was delivered belongs to the
+    review that wakes on completion, never to the hand under review. The runner MUST NOT mark a
+    `--record` job finished while the record's state is still `open` at check time: a run that
+    exited clean with the record touched but never submitted ends `failed` exactly as rule 28
+    fails an untouched one, naming the record and the submission owed, and the builder MUST be
+    told all of this in its system prompt. A record in `review` passes; so does one a hand with
+    authority closed while the build ran, because the ask is answered either way. The origin
+    (2026-08-26): a builder dispatched against the chess-table conversation record delivered
+    shared audio plumbing where the ask named the visible reuse of the phone conversation
+    interface, settled the record on it, and the narrowing read as delivery until a hand went
+    looking.
+29b. The completion wake of a submitted job IS the review. Its reason instructs the waking
+    session to recover the ORIGINAL ask and its acceptance criteria from the record's own
+    opening entry, inspect the actual artefact or the visible behaviour directly — never the
+    builder's report or claim alone — decide whether the FULL ask and the full design were
+    delivered, and then either `crab eng accept <id> <what-was-verified>` or
+    `crab eng reject <id> <missing…>`, whose rejection preserves the missing requirements and
+    redispatches them at once (engineering-records.md rules 16a–16b). The booking carries an
+    effort override ([wake-queue.md](wake-queue.md) rule 13a) of `JOB_REVIEW_EFFORT`, default
+    `medium`, AND a model override ([wake-queue.md](wake-queue.md) rule 13b) of
+    `JOB_REVIEW_MODEL`, default `sol`: the review was specified as a Sol review at medium — a
+    judgement pinned to its judge — and inheriting whichever ordinary wake model happens to be
+    configured is not that review. A level the booking side would refuse falls back to `medium`,
+    and a model name the record could not carry (empty, or bytes outside rule 13b's token) falls
+    back to `sol`, rather than costing the job its only channel back (rule 7). Every other
+    completion wake — blocked, failed, unreviewed, died waiting — keeps its own reason and
+    carries neither override: a review is owed only to work that claims to be done.
+
+### The queue and the dispatch policy
+
+The user's standing policy (2026-08-14): her waking hours belong to her wants, and everything else
+waits for the night. A builder dispatched the moment work is noticed competes with the turn somebody
+is standing there waiting on, burns daytime tokens on work nobody chose, and — the measured case —
+fires builder after builder while she is trying to talk. The queue is where un-chosen work waits;
+the night's work ([nightly.md](nightly.md) rules 54-61) is where it is spent.
+
+30. While she is awake, the job door dispatches only want-linked work. `crab job --want <ref>`
+    names the want; the ref MUST match a bullet on the wants shelf (a title or the document name a
+    shelf line points at), the match is validated at the door — an unmatched ref is refused, never
+    dispatched and never queued, because a linkage that cannot be checked is a linkage that will be
+    invented — and a ref shorter than three characters is refused unmatched: one or two letters
+    land inside nearly every title on the shelf, so a fixed-string hit on them is an invented
+    linkage laundered through the gate, not a named want. The matched shelf title is recorded in
+    the sidecar as `want`. A brief with no
+    want is not refused: it is QUEUED. The full record is written with state `queued`, no unit and
+    no builder exist, and the night's work dispatches it (nightly.md rule 56a). The gate stands
+    only where a shelf exists: an instance with no `WANTS_FILE` configured has nobody whose wants
+    could gate it, and dispatches as it always did — which is also what keeps every scratch harness
+    honest about what it is testing.
+31. Three hands pass the gate without a want, each for a stated reason, and every one of them still
+    faces the artifact guard of rule 1a and the block marker of rule 16: `-f` is a deliberate force
+    by whoever typed it; an automatic retry (`-O`, rule 18a) inherits the standing its origin
+    earned when it was first dispatched — re-gating it would turn "blocked briefs re-send
+    themselves" into "blocked briefs queue themselves twice"; and the night's work
+    (`DESKCRAB_JOB_NIGHT=1`, set by it and by nothing else) is the window the queue exists
+    for.
+32. `crab job dispatch <id>` dispatches a queued record in place: same id, same sidecar, history
+    intact. It MUST refuse a record whose state is not `queued`, a description rule 1a would refuse
+    (judged on the recorded field, exactly as requeue judges it), and a fresh block marker. Dispatch
+    re-stamps `started`/`started_epoch` — the record hook of rule 27 compares against dispatch, not
+    against queueing — and `queued`/`queued_epoch` keep when the brief was shelved, so the wait is
+    never erased. A dispatch whose sidecar vanishes between its preflight and its stamp — a racing
+    `drop` won the record — MUST abort rather than start a builder: the stamp's failure is the
+    drop's answer, and a builder with no sidecar is exactly the untracked work the sidecars exist
+    to prevent.
+33. A queued record is never reaped and never pruned: it has no unit and no pid to be dead, and
+    ageing out silently would be work quietly dropped. `crab job drop <id>` is the one way a queued
+    brief leaves the queue undispatched BY HAND — the supersession drop of rule 45 is the one
+    automatic exit, and unlike drop it keeps the record, as `superseded`, with the reason in the
+    job's own log. Drop refuses any state but `queued` — a job that ran has
+    a history worth keeping. The drop's check and delete happen under the job's own `<id>.lock`
+    (rule 36), the state re-read inside it: a drop racing a dispatch serialises against the
+    writer's stamp, so whichever lands first wins whole — a drop arriving second sees `dispatched`
+    and refuses instead of deleting the record of a builder that just started, and a dispatch
+    arriving second finds the record gone and aborts (rule 32).
+34. Queued briefs are visible. `crab jobs` lists them between the running and the finished, oldest
+    first with how long each has waited, and the state block's live copy carries their count, so a
+    later turn can answer "what is waiting for tonight" without opening a single sidecar.
+35. Model and effort are recorded on the sidecar at dispatch (`model`, `effort`) — what the builder
+    actually ran with, not what the configuration says on the day somebody asks.
+
+### Tracking and collection
+
+The defect cluster this section closes, each from a dated incident: a builder that exited zero
+having decided to "stand by" was reported finished over an empty diff (2026-08-08 19:45); a second
+did the same over real uncommitted work, promising a commit "after 01:30" from a process that would
+not exist at 01:30 (2026-08-11 01:18); and a job's outcome — which accounts it burned, what it
+committed, whether its work ever landed — lived nowhere but its prose log, so every morning audit
+re-derived it by hand.
+
+36. The sidecar carries the job's history: every state transition appends `{at, state}` to
+    `history`, written by the one writer of rule 8 and by nothing else. To make the single-writer
+    rule true under concurrency, every read-modify-write inside the writer takes the job's own lock
+    (the `<id>.lock` of the DATA table) — rule 11's race is closed inside the writer, where every
+    call site inherits the fix, not at whichever call sites remember to lock.
+37. The worker records its account walk: one `attempts` entry per attempt — time, login, outcome
+    (ran clean, refused, cut mid-run, or failed with the exit code) — so a morning reader can see
+    which logins a night's build burned on the way to its outcome without re-deriving it from the
+    stream.
+38. After a run that ended `finished` or `failed`, collection (`lib/job-collect`) reads the workdir
+    and the report and records on the sidecar: the branch, the commits made since dispatch, how
+    many of them are unpushed, how many files the tree holds dirty, any test tally the report
+    states, and a one-line `collection` verdict. A `finished` job whose collection ran moves to
+    `collected` — the terminal state of a job whose work has been located. Collection is evidence,
+    never a gate: a collector that cannot run costs the collection line, never the job's own
+    outcome, and a job MUST NOT fail for having produced no commits — reading and reporting is real
+    work.
+38a. The tally collection quotes is the builder's END STATE, never its deliberate red. A
+    well-behaved builder proves its new tests red against the pre-change tree before writing the
+    fix, and twice the collector quoted exactly that proof as the outcome: job 20260820-011358
+    was collected as "51 passed, 6 failed" when its suite finished 57 and 0, and job
+    20260823-233936 as "16 passed, 9 failed" — the exact inverse of the truth on a job that
+    succeeded, because the greens were narrated as bare numbers ("test_night_work 60", "green at
+    25") while only the red carried the words "passed" and "failed". So the tally is chosen in
+    this order: a `VERDICT:` line (rule 38b), last one in the log, outranks all prose. Absent
+    one, the prose heuristic: lines the collector itself appended (`job-collect:`) are never
+    material; a tally whose sentence labels it as run against the pre-change tree — "pre-change",
+    "before the fix", "shown red", "red run", "old code" — is never eligible; a green-shaped
+    count ("after the fix: <suite> N", "with the fix: 60, 40 and 25, zero failures", "green at
+    N") is a tally of N passed and 0 failed, eligible only when its sentence carries a green
+    signal, and never disqualified by red words beside it, because "shown red … before green at
+    19" ends green; when the log carries a commit line — a commit word with a hex sha beside it
+    on the same line — only tallies after the FINAL such line are eligible, falling back to the
+    whole log when none sit there; and of the eligible, the LAST wins. A log whose only tally is
+    a labelled pre-change proof yields NO tally: an absent count is honest, a quoted red run is
+    libel. Historical logs are never rewritten; this ordering is how they stay readable.
+38b. Builders end their report with one machine-readable line, the last line of the final
+    message: `VERDICT: tests=<passed>/<failed> commit=<sha>` — the end-state totals across the
+    suites the builder ran, and the commit they were measured on (`commit=none` when nothing was
+    committed). The runner's system prompt MUST say so. Collection reads the last such line as
+    the job's test result before any prose; the line is machine record, not prose, so rule 39
+    judges the report's closing words with trailing `VERDICT:` lines stripped — a verdict line
+    neither hides a report that ends on a wait, nor is itself ever read as one.
+38c. Commits in the workdir since dispatch are the TREE's, not necessarily the job's, because
+    several hands share these checkouts. On 2026-09-02 job 20260902-224329 stood down without
+    touching a file and was collected as "2 commits on wake-viseme-awareness" — commits a live
+    session had landed in the same tree minutes earlier — while its own last line read
+    `commit=none`. So the builder's `VERDICT: … commit=` (rule 38b) outranks the git window on
+    attribution: when it says `commit=none`, the sidecar's `commits` list is EMPTY, the count of
+    commits the window saw is recorded separately as `tree_commits=N`, and the verdict line says
+    the job committed nothing of its own, naming N as other hands' work when N is above zero.
+    When the verdict names a sha, or the report carries no verdict line at all, the window's
+    commits are still listed — but worded as what they are, commits in the tree since dispatch.
+39. A job that dies waiting reports FAILURE, not success. A run that exited clean whose report ends
+    on an intention — standing by, waiting on another job, watching a monitor, holding the commit
+    until later — made a promise that outlives the process that made it, and exit 0 means the
+    process ended, not that the task happened. Collection judges the report's CLOSING clause and
+    nothing above it: the matched wait must reach the end of the report — trailing whitespace and
+    closing punctuation aside — because a conclusive report honestly narrates the waits it found
+    and fixed ("the client was stuck waiting on a dead socket; I removed that wait entirely. …
+    Done."), and a wait the report merely mentions on its way to an outcome is history, never an
+    intention. A run that truly ends on one is `failed`, with the `collection` verdict quoting the
+    waiting, whatever work sits beside it in the tree — the work is still recorded in full
+    (rule 38), so nothing real is lost, only the claim of completion. The completion wake says
+    failure. Waiting is not a terminal state for a process that terminates.
+39a. The final verification runs in the FOREGROUND, and a backgrounded last act is a wait died
+    on. A builder's session ends when its final message is written, and everything it left
+    running in the background ends with it — so a builder that hands its last gate (the suite,
+    the live check it means to commit on) to a background dispatch and then reports has no
+    result to report and no process left to commit on it. Job 20260821-183922 did exactly that:
+    914 verified lines on the floor, the suite backgrounded, the report ending on "waiting for
+    it to finish before the commit" — and it had the foreground reminder in its prompt, which is
+    why this is a gate and not another reminder. Collection reads the job's tool-call stream
+    (the archive of rule 22a, else the live stream) and judges the run's LAST tool-calling
+    message, parallel calls included: a `finished` job whose last act was a background dispatch
+    — a Bash call with `run_in_background` set, or a command detached by a trailing `&`,
+    `nohup` or `setsid` — is `failed`, with the `collection` verdict opening "died waiting" and
+    naming the command, exactly as rule 39 fails a report that ends on a wait, so the same
+    completion wake says so. The work is recorded in full as ever; only the claim of completion
+    is refused. The judgement is of the last act alone: a background start followed by
+    foreground work (a server brought up and then exercised) is a run that went on to do
+    something, and rule 39's closing-words gate still stands behind it for the builder that
+    backgrounds, polls once and writes "waiting". A job with no readable stream is judged on
+    its report alone. The runner's system prompt MUST state the gate and its consequence.
+40. Work is findable after any death. `crab job collect <id>` runs the same collection by hand on a
+    job in any ended state — died mid-suite, stopped, blocked-then-forced, never pushed — recording
+    what is actually on disk without changing any state but `finished`'s. `crab job show <id>`
+    prints the whole record: state, times, want and engineering-record linkage, model and effort,
+    the account attempts, the history, and the collection. `crab jobs --state <s>` filters the
+    listing to one state, so "everything still queued" and "everything that died" are each one
+    command.
+41. The ledger is read by the self-change watcher. A job's sidecar claims the subtree under its
+    `workdir` for as long as its state says a hand could still be moving: `dispatched` and
+    `running` claim from dispatch to now, bounded by an age ceiling; `finished` claims until
+    `finished_epoch` plus a short collection grace, because the ledger's own history holds
+    finished sidecars that never collect — they predate the collector, whose terminal state is
+    `collected`, not `finished` — and an unbounded finished claim attributed every write in a
+    tree to a job thirteen days dead (2026-08-24); `collected` ends the claim at collection, no
+    grace. A creation or modification there whose mtime falls inside the job's window is the
+    job's own hand — committed or mid-edit, per job-window rather than per save, each of several
+    jobs independently, the most recently started job winning any shared workdir — and is never
+    reported as an outside one ([nightly.md](nightly.md) rule 25c, where the bounds and their
+    constants are defended). The sidecar's `workdir`, `state`, `started_epoch`,
+    `finished_epoch`, and `collected_at_epoch` are the whole interface; the watcher parses the
+    format this spec already fixes and the ledger owes it nothing new. A claimed path that
+    surfaces anyway MUST be reported with the job id beside it, described as running only when
+    its state is `dispatched` or `running`, so the claim is traceable and never misnamed.
+
+### Single flight and supersession
+
+The night of 2026-09-03: the 02:30 nightly tidy and a tidy that had been queued behind an account
+limit since 22:21 dispatched at the same instant, the moment the limit lifted — two hands on the
+identical brief against wants.md, a file with no git behind it, the exact shape of the 2026-08-09
+clobber. The collision was caught by luck: the 02:30 hand noticed and stopped the other while its
+log still held only the account banner. These rules make the protection structural.
+
+42. Every job carries a single-flight key. An explicit slug (`crab job --slug <key>` — letters,
+    digits, dot, dash and underscore, recorded on the sidecar as `slug`) is the key where one is
+    given, and a recurring brief — the nightly tidy — MUST give one; absent a slug, the key is a
+    stable hash of the brief's normalised description (lowercased, whitespace collapsed), so
+    identical briefs collide by SUBSTANCE rather than wording. The key rides queueing, dispatch,
+    the automatic block retry (which inherits its origin's `slug` and `daily` exactly as it
+    inherits `record`, rule 18b), and requeue. ONE implementation mints and matches keys —
+    `job-status flight-key` / `flight-incumbent` — never a second hash in a second language; where
+    only one side of a pair carries a slug, the descriptions' hashes decide, so a slugged brief
+    still collides with its own slug-less twin.
+43. Dispatch REFUSES a brief whose key is already held. The fresh-dispatch door and the queued
+    door both scan the sidecars before anything exists to clean up: a fresh brief is refused while
+    a job with the same key stands `queued`, `dispatched` or `running`; a queued record is refused
+    — and STAYS queued, for the night to skip (nightly.md rule 56a) — while one stands
+    `dispatched` or `running`, its own record excluded from the scan. Queueing itself is never
+    refused: a recurring brief must be able to shelve beside its stranded predecessor, or the
+    stale copy would run in the fresh one's place. The refusal is plain — the key and the
+    incumbent's id and state, printed to the caller and therefore into the night log — never a
+    silent skip. A dead incumbent holds no key: a `dispatched`/`running` sidecar whose unit is
+    inactive and whose pid is gone (the reaper's own liveness test) does not block, or the scan
+    would rebuild, as a sidecar file, the permanent block the lock below is designed never to be.
+44. The door's scan cannot see two dispatches racing in the same instant — the observed failure —
+    so the key is also a LOCK, held for the life of the run: the worker takes a non-blocking flock
+    on `jobs/flight/<key>.lock` before it touches anything beyond the jobs ledger, and holds the
+    descriptor until it exits. The loser exits WITHOUT touching any work file: the refusal — key
+    and incumbent id — lands in its own log, its sidecar ends `duplicate`, and it books no
+    completion wake (the incumbent's own wake is the news) and arms no retry. The flock is the
+    arbiter, never the lockfile's content: the kernel releases it on any death — clean exit,
+    failure, SIGKILL — so a stale lockfile left by a dead pid is recovered by the next taker
+    rather than standing as a permanent block. The `<pid> <job id>` line the winner writes into
+    the file is legibility for a hand reading the drawer, nothing more, and the lockfiles are
+    pruned on report's own keep-days sweep.
+45. A recurring brief queued behind a wall MUST NOT run late into its own successor. A queued
+    record carrying `daily` (`crab job --daily HH:MM`, the brief's own schedule, recorded on the
+    sidecar) whose `queued_epoch` is older than the most recent HH:MM occurrence is SUPERSEDED at
+    the queued door: dropped before any unit, builder, or work file exists, the record moved to
+    state `superseded` with the one-line reason in its own log and in the caller's face. The
+    nightly tidy dispatches with `--slug nightly-tidy --daily 02:30`, so the 22:21 corpse of the
+    incident above is dropped at the door and the 02:30 occurrence runs alone. The dry run
+    (`DESKCRAB_NO_DISPATCH`) says "would drop" and writes nothing.
+
+### References and fate claims
+
+On 2026-08-21 at 18:09 the user referred, in plain and unambiguous words, to the similar-game
+builder that had finished that evening — dispatched 17:34, twenty minutes, exit 0, one commit,
+collected — and the reply said, three replies running, that she had killed it two minutes in.
+That was the OTHER builder: the errand one, dispatched at 18:01 and stopped at fifty-six seconds.
+Nothing was checked before speaking. The reference was resolved by whichever builder was freshest
+in her head, the fate came from memory, and the whole answer about whether the feature helped was
+then reasoned downstream of a job that had not happened to the thing he asked about. He named it
+gaslighting, and without the assumption of good intent it is indistinguishable from inventing a
+past to win an argument. The shape is general: a reference to a recent event resolved by
+conversational recency instead of from the record, and never verified before it is spoken — while
+every one of those jobs had a record the whole time, on its sidecar and on the day's journal.
+
+46. A message that refers to a job by description — "the builder", "that job", "the fix you did",
+    "the one you dispatched", a job id — carries, on the turn profile, the conditional
+    job-reference layer ([prompt-assembly.md](prompt-assembly.md) rule 36d): the records his
+    words resolve to, each as one line — id, state, dispatch time, runtime, exit, commits and
+    branch, the collection verdict, and the brief's opening words — so the fate is in front of her
+    before she writes. Resolution is by the WORDS, never by recency: the candidates are the whole
+    ledger (plus the journal's `job` rows from the window whose sidecar the keep-days prune has
+    taken, joined by dispatch epoch so a pruned builder still has a line), ranked by idf-weighted
+    shared tokens between his message and each brief, the measure rule 7i settled on. ONE
+    implementation does this (`lib/job-resolve refs`), stdlib and model-free, gated by a grep in
+    `claude_generate` so a message with no job-shaped reference costs nothing and the layer is
+    absent. The day-job senses ("good job", "my job", "job interview") are excluded by pattern.
+46a. The block states its own confidence and never picks silently. A CLEAR resolution — two shared
+    words, or one rare enough to carry it, and a lead over the runner-up — names the job and says
+    its line is its fate. An AMBIGUOUS one lists the near-ties and tells her to say which there
+    are and ask, or read the conversation for the one already under discussion. A message whose
+    words match no brief lists the window's recent jobs newest first and says in those words that
+    recency is not identity. After a clear or ambiguous resolution the block also names up to two
+    OTHER recent jobs as not the referent — the one she may have in her head is usually there,
+    and a fate of theirs is not a fate of the above. And when no record reaches at all, the block
+    says to say so rather than invent one.
+47. An assertion that a specific job ran, was killed, stopped, died, failed, was blocked, finished,
+    committed, pushed, merged, is still running or is queued — and each one's negation — is a
+    factual claim about an artefact, and it is CHECKED the way the promise checker checks
+    artefacts ([turn-pipeline.md](turn-pipeline.md) rule 32g): after delivery, on every channel,
+    detached, mechanically. The checker (`lib/job-claim-check`, verdicts from
+    `lib/job-resolve claims`) reads every sentence of the reply that carries a job noun or id
+    beside a fate word — or that refers back to a job the reply already named (rule 47c) —
+    resolves which job it is about from the sentence's words and his message — by id when one is
+    named, by the same word ranking otherwise, with the rest of the reply as a fallback — and
+    compares the claimed fate with the record's state: ran (subject-aware: the job noun, id or
+    back-reference within two words of ran/started/never ran, or the job as the verb's object,
+    "I started the builder" — "I ran the tests" is no job claim) against every state in which a
+    worker executed, `dispatched`/`running`/`finished`/`collected`/`failed`/`stopped`/`died`,
+    and contradicted by the four in which none did, `queued`/`blocked`/`duplicate`/`superseded`;
+    killed or stopped against `stopped`/`died`, died against `died`/`failed`/`stopped`, failed
+    against `failed`/`died`/`blocked`, finished against `finished`/`collected`, running against
+    `running`/`dispatched`, queued against `queued`; a negated claim holds when the record does
+    NOT. The artefact fates — committed, pushed, merged — are judged from what collection
+    OBSERVED and never from a state, because these are distinct facts: committed holds on a
+    non-empty `commits` list and is contradicted by an empty one; pushed holds when commits exist
+    and `unpushed` is zero, is contradicted when every commit since dispatch sits on no remote,
+    and is neither when only some do; merged is observed by nothing on the record. A job in one
+    of the never-ran states contradicts all three. Unknown is not evidence: a `finished` record
+    the collector has not reached proves no commit, and a `stopped` one never carries a commits
+    list at all. Verdicts: SUPPORTED when the resolved job's record holds the fate, or — for an
+    ambiguous reference — when any candidate's does; MISMATCH when the record contradicts it, or
+    no candidate holds it; UNBACKED when no record in the window exists to resolve against, or
+    when a POSITIVE claim of an artefact meets a record that never observed it; UNVERIFIED when a
+    NEGATION meets such a record — the record can neither confirm nor contradict it, so it is
+    traced and nothing else (rule 47b).
+47a. A MISMATCH and an UNBACKED claim each land on the durable job-claims ledger and book one
+    immediate event wake on the queue's urgent lane ([wake-queue.md](wake-queue.md) rule 43c),
+    the reason opening with the job-claim prefix, quoting the claim verbatim and the record's own
+    line, and instructing the waking hand to tell him what the record says — naming the job by
+    what it was for, saying which was which if two were confused — never to restate the claim,
+    and never to invent a fate for a job whose record it has not read. The claimed fate is thus
+    corrected by the record within seconds of being spoken; a SUPPORTED claim is traced and
+    nothing else happens, and so is an UNVERIFIED one. The class is bounded like the promise checker's: at most
+    `JOB_CLAIM_REBOOK_MAX` (default 2) correction wakes per job per day, counted from the
+    ledger's own booking lines, and its own scoped cap `JOB_CLAIM_WAKE_CAP` (default 2).
+47b. The asymmetry is deliberate: a false accusation is the same failure pointed the other way. A
+    reference that resolves on one weak shared word is never CLEAR — the window's recent jobs
+    ride beside it as candidates — and a fate any candidate holds is SUPPORTED; "half-landed" is
+    about files, not a job; a negation anywhere in the four words before the fate word flips it;
+    a negation the record cannot observe — "killed before it committed anything" on a stopped
+    run collection never reached — is UNVERIFIED and books nothing, because a negation is not an
+    invented past and the record cannot accuse what it never saw; and the checker never holds,
+    rewrites or vetoes the reply (rule 32a's standing prohibition). Neither hand calls a model:
+    the resolver and the checker are a grep, a python process and the ledger, so the ordinary
+    reply pays the grep and one trace line.
+47c. A reference, once established, carries across the reply's sentences; a fate never does. A
+    sentence that names no job but refers back to one — "It was killed before committing
+    anything", "that one never ran", "which committed two files" — is about the job the reply
+    last named, resolved exactly as that sentence resolved it (by id, by its words, or the
+    window's candidates when it was bare), unless the back-referring sentence's own words name a
+    job themselves (then those words resolve it, the window riding beside a weak match as
+    always) or a switch word — other, another, second, earlier, later, previous, fresher — says
+    the reply has moved on, in which case its words resolve afresh and nothing is carried. "The
+    telescope builder finished. It was killed before committing anything." is therefore two
+    judged claims on one record, finished SUPPORTED and killed MISMATCH, where the second was once
+    dropped for want of a noun. A back-reference with nothing established before it is nobody's
+    claim and is not judged; a sentence with neither a job noun nor a back-reference neither
+    claims nor breaks the thread.
+
+## DATA
+
+| Path | Format |
+|---|---|
+| `~/.local/share/deskcrab/jobs/<id>.json` | `{id, description, workdir, record, want, slug, daily, queued, queued_epoch, started, started_epoch, model, model_request, effort, unit, state, pid, pidstart, attempts, history, finished, finished_epoch, exit, retry, retry_of, branch, commits, unpushed, dirty, tests, collection, collected_at, on_done}` — `workdir` is where the builder ran, recorded so `requeue` never has to ask (rule 7a); sidecars older than a field simply lack it. `record` is the engineering record the job was dispatched against (rules 7b, 27–29), absent when none was; `record_attached_epoch` is when the ending gate's attach write touched that record, so rule 27's floor can discount it (engineering-records.md rule 15b), absent on every other dispatch. `want` is the shelf title a want-linked dispatch matched (rule 30). `slug` is the explicit single-flight key and `daily` the recurring brief's own HH:MM occurrence (rules 42 and 45), both absent on a brief that named neither. `queued`/`queued_epoch` are when the brief was shelved (rule 32); `started`/`started_epoch` are the dispatch. `model`/`effort` are what the builder ran with (rule 35) — `model` is re-stamped by rule 5b's family walk so it stays what actually ran, and `model_request` is the per-job override of rule 5c, absent when none was given. `attempts` is one line per account attempt (rule 37); `history` is the transition list `[{at, state}, …]` (rule 36). `retry` is the spent automatic retry of a blocked job (the new job's id, `fired`, or `abandoned`) and `retry_of` names the blocked job a retry came from (rules 18b, 18f). `branch`, `commits` (`["shorthash subject", …]`), `unpushed`, `dirty`, `tests`, `collection`, `collected_at` are what collection found (rules 38–40); `tree_commits` is how many commits the git window saw on a job that declared `commit=none`, present only there, because those are other hands' (rule 38c). `on_done` is the list of errands owed at completion (rules 7j–7k), one line each, absent on a job that was given none |
+| `~/.local/share/deskcrab/jobs/<id>.log` | the builder's report, written live as the stream produces it (rule 26) |
+| `~/.local/share/deskcrab/jobs/<id>.stream.log` | the durable twin of the tool-call stream (rule 22a): every event the live stream carried, written by the same tee as the events are produced; the sidecar names it as `stream_archive`; pruned with the record by report's keep-days sweep |
+| `~/.local/share/deskcrab/jobs/blocked` | `<epoch> \t <family[,family…]|all> \t <reason>` (rule 16), last block wins; a two-field marker from before the families field reads as `all` |
+| `~/.local/share/deskcrab/jobs/<id>.lock` | guards read-modify-write of the sidecar — taken by the status writer itself, so every call site inherits it (rule 36), and by `crab job drop` around its check-and-delete (rule 33) |
+| `~/.local/share/deskcrab/jobs/flight/<key>.lock` | the single-flight lock (rule 44): flock'd by the worker for the life of its run; the `<pid> <job id>` line inside is legibility only, never the lock itself; pruned by report's keep-days sweep |
+| `~/.local/share/deskcrab/job-claims.jsonl` | `lib/job-claim-check` (rule 47a): one JSON line per MISMATCH or UNBACKED fate claim — time, channel, turn epoch and pid, verdict, fate, job id (or `unbacked`), the claim verbatim, the record line, and what became of the wake |
+| `${STATE_PREFIX}-job-claims.log` | `fire_job_claim_check`, `lib/job-claim-check`: one line per run — the pre-check's verdict, each claim's verdict, or why nothing was judged |
+| systemd unit `deskcrab-job-<id>` | the worker, collected on exit |
+| systemd unit `deskcrab-job-retry-<id>` | the one-shot timer that re-dispatches a blocked job's brief once the hold expires (rule 18a) |
+
+## The lifecycle
+
+```mermaid
+flowchart TD
+  J0["crab job, optional workdir,<br/>optional force, optional want"] --> G{"task empty, or a substitution<br/>artifact: null / None / undefined?"}
+  R0["crab job requeue &lt;id&gt;"] --> R1["description + workdir<br/>read from the sidecar"]
+  R1 --> G
+  G -->|yes| Gr["refuse: a broken command<br/>substitution, not a brief"]
+  G -->|no| WG{"a shelf exists, and no want,<br/>no -f, no -O, not the night?"}
+  WG -->|"yes (rule 30)"| Q["sidecar: state=queued<br/>— waits for the night"]
+  Q -->|"the night's work: crab job dispatch &lt;id&gt;<br/>(same sidecar, rule 32)"| J1
+  Q -->|"crab job drop &lt;id&gt;"| QD["record removed, undispatched"]
+  WG -->|no| J1{"block marker<br/>younger than the retry window?"}
+  J1 -->|yes, and no -f| J1b["refuse: the last one never began"]
+  J1 -->|no| J2["sidecar: state=dispatched,<br/>model + effort stamped"]
+  J2 --> J3["systemd-run --collect --unit=deskcrab-job-&lt;id&gt;<br/>worker's first write: state=running"]
+  J3 --> J4["declare the workdir and the jobs dir<br/>as her own hand"]
+  J4 --> J5["job profile prompt:<br/>task + index + named project excerpt"]
+  J5 --> J6["walk the account chain<br/>judging each attempt on its own bytes"]
+  J6 --> O{"outcome"}
+  O --> Oa["finished"]
+  O --> Ob["failed — a real build failure"]
+  O --> Oc["blocked — the final attempt was a refusal"]
+  O --> Od["stopped — termination trap"]
+  Oa --> C["collection: branch, commits,<br/>tests, the report's closing words"]
+  C -->|"work located"| Ca["collected"]
+  C -->|"ended on an intention<br/>to wait (rule 39)"| Cb["failed — died waiting"]
+  Ob --> C2["collection records the facts;<br/>failed stays failed"]
+  Ca & Cb & C2 & Oc & Od --> J8["sidecar + day journal"]
+  J8 --> J9["one event wake carrying the outcome"]
+  Oc --> RT["one transient retry timer,<br/>JOB_BLOCK_RETRY + margin (rule 18a)"]
+  RT -->|"still blocked, retry unspent,<br/>younger than JOB_RETRY_MAX_AGE"| R1
+  X["hard kill, no trap"] --> R["report reaps it:<br/>unit inactive + process gone = died"]
+```
+
+## INTERACTIONS
+
+**A job may call:** the account chain, the wake queue's `book()` (for its completion wake), the job
+status writer, the day journal, the write-declaration helper.
+
+**A job may be called by:** a turn, a wake, or the user through `crab job`.
+
+**A job must never:** speak, notify, open a window, write to the conversation, or hold any lock the
+dispatching turn holds.
+
+## VERIFIED-CORRECT RULES
+
+- **Liveness is the process id plus its start time.** A recycled process id cannot keep a dead job
+  looking alive. This is why a hard-killed worker can be reaped as died rather than claiming to run
+  forever.
+- **Each attempt is judged on its own slice of the log.** The runner records the byte offset at the
+  start of every attempt and judges only the bytes after it. This is the pattern the streaming paths
+  still owe; see [account-fallback.md](account-fallback.md).
+- **Blocked is not failed, and the distinction is load-bearing.** A builder that exits in seconds
+  having written nothing but a refusal did not fail to build; it never began. Treating the two the
+  same either hides a broken builder or burns a wake auditing an empty log.
+- **The block marker expires on its own.** Nothing here can see an account refill, so the first
+  dispatch after the window is the retry probe.
+- **The runner refuses to book an event wake from a scratch jobs directory.** That guard is correct
+  and is the model for the same guard on the booking side.
+- **Jobs keep project auto-memory on purpose.** A builder works inside a project and should arrive
+  knowing its rules. The suppression is per invocation everywhere else so that this stays true.
+- **A job is dispatched with the collect option**, so a failed unit does not leak into the user
+  manager. The wake queue owes the same.
+
+## KNOWN DEFECTS
+
+| Id | What implementation must fix |
+|---|---|
+| `MAJ-12` | A failed job's one-time news can be consumed by a wake that ends silently. |
+| `MAJ-17` | Job output bypasses the live viewer entirely: the log is written outside every glob and the run is not in the stream format at all. |
+| `MAJ-28` | A repo job starts on 54 KB of project context in front of a 1.2 KB task. |
+| `MIN-4` | The documented state list omits `blocked`, which the runner writes and the reporter renders. |
+| `H3` / `RC-2` | A job dispatched from a turn already on a fallback account re-runs the account that just refused, because the primary slot inherits whatever the environment holds. |
+
+## TESTS
+
+**Existing:** `tests/test_job_block.sh` (blocked-versus-failed, the retry window, the force flag,
+the substitution-artifact refusal of rule 1a, and requeue reading description and workdir off the
+sidecar — rule 7a);
+`tests/test_job_livelog.sh` (rule 26: the log fills while the builder runs, a stopped job keeps its
+partial output, the pipeline preserves the CLI's exit code, and the empty-but-running and unknown-id
+answers of `crab job log`);
+`tests/test_job_block_retry.sh` (rules 18a–18f: the runner arms the one retry timer for a blocked
+job and never for a failed, scratch, or already-retried one; the fire side re-dispatches once from
+the sidecar, naming its origin, and refuses a spent, stale, failed, scratch, artifact-brief, or
+workdir-less record);
+`tests/test_job_record.sh` (rules 7b and 27–29b: dispatch refuses an unknown record and records a
+known one; a clean build with an untouched record ends failed naming it; a clean build that
+touched its record but never submitted it for review ends failed naming the submission owed,
+with the wake reason saying so; a builder that touches its record and submits it with
+`crab eng review` finishes, with the record left in `review` and the completion wake carrying
+the review brief booked at the `JOB_REVIEW_EFFORT` override and pinned to the
+`JOB_REVIEW_MODEL` model; a job with no record is untouched by the hook; requeue carries the
+record);
+`tests/test_night_work_record.sh` (rule 27a: nightly engineering picks carry their exact record
+id through the job door, promise picks get no invented association, a concurrent review or
+closure prevents dispatch including in a dry run, and repeated picks or a concurrent record job
+cannot buy the same work twice);
+`tests/test_eng_review.sh` (rules 29a–29b from the record side, with the 2026-08-26 regression —
+narrowed substituted work cannot settle its own ask — described in
+[engineering-records.md](engineering-records.md));
+`tests/test_job_track.sh` (rules 8, 9, 11, 36: the stop path writes the `state` field — the MAJ-11
+regression — and racing writers serialise on the job's lock inside the writer; every transition
+lands on `history`; a queued record is neither reaped nor pruned while a dead `dispatched` one is
+reaped as died; `since` counts queued work apart from dispatched; `show` prints the whole record
+and the report renders queued, dispatched, and collected lines);
+`tests/test_job_queue_policy.sh` (rules 30–35: with a shelf, an unlinked brief queues; a matched
+`--want` dispatches and records the title; an unmatched one is refused outright, and so is a ref
+under three characters, however many titles it lands inside; `-f`, `-O`, and
+the night window dispatch; no shelf, no gate; `crab job dispatch` moves only a queued record
+through the full preflight, and `drop` removes only a queued one; the drop waits on the record
+writer's lock and re-judges the state inside it, so a drop that loses the race to a dispatch
+refuses on the winner's state; and a dispatch whose record vanished mid-flight aborts without
+starting a unit);
+`tests/test_job_similar.sh` (rule 7i: dispatch names the running and queued work a brief
+resembles, stays silent on unrelated briefs, and never refuses);
+`tests/test_job_single_flight.sh` (rules 42-45: the key — one hash for one substance whatever
+the case and spacing, an explicit slug outranking it; the fresh door refused on a queued,
+dispatched or running incumbent, by slug and by bare substance alike, with the key and the
+incumbent named and no sidecar created; the queued door refused beside a live incumbent with
+the brief left queued; a differently-keyed brief passing, and a dead incumbent's stale sidecar
+not blocking; two workers racing the flock in the same instant against a wants.md stand-in —
+exactly one writer by content and mtime, the loser `duplicate` with the key and incumbent in
+its own log, having booted no builder; a stale-queued `--daily` brief superseded at the door
+with no unit started while a fresh one dispatches, the dry run dropping nothing; and a stale
+flight lock from a dead pid recovered rather than standing).
+`tests/test_job_on_done.sh` (rules 7j–7k: `--on-done` lands the errand on a dispatched and on a
+queued sidecar and the dry run names it; an empty or over-long errand is refused at the door;
+`crab job on-done` attaches to a running and to a queued job, coalesces an identical errand,
+and refuses an ended job in plain words with nothing written; the runner's completion wake —
+the booked record and the fired event wake's prompt alike — quotes the errand verbatim under
+the OWED ERRAND block on a clean run, a failed run and a died-waiting run, and the builder's
+prompt carries rule 39a's gate; a job without an errand books a reason with no such block and
+shows no such line; requeue and the automatic block retry carry the list);
+`tests/test_job_single_flight.sh` also holds rule 7j's hand-off: the duplicate's errands land
+on the incumbent, named in the loser's log;
+`tests/test_job_collect.sh` also holds rule 39a: a finished run whose last tool act was a
+background dispatch — `run_in_background`, a trailing `&`, `nohup`, a parallel call beside a
+read — is failed with the command in a died-waiting verdict, by the stream archive and by the
+runner end to end; a background start followed by foreground work collects, `&&` is not a
+detach, a failed run is not re-judged, and a run with no stream is judged on its report alone;
+`tests/test_job_model_fallback.sh` (rules 5b, 5c, 16-17: the per-job `--model` override
+dispatching on its own model with `model_request` on the sidecar, the conf's bytes untouched
+and a flag-less dispatch unchanged; a malformed name refused at the door; the family-scoped
+marker holding the refused family and passing the others — the legacy two-field marker still
+family-blind — at the fresh and the queued door alike; the worker's ordered walk: a fable
+refusal riding to opus on the very account a legacy cooldown row called cooling, a configured
+`JOB_MODEL_FALLBACK` order followed, the sidecar's `model` re-stamped to the family used and
+the move named in the log and the attempts record; every family dry landing `blocked` with
+the families on the marker, the one retry probe armed from the marker's own window —
+`JOB_BLOCK_RETRY` plus the margin, once, never for a retry — and the marker the dry walk
+wrote holding a refused family while passing an untried one; and the request riding requeue
+and the automatic block retry).
+
+`tests/test_job_stream_archive.sh` (rule 22a: a run with tool activity leaves
+`jobs/<id>.stream.log` beside its log, byte-identical to the live stream and carrying the
+tool-call events; the sidecar names it as `stream_archive`; with the live stream deleted,
+`crab job activity` answers from the archive; a failed run and a stopped run each retain the
+trace they produced; and report's keep-days sweep prunes the archive with the record);
+`tests/test_job_collect.sh` (rules 38–40: collection records branch, commits since dispatch,
+unpushed and dirty counts, and the report's test tally; the tally is the end state, never the
+deliberate red — a red before the commit line loses to the green after it, a `VERDICT:` line
+outranks all prose, a pre-change-labelled tally is never quoted even when it is the only
+"N passed, M failed" in the log, the bare-number green shapes of the two dated incidents are
+read, the collector's own appended lines are not material, a single unlabelled tally still
+collects as before, and a log with no tally invents no count (rules 38a–38b); a trailing
+`VERDICT:` line neither hides a closing wait nor reads as one; a clean exit whose report ends on
+an intention to wait lands `failed` with the verdict quoting it — with and without work in the
+tree — while a conclusive report that merely narrates a wait mid-tail collects, and the same wait
+words CLOSING a report fail it; a failed job keeps its state but gains the facts; a non-git
+workdir and a missing log cost the collection line, never the outcome; and the runner moves a
+finished builder to `collected` end to end);
+`tests/test_night_work_queue.sh` ([nightly.md](nightly.md) rules 56 and 56a: the night's work
+dispatches the queued backlog oldest first through the door before selecting, under the cap, with
+`DESKCRAB_JOB_NIGHT` set; the 06:00 default cutoff is re-checked before every dispatch; a refused
+queued brief is skipped for the night, a blocked door ends it, and the dry run starts nothing);
+`tests/test_notice_jobclaim.sh` (rule 41 from the watcher's side, against fabricated sidecars in
+the ledger's own shape — history array and all — and a scratch tree: the running job's saves,
+commits, and concurrent siblings stay quiet with the job id logged, a deletion under a live claim
+fires with the job named, collection reopens reporting at once, a finished-uncollected sidecar
+claims only through its grace and loses a shared workdir to the more recently started live job,
+an over-ceiling `running` orphan claims no new byte, and nothing calls a non-running job running);
+`tests/test_job_news_delivery.sh` (rule 7c from the delivery side — the completion wake's news
+through the busy and in-flight gates: delayed, delivered exactly once after the gate clears, and
+re-booked whole under the runner's own identity when the moment outlasts the wait; the cases live
+with the other delivery gates in [wake-queue.md](wake-queue.md) rule 27d);
+`tests/test_job_reference.sh` (rules 46–47c, against the 2026-08-21 evening rebuilt as sidecars:
+the similar-game builder collected with a commit and the errand builder stopped at fifty-six
+seconds and MORE RECENT — his 18:09 message resolves the layer to the finished builder, names it
+clear, and names the killed one as not the referent; a bare "the builder" lists both newest
+first and says recency is not identity; a day-job sentence raises no layer; the layer rides the
+assembled turn prompt between the interrupt and dispute layers and no wake or job prompt; the
+checker rules the 18:09 "I killed that builder two minutes in" MISMATCH against the finished
+builder, ledgers it and books the correction wake quoting claim and record, rules the 18:02
+kill and the 18:10 self-correction SUPPORTED with nothing booked, rules the 2026-08-25 "it
+finished a minute ago" SUPPORTED, rules a fate claim with no record in the window UNBACKED with
+a wake saying so, rules an ambiguous reference SUPPORTED when any candidate holds the fate and
+MISMATCH when none does, books at most the rebook bound per job per day, and fires from the
+delivery path — a stubbed desk turn's pre-check trace and detached dispatch are witnessed, and a
+fate-free reply spawns nothing. Against a telescope-calibration sidecar finished with exit 0 and
+no commits field, a blocked one and a queued one: "committed the repair" is UNBACKED, never
+SUPPORTED, until collection records a commit, an empty collected list makes it MISMATCH, pushed
+follows the unpushed count and merged is never observed; "the builder ran" is SUPPORTED on the
+finished one and MISMATCH on the blocked and the queued, their negations the reverse, and "I ran
+the tests" claims nothing; "finished. It was killed before committing anything." judges the
+finish SUPPORTED and the kill MISMATCH on the one record, a switch word resolves the other
+builder afresh, a back-reference with no antecedent is nobody's claim, and the 18:02 "before it
+committed anything" on the stopped run is UNVERIFIED and books nothing; the pre-check admits
+the ran shape, inspect exits 3 and 4 on the new cases, and a stubbed desk turn saying a stopped
+builder never ran is ledgered and corrected from the real delivery path).
+
+**To be written:**
+
+- `tests/test_job_dispatch.sh` — every instance redirect and the current login reach the worker;
+  the unit carries the collect option; dispatch returns without waiting.
+- `tests/test_job_context.sh` — the job profile carries the task, the index, and a capped named
+  excerpt, and never a whole project instruction file.
+- `tests/test_job_block.sh` — extend to pin the account state file and use a scratch jobs
+  directory throughout. See [test-harness.md](test-harness.md).

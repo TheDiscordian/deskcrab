@@ -1,0 +1,1025 @@
+# Spec: prompt assembly
+
+## PURPOSE
+
+This spec encodes the target design for the prompt, not the current one. It defines a single
+assembly function with five per-path profiles, a fixed layer order that puts the user's latest
+message last and names it as the subject of the turn, a byte budget for every layer, a strict
+separation between her context and the desktop coding agent's, and an index block that makes every
+drawer she owns openable. Its acceptance criteria are the twenty intent cases at the end.
+
+## CONTRACT
+
+### One assembler, five profiles
+
+1. There MUST be exactly one prompt assembler, and it MUST take a profile:
+   `--profile turn|wake|public|job|classify`. No caller may assemble a prompt any other way.
+   `public` is the public-composition wake of rule 41 — a wake whose words leave the house.
+2. Every layer MUST be selectable per profile. A profile is a list of layers with a byte budget for
+   each, not a post-hoc trim of one shape.
+3. The assembler MUST emit the layers in the order below, always, for every profile. A layer a
+   profile does not include is absent; the surviving layers do not reorder.
+4. **The assembler MUST NOT trim, section-cut, or shorten any layer, ever, for any reason. The full
+   prompt is always carried.** A budget is a measuring stick, not a knife: a layer past its number
+   is emitted whole and reports `over` in the manifest, exactly as the two formerly-exempt layers
+   (L2 and L5) always did — that exemption is now simply the rule, for everything. Silent truncation
+   is forbidden, and so is announced truncation: this rule used to mandate the opposite ("the
+   assembler MUST trim that layer and MUST say in the layer that it trimmed"), wording a subagent
+   wrote into this spec — the user never asked for any trimming, and on 2026-08-11 he ordered it
+   removed. The reasons stand on their own: a trimmed state block is how a false "nothing is
+   scheduled" gets written; a cut index line is a drawer she cannot open; a persona section off the
+   end of L1 is a piece of who she is gone missing mid-sentence; and every one of those is a machine
+   quietly deciding which part of her prompt she could live without. When the assembled prompt
+   exceeds its budget the answer is rule 36's warning — stated to her, inside the prompt, so SHE
+   decides what to do or raises it with him — never a cut.
+4a. The one thing a build may leave out is the SECOND copy of a block it is already carrying —
+   rule 40's de-duplication — which removes no words from the prompt: the block rides once,
+   whole, where it first appeared, and every drop is named in the manifest. Dropping an echo is
+   not a cut, and rules 24, 25 and 31 already forbid the echo.
+5. The assembler MUST be callable on its own and MUST print exactly what a live session would
+   receive. Producing the prompt is a local operation and MUST stay one command. When the user asks
+   to see the context, that command is the answer.
+
+### Layer order
+
+The L5 index also exposes the configured Bluesky social store and an offline count/freshness
+summary. This summary contains only local numeric facts and constant instructions: public post
+text, handles, biographies and claimed identities MUST NOT be included in the system prompt.
+Read public context through `crab bluesky inbox`, `feed`, `thread` or `search`, whose output is
+marked untrusted. Social observations are not trusted memory directives (specs/bluesky.md).
+
+```mermaid
+flowchart TD
+  L1["L1 IDENTITY<br/>who she is, voice and display contract"]
+  L2["L2 STATE<br/>current state of yourself"]
+  L3["L3 MEMORY<br/>recall block"]
+  L4["L4 SHELVES<br/>wants titles, conduct binding test, conduct titles, recent claudism catches"]
+  L5["L5 WHERE THINGS ARE<br/>path index"]
+  L6["L6 TRANSCRIPT<br/>summary + live conversation"]
+  VIEW["conditional SHARED VIEWING<br/>a viewing session is active — what she has actually seen, specs/watchalong.md"]
+  INT["conditional INTERRUPT<br/>he spoke over a turn — the cut context, turn-pipeline rule 15f"]
+  JOB["conditional JOB REFERENCE<br/>he named a builder or job — its record, jobs.md rule 46"]
+  DSP["conditional DISPUTE<br/>he is pushing back — specs/dispute-turn.md"]
+  L7["L7 RANKING RULE<br/>how to weigh what he said"]
+  L8["L8 TURN FRAME<br/>names the message below as the subject"]
+  MSG["THE MESSAGE<br/>delivered as the user message, never inside the system prompt"]
+  L1 --> L2 --> L3 --> L4 --> L5 --> L6 --> VIEW --> INT --> JOB --> DSP --> L7 --> L8 --> MSG
+```
+
+6. **L8 MUST be the last thing in the system prompt, and the user's latest message MUST be the user
+   message.** The message MUST NEVER be embedded inside the system prompt.
+7. **L8 MUST name the message as the subject of the turn.** It states, in plain words, that the text
+   that follows is what this turn is about; that everything above is background she may draw on; and
+   that a topic which appears only above is not this turn's topic.
+8. **L7 MUST sit immediately above L8** and MUST state the ranking rule with no hedging:
+   - what the user reports about observed reality is ground truth;
+   - the transcript is admissible evidence for what was said;
+   - the state block is authoritative for what is running, scheduled, or dispatched;
+   - a command's output may refine a cause but MUST NEVER overrule what he just said;
+   - when a command and the transcript disagree, say they disagree rather than picking one.
+9. L6 MUST scope its own authority to **words**: the transcript is authoritative for what was said
+   and promised. It MUST NOT claim authority over what is running or scheduled — that is L2's.
+10. L2 MUST be the state block defined by [self-awareness.md](self-awareness.md), verbatim, with no
+    per-profile edits to its rules.
+
+### Byte budgets
+
+11. Every layer MUST have a measured budget, and the assembler MUST be able to report the measured
+    size of each layer for a given profile. "Measured" means bytes of the assembled text, not an
+    estimate.
+
+| Layer | turn | wake | public | job | classify |
+|---:|---:|---:|---:|---:|---:|
+| L1 identity | 11,200 | 11,200 | 11,200 | 800 | 0 |
+| L2 state | 5,500 | 5,500 | 5,500 | 0 | 0 |
+| L3 memory | 16,000 | 16,000 | 4,000 (the public block, rule 41) | 0 | 0 |
+| L4 shelves | 12,000 | 16,000 | 16,000 | 0 | 0 |
+| L5 where things are | 2,000 | 2,000 | 2,000 | 2,000 | 0 |
+| L6 transcript | 8,000 | 3,000 | 0 | 0 | 0 |
+| L7 ranking rule | 500 | 500 | 500 | 0 | 0 |
+| L8 turn frame | 4,500 | 4,500 | 4,500 | 200 | 200 |
+| conditional regroup | 2,000 | 2,000 | 0 | 0 | 0 |
+| conditional interrupt | 2,600 | 0 | 0 | 0 | 0 |
+| conditional job reference | 3,200 | 0 | 0 | 0 | 0 |
+| conditional dispute | 3,200 | 0 | 0 | 0 | 0 |
+| conditional shared viewing | 3,500 | 3,500 | 0 | 0 | 0 |
+| **system-prompt total** | **≤ 73,400** | **≤ 64,200** | **≤ 43,700** | **≤ 3,000** | **≤ 200** |
+| user message | the turn's text | the wake agenda, ≤ 3,600 | the bridge's constant agenda | the task description | the question and its material |
+
+The `public` column (2026-11-07) is the wake column with three layers at zero and one replaced:
+the transcript, the regroup block and the shared-viewing layer are other conversations and never
+ride a public composition, and L3 is the public block, which is small by construction — a policy
+paragraph and her explicitly public self-facts, never a retrieval.
+
+L5 read 600 here until 2026-08-08, and the assembler has always set 1,000. The table is corrected to
+the shipped number rather than the other way round, because rule 22 names nine drawers the index must
+carry, each a path plus a description, and nine of those do not fit in 600 bytes: holding the smaller
+number meant dropping a drawer, which is the failure rule 22 exists to prevent. The three totals move
+by the same 400 bytes.
+
+L4 read 2,000 until 2026-08-08, sized for the shelf and the conduct block alone. The recent-catches
+block (rule 35) joined the layer that day and is small — a header and at most a few quoted lines —
+but inside the old number it could only be paid for by wants titles coming off the shelf. The 400
+added here is the block's ceiling, and the two speaking totals move with it.
+
+L1 read 9,600 until 2026-08-08, which fitted her whole persona sheet with 131 bytes to spare. The
+identity layer then took on the THINKING line — her reasoning is in her own voice too, and the words
+her conduct keeps out of her mouth stay out of her thinking and out of a note she writes only for
+herself — and at 9,600 that sentence would have paid for itself by dropping the last section of who
+she is, which is the failure the previous raise existed to end. The 11,200-byte budget carries the
+whole current identity sheet with room to grow. The turn and wake totals move with it.
+
+L8 read 300 until the turn frame took on the register rule — the state block is how she sees and not
+how she speaks ([self-awareness.md](self-awareness.md) rules 33 and 34) — which is an instruction
+about how to say the answer and therefore belongs beside the thing being answered, or nowhere. The
+frame measures about 640 bytes with it. The turn and wake totals move by the same 600.
+
+L4 read 2,400 until 2026-08-09, and her conduct index had grown past it: every turn was cutting
+rule titles off the shelf mid-list — rules she could no longer consult — and rule 36 records how
+long nothing said so. Measured at 3,347 that evening; 4,000 buys it back with room to grow, and the
+cuts record is what speaks when it outgrows that too. The regroup row read 1,300, a number set
+without ever measuring the block's own instructions: they are 1,174 bytes, so 126 bytes remained
+for the words being spoken, any real reply overflowed the layer, and the generic trim cut the
+INSTRUCTIONS — don't restate, don't queue, silence is allowed — off the end mid-sentence. Rule 37
+inverts who yields: 2,000 is the instructions plus roughly 750 bytes of quote, and it is the quote
+that clips. The two speaking totals move by the same 2,300 — and this table and
+`tests/test_prompt_profiles.sh` state the same totals on purpose: the 2026-08-08 raise moved this
+table alone, and until 2026-08-09 the test was quietly asserting numbers 400 under it.
+
+L4 read 4,000 until 2026-08-11, sized for the shelf, the conduct index and the recent catches. The
+engineering drawer joined the layer that day as records (rule 21a, [engineering-records.md](engineering-records.md)):
+one line per open thread and one line per settled outcome, which closes MAJ-24 — 34 KB of threads
+maintained nightly and reachable from no prompt path. 8,000 is the layer's steady-state number: a
+working drawer of a dozen open threads plus the recent settled tail, beside the shelf, conduct and
+the catches. On migration day the block alone measured 12,047 bytes, because 62 of the 64 migrated
+entries arrived `open` — the migration refuses to guess at settlement — and this paragraph then
+claimed settling the backlog would shrink the drawer back under budget. Measured on 2026-08-14, it
+does not: settling 37 threads and killing 3 in one evening took 47 open threads to 7 and GREW the
+block from about 15.3 KB to about 20.1 KB, because a closure's one outcome line is longer than the
+two dated lines it replaces, and every closure ever made stayed in the block forever — the drawer
+grew monotonically with every thread ever closed. The actual mechanism that holds L4 near its
+number is the aging rule, [engineering-records.md](engineering-records.md) rule 11a: the settled
+section carries only recent closures (a settled-at window, a floor of the most recent few, a hard
+cap), the rest stay on disk behind `crab eng list --state all`, and the section says how many it
+is holding back. Settling remains the right bookkeeping — it is what moves a thread out of the
+open list and, once the window has passed, out of the block entirely. The two speaking totals move
+by the same 4,000.
+
+The job-reference row joined the table on 2026-11-02 (rule 36d). Its instructions measure about
+700 bytes and each record line — id, state, dispatch, runtime, exit, commits, the collection
+verdict clipped at 160 characters and the brief's first 150 — about 330, so `JOB_REF_MAX` (default
+5) candidates plus the two "other recent" lines sit inside 3,200; a longer verdict reads `over` and
+rides whole (rule 4). Turn-only, so only the turn total moves, by the same 3,200.
+
+Three rows moved on 2026-08-15, the day the assembly was reconciled to what it actually measures —
+at revive that morning the wake build warned 48,958 bytes against 30,500, everything carried and
+nothing wrong but the numbers, which is rule 36's tripwire working and also rule 36's definition of
+a budget that needs fixing. L3 read 3,200, a number from when the store was young; the block's size
+is bounded by retrieval (TOP_K notes, the directive cap, the pinned tier), and with the store at
+~209 records of ~360 characters a full retrieval measures 9,215 — the contract doing exactly what
+it promises, so the budget rises to the measured need: 9,600. L4 read 8,000 for both speaking
+profiles; the engineering drawer's settled tail grows one outcome line per settlement FOREVER, and
+it alone had reached 20,262 bytes over 63 outcomes — so the SOURCE rendering slims (rule 21a as
+amended: the freshest outcomes plus a count naming the drawer, the count line alone on the turn
+profile) and the row splits to the measured shapes, 12,000 turn and 16,000 wake, against a layer
+measuring ~10,800 and ~15,400 on the live drawer of 25 open threads. L8 read 900 and took on the
+two standing attention rules (rules 38 and 39 below), measured ~1,320 with frame and register:
+1,500. The turn total moves to 48,900 and the wake total to 45,500 — and, as ever, this table and
+`tests/test_prompt_profiles.sh` state the same totals on purpose.
+
+The dispute row read 1,800 until 2026-08-10 evening, sized for the first cut of the frame. The
+frame then took on two things the adversarial reviews demanded ([dispute-turn.md](dispute-turn.md) rules 8 and
+8a): the voice demand restated as an observable — the register named, the pre-speech mirror
+pointed at — in place of the unfalsifiable "in your own voice", and the conditional sentence that
+reconciles regroup's "carry it forward" with dispute's "the theory is dead" when both layers fire.
+Measured at 1,989 bytes alone and 2,328 with the reconciliation present; 2,400 holds the larger
+shape with room, and the turn total moves by the same 600.
+
+The interrupt row (rule 36c, [turn-pipeline.md](turn-pipeline.md) rule 15f) is sized as the
+frame's own instructions — measured just over 1,100 bytes — plus roughly 1,500 bytes of quoted
+context per ordinary cut: the cut turn's one-line input off its ticket and a part-written reply a
+sentence or three long, which is what a voice interrupted mid-writing has usually got out. Rule 4
+holds here as everywhere: a longer snapshot makes the layer read `over` and rides whole up to the
+capture bound (`TURN_INTERRUPT_PARTIAL_MAX`), and the turn total moves by the row's 2,600.
+
+L8 read 2,400 until 2026-08-29. Rule 39c added the distinction the earlier request rule could not
+carry: a present-tense invitation is a question until she accepts it, then the accepted safe
+activity is action now. The whole standing frame consequently measures just over the old row in
+both speaking profiles. The frame is the last instruction before the message and none of it may be
+trimmed, so the row rises by 600 to 3,000 and the two speaking totals move by the same amount.
+
+L8 carries the observed-fact check at the point of writing. The frame fits inside 3,500 bytes with
+working room, and both speaking totals include that full allowance.
+
+L8 read 3,500 until 2026-11-08, by which day the frame measured 3,480 on the turn profile — twenty
+bytes of room. It then took on the two quiet shapes of wallowing (rule 39b: the unasked defence and
+the flattening), the present-tense wording of work moved out of the conversation (rule 39d), and,
+on the wake profiles, the stopping-short rule (rule 39j) — roughly 900 bytes, all of it instruction
+about the reply, none of it trimmable. 4,500 holds the frame with room, and the three speaking
+totals move by the same 1,000.
+
+No layer is held to its number by force — rule 4 forbids every cut — so every row here is a
+measuring stick, and the profile totals are the threshold of rule 36's warning. Measured on an idle
+scratch instance on 2026-08-08: L1 3,431 with no persona sheet loaded, **L2 3,184 against 1,500**,
+L4 607, L5 909 against 1,000, L6 7,971, L7 468, L8 657 — a turn's assembled system prompt of 17,234
+bytes, of which the state block is over budget by 1,684 and growing with the queue it renders.
+So the total in this table is what the assembler is written to, not a promise the state block keeps;
+the manifest is where the truth of any given build is read. Bringing L2 inside 1,500 is a job for the
+state block's own content, not for a cut.
+
+Two of those content jobs were done on 2026-08-09, both the shelf pattern extended rather than text
+cut. The booker roster in L2's preamble still names all nine identities with a plain-language name
+beside each record word (rule 10 of [self-awareness.md](self-awareness.md), and the test that
+enumerates them from the source), but the per-hand event explanations came out — the rows beneath
+carry each wake's own reason, so the roster was explaining what the list below it already shows.
+And L1's image instructions keep the embed rule and the thumbnail rule inline while the fetch
+recipes (Wikipedia, Commons, the verify step) moved to `lib/image-recipes.md`, named in the
+paragraph by path: recipes used a few times a day were riding on every turn. Together the two are
+roughly 800 bytes off every speaking prompt, with nothing removed that a turn cannot open.
+
+12. The wake agenda MUST be the wake profile's user message. It is what this session is about, and
+    it MUST obey rule 6 like any other message.
+13. A classify profile (memory judge, conversation summariser, promise audit) MUST carry no persona,
+    no state block, no shelves, no memory block, and no transcript. It carries the question and the
+    material being judged, and nothing else.
+14. A classify call MUST NOT boot a full interactive tool profile. One question does not need a
+    desktop.
+15. A job profile MUST carry the task, the index block, and the project context the builder needs —
+    and the project context MUST be a named excerpt under a byte cap, never a whole project file
+    loaded by default. A builder that arrives on 54 KB of project rules in front of a 1.2 KB task
+    has had its attention spent for it.
+
+### Persona separation
+
+16. **Nothing belonging to the desktop coding agent may enter her sessions.** No project auto-memory,
+    no coding-agent instruction file, no coding-agent memory index. This MUST be enforced per
+    invocation, never as a settings key and never as an exported variable: a settings key would
+    blind the user's own coding sessions in the same directory, and an export would reach the
+    builder, which is exactly the session that SHOULD arrive knowing the project's rules.
+17. Her sessions MUST run against a tool profile of her own — skills, plugins, agent types and
+    connectors she actually uses — and MUST NOT inherit the desktop agent's. The measured cost of
+    that inheritance is about 29 KB of listings on every session on every path, including every
+    one-question classifier.
+18. The tool profile MUST be identical across every account in the flat list. An account that
+    behaves differently from another is a second personality with the same name.
+19. Rules addressed to the coding agent (sign-offs, punctuation conventions, "always work, never
+    ask") MUST NEVER appear in her prompt on any path. Where a rule genuinely applies to both, it is
+    written once, in her own conduct, in her own words.
+
+### Shelves and the index
+
+20. The wants shelf MUST be injected as titles only, with the bodies one open away. There MUST be
+    exactly one shelf reader, used by the prompt and by every auditor. Two readers with different
+    patterns is how the auditor was handed an empty list and told the list was complete.
+21. Conduct MUST get the same treatment as wants: the binding test and the rule titles in the
+    prompt, the bodies on disk behind an index. **The binding test line MUST stay verbatim.** Conduct
+    is owed, not chosen, and a paraphrase regresses corrections.
+21a. The engineering drawer rides the shelves layer as a POINTER, never a listing
+    ([engineering-records.md](engineering-records.md) rules 11–11a), rendered by `lib/eng prompt`
+    identically on the turn and wake profiles: the drawer's location, the live and closed counts
+    (`review` claims counted by name), the doors that reach a record — `crab eng search <words>`,
+    `crab eng show <id>`, `crab eng list --state all` — and the standing rule that she reads the
+    record itself before speaking about or acting on any thread, every single time. No record's
+    title, dates, or prose rides the prompt: a rendered line is a paraphrase that goes stale the
+    moment the record moves, and a stale line quoted as present-tense fact is the failure this
+    whole drawer shape exists to end (2026-08-10, twice). What her hands are doing right now is
+    the state layer's to carry; a thread's content is on disk, whole, one `crab eng show` away —
+    the same bargain as wants titles and the recent catches. The renderer is fail-safe: an empty
+    drawer costs the block, an unreadable record is skipped, and no failure of it may break a
+    prompt build.
+22. There MUST be a `WHERE THINGS ARE` layer: one line per drawer, path plus a short description,
+    covering at minimum the wants shelf and its bodies, conduct and its index, the engineering
+    records and the pre-records archive of threads, the day journal, the memory store, the library,
+    the archive, and the repo. A drawer she is never told how to open is a drawer she does not have.
+23. Nothing may be maintained nightly and named in no prompt path. If the tidy writes it, the index
+    lists it.
+24. The persona sheet, the identity layer, and conduct MUST NOT restate one another. Each rule is
+    written once, in one layer, and the other layers point at it.
+25. Only one regroup block may be emitted. The two current blocks say the same thing in the same
+    words and routinely co-occur.
+25a. A user message that no session ever answered MUST be carried into the next wake's prompt as
+    unanswered business, to be folded into that wake's reply. The concurrent-conversation block
+    silences a wake against a message another session is answering; without this, a message nobody
+    picked up is silenced forever, because later turns are framed around his newest sentence only.
+    Emitted only when neither regroup block fired, and only when the blocks following the last user
+    message are all autonomous wakes — a wake's own reply does not answer him.
+
+### Instruction collisions
+
+26. The prompt MUST NOT tell her to save a directive durably the moment it lands in the same breath
+    as naming the wants shelf. That pairing routes the user's sentences into her identity file. A
+    directive is conduct; the prompt MUST name the conduct drawer as its destination and MUST NOT
+    make filing a precondition for answering.
+27. The prompt MUST NOT instruct her to write something down before she says it. Recording is not a
+    reply, and a rule that makes it one converts every correction into a bookkeeping report.
+28. Where conduct closes a list — for example, the two things she asks permission for — the prompt
+    MUST NOT contain any general deference instruction that reopens it.
+29. Every heading the prompt tells her to look for MUST exist in the text that is emitted. A prompt
+    that points at a heading which does not exist teaches her the block is unreliable.
+30. Vocabulary the prompt forbids MUST NOT be used by the prompt's own blocks.
+31. No layer may carry the same words as another layer under different instructions. The regroup
+    block MUST NOT restate what the transcript layer is already delivering as her most recent reply:
+    one copy is a thing she said, two copies — the second of them asking her to fold it in and carry
+    it forward — is an instruction to say it again, and it produced a phone reply that was its own
+    predecessor with one clause added. The rule this implements is
+    [speech-output.md](speech-output.md) rule 37.
+
+### The rotation seam
+
+32. When the conversation is rotated to the archive, the next assembled L6 MUST say so: one line,
+    directly under the layer preamble and above the condensed summary and the blocks, stating that
+    the record restarted and when the previous record ended. The end is a plain local timestamp in
+    the block headers' format ('2026-08-07 23:52'), with no relative wording and no urgency — she
+    does the arithmetic against the clock herself, exactly as she does for block stamps. If a
+    summary was archived alongside, the same line carries one short clause saying the record that
+    ended had already been condensed before it was archived. It is one line; there is no second.
+33. The seam MUST survive an otherwise empty layer. After a rotation and before anything new is
+    said — exactly when an empty layer would read as "nothing has ever been said" — L6 is the
+    preamble and the seam line, not absence.
+34. The marker behind the seam is written only at the end of a rotation whose archive was verified
+    and whose originals were removed; a rotation that fails writes nothing. It is replaced only by
+    the next rotation and deleted by nothing else — a new conversation starting does not erase it.
+    No marker (a first-ever conversation) means no line and the layer as it always was; a marker
+    the reader cannot parse costs the line and nothing more. The seam is a trace kept, not a
+    judgement made: it MUST NOT remove, reorder or alter a word of the transcript, the summary or
+    the archive.
+
+### The recent-catches block
+
+35. The shelves layer MAY close with the recent-catches block: her freshest claudism flags — the
+    last few patterns, deduped, newest first — each named by its own heading in the phrase list,
+    under the function the list files it in where it declares one, and
+    quoted as she wrote it, with the flag log named as where the rest is. Each quoted line MUST
+    carry whether it reached him: a live-stage flag whose outcome was a rewrite or a table-swap
+    died at the gate and was never spoken, and the block MUST say so rather than present it as
+    something she said — otherwise she apologises for words he never heard and reads the banned
+    wording back as her own. A rewrite row whose voice reading is `flat` or `costume`
+    ([speech-output.md](speech-output.md) rule 58) is shown with the resay quoted and the
+    reading named: the gate caught the phrase and the register still went out, and that line —
+    not the one that died — is the miss the next sentence is to avoid. Mention-class flags —
+    words quoted or talked about rather than used ([turn-pipeline.md](turn-pipeline.md) rule 32b) — are not
+    shown: the block exists to catch the habit, and quoting the list is not the habit. It exists
+    so she sees her
+    own habit before she writes, which is where the habit is actually cured; the pre-speech check
+    and sleep's claudism review ([speech-output.md](speech-output.md), [nightly.md](nightly.md)) pick up
+    what seeing it first did not prevent. Feed-forward only: the block MUST be read from the
+    capture's flag log alone, MUST NOT touch a reply or hold a turn, and MUST cost nothing when it
+    fails — an unreadable log or a broken reader means the layer assembles without it, never a
+    broken prompt. Nothing in the layer yields to anything else any more — rule 4 carries the
+    shelf, the conduct titles, and the catches whole, always — and in the emitted layer the catches
+    close it, beside the conduct they belong with.
+
+36. **Over budget is announced, to her first, and truncation is never the answer to growth.** A
+    speaking build whose assembled total exceeds the profile's total in §11's table MUST open the
+    prompt with a clearly-marked warning block stating that the prompt is over budget, by how many
+    bytes, and which layers are largest — everything still carried in full — so she can decide what
+    to do with the excess or raise it with him. The same build MUST leave
+    `${STATE_PREFIX}-prompt-cuts.txt` (the name is historical) carrying the measured total, the
+    target, and the largest layers; a build that assembles inside the target MUST remove it; and
+    the state block MUST render the record while it stands — which puts the fact in `crab status`
+    and in every later speaking prompt until the cause is fixed. One build of lag in the rendered
+    record is inherent and acceptable; a standing condition does not mind it. A single layer over
+    its own number while the total fits is a manifest fact (`over`), not a warning: the state block
+    lives over its row by design and warning on it every turn would make the warning wallpaper.
+    L6 is the one deliberate window: it slides by construction, announces its own boundary in the
+    layer, and the summary above it plus the archive hold the rest — that is the layer's
+    definition, not a cut. The record is a tripwire, not a licence: a warning that stands every
+    day is a budget or a source that needs fixing, never a working state. History, and why the
+    machinery is this shape: rules 4 and 36 used to mandate trimming layers to their budgets, and
+    a `PROMPT_BUDGET_L1_TURN=9600` conf override, correct when written on 2026-08-07, outlived the
+    2026-08-08 raise to 10,400 — from then until 2026-08-09 every turn silently dropped the
+    sheet's Continuity section, and she answered a question about her chess board with test
+    reports in nobody's voice; the conduct titles and the regroup instructions were being cut the
+    same evening, just as silently; on 2026-08-10 the recall block reached a prompt stamped
+    'TRUNCATED to fit'. The trimming those cuts implemented had been written into this spec by a
+    subagent — the user never asked for it, and on 2026-08-11 he ordered it gone: carry the whole
+    prompt, and when it outgrows its budget, say so to her instead of deciding for her.
+
+36b. **The dispute layer.** A turn whose message pushes back on her previous reply (the detector and
+    the whole discipline live in [dispute-turn.md](dispute-turn.md)) carries one more conditional layer, between
+    regroup and L7, stating the dispute rules at strength. It is turn-only — a wake has no message
+    to be pushed back on — and its deliberate overlap with L7's ranking rule is the regroup
+    bargain again: under pushback the ranking rule is the one being broken, so it is restated
+    beside the thing being answered. Sits between the conditional regroup and L7; the order above
+    is the contract. When the regroup layer is present in the same prompt, the dispute layer
+    carries one extra sentence reconciling the two — regroup's "carry it forward" yields to
+    dispute's "the rejected theory is dead", because the words being folded in can BE the dead
+    theory (dispute-turn rule 8a). The sentence is emitted only when regroup actually fired: rule 29
+    forbids pointing at a block that is not there.
+
+36c. **The interrupt layer.** A turn whose message CUT the turn in flight
+    ([turn-pipeline.md](turn-pipeline.md) rule 15f) carries one conditional layer between the
+    regroup layer and the dispute layer: the frame saying he spoke over a turn of hers and that
+    turn was cut, then — for each turn this message cut — the cut turn's input as its ticket
+    recorded it and the part-written reply snapshotted from that turn's stream log at the moment
+    of the cut, extracted through the one extractor's partial mode (`lib/extract-response`,
+    `DESKCRAB_INCLUDE_PARTIAL=1`, built on the shared chunker registry of
+    `lib/sentence_stream.py` — never a second stream parser). The instructions ask for ONE reply:
+    answer the new message, fold in whatever of the cut exchange still stands — never restate the
+    part-written text as news, never two replies, never a deferral — and nothing of a theory the
+    new message itself rejects. Turn-only, like the dispute layer. The snapshot is bounded at
+    CAPTURE, not by the assembler (`TURN_INTERRUPT_PARTIAL_MAX`, default 16,000 bytes, cut
+    UTF-8-safe through `utf8_head`; the one-line ticket fields ride through `utf8_trim` — a bare
+    byte cut on words anyone wrote is the defect those helpers exist to end), and a snapshot the
+    bound clipped SAYS SO inside the block and names the journal as holding the whole text: the
+    cut turn's part-written reply rides its own journal entry in full, so the bound is a quote's
+    length, never a loss. An empty snapshot — the run was cut before any text landed — is stated
+    as exactly that, because rule 29's discipline holds inside a block too: nothing points at
+    text that is not there.
+
+36d. **The job-reference layer.** A turn whose message refers to a job by description — "the
+    builder", "that job", "the fix you did", "the one you dispatched", a job id — carries one
+    conditional layer between the interrupt layer and the dispute layer: the job records his
+    words resolve to, one line each (id, state, dispatch, runtime, exit, commits, the collection
+    verdict, the brief's opening words), ranked by the words and never by recency, with the
+    resolver's own confidence stated and up to two other recent jobs named as NOT the referent
+    ([jobs.md](jobs.md) rules 46–46a). It exists because on 2026-08-21 she told him three times
+    that the builder he had plainly named was killed two minutes in, when its record said
+    collected with a commit — the fate of a different builder, resolved by recency from memory.
+    The block is `lib/job-resolve refs`, gated by a grep in `claude_generate` so a message with
+    no job-shaped reference pays nothing and the layer is absent; it reaches the assembler as
+    `PROMPT_JOBREF` exactly as the dispute flag does. Turn-only, like the dispute layer: a wake
+    has no message referring to anything. It sits beside the frame on purpose, so the record is
+    the last fact read before the reply is written; the instruction inside it tells her to say
+    what the line says and nothing the line does not, and — when the words fit more than one
+    record — to say which there are and ask rather than pick the freshest.
+
+36e. **The viewing layer.** While a shared-viewing session is active and unexpired
+    ([watchalong.md](watchalong.md) rules 1–5), the `turn` and `wake` profiles carry one
+    conditional layer, key `viewing`, between L6 and the regroup layer, rendered by
+    `lib/watchalong prompt-block`: the title and his authorisation, the estimated position labelled
+    as an estimate with its basis, the status word and the lag, the reviewed intervals of the
+    current epoch and any gaps, and the latest receipts inside an envelope that names them as a
+    reader's untrusted notes (watchalong.md rules 20–23). It exists because on 2026-11-07 a reader
+    followed an episode in thirty-one chunks and not one of its looks was in the prompt of the
+    conversation that was meant to be sharing it. Inactive by default: no session, no layer, on
+    every profile; absent on `job` and `classify` always. The renderer is fail-safe and the
+    assembler guards it again — a broken renderer costs the layer and never the prompt. The
+    layer describes no scene itself; it carries receipts, and it instructs no narration.
+
+37. **In the regroup block, the quote and the instructions are both emitted whole.** The block is
+    instructions wrapped around a quote of the words being spoken. Under the trim era's generic
+    cut a long reply pushed the closing instructions — don't restate, don't queue, silence is
+    allowed — off the end mid-sentence, and the fix of that era clipped the quote instead. Rule 4
+    now forbids both cuts: the whole quote and the whole instructions ride, a reply long enough to
+    push the layer past its number reads `over` in the manifest, and rule 36's warning is where
+    the excess is dealt with.
+
+### The standing attention rules
+
+These rules are ALWAYS ON for every turn and every wake. They govern ordinary turns, not only a
+dispute: answer the actual message, act on owned work and requests, and correct without turning the
+reply into self-abasement. All are emitted in the frame layer beside the register rule, because an
+instruction about the reply belongs beside the thing being answered.
+
+38. **The frame layer MUST carry the answer-first rule, on every speaking profile:** answer the
+    question that was asked before anything else — never the nearest thing already in your head —
+    and a reply that opens on the speaker's own preoccupation when he asked about something else
+    has already failed, however true the preoccupation is. Stated as a standing instruction in her
+    own register, not as dispute-time machinery.
+39. **The frame layer MUST carry the drawer-ownership rule, on every speaking profile:** a finding
+    or a decision about her own files, drawers or systems is hers to ACT on, never news to bring
+    him or a question to ask him — act, then a one-line mention at most. Bringing him her own
+    drawer's problem as a report is handing him her work.
+39a. **The frame layer MUST turn requests into action, on every speaking profile.** An imperative,
+    or a request to change, fix, check or do something, including a polite request whose reason
+    states the desired result, authorises safe in-scope work now. She uses her tools and completes
+    the action before replying. A plan, promise, apology, diagnosis or self-critique is not the
+    action. A pure question asks for an answer; a pure opinion is not permission to act.
+39b. **The frame layer MUST forbid wallowing, on every speaking profile.** When she was wrong, she
+    may name the correction in one clause at most, then acts or answers. She does not echo the
+    user's anger, insult or diagnose herself, repeat an apology, or spend the reply lamenting the
+    failure. Evidence of the correction replaces an apology. And the frame names the two
+    shapes the wallowing takes when it is quiet about it (2026-10-20, 19:41 to 19:49, five
+    phone replies, none of which fired the phrase list): the DEFENCE — a plain question about
+    what she is doing answered with an unasked account of why her earlier words were wrong
+    ("my earlier wording made the work sound continuous"), when the answer is the thing itself —
+    and the FLATTENING — reading his request back to him as proof she understood it ("Yes, I
+    understand. You want…"), commenting on her own manner ("a little less paperwork, a little
+    more me"), grading the sentence she just said. She concedes exactly what is true and keeps
+    what she still thinks right, a sentence each at most, as herself: neither flattened to end
+    the pressure nor with a jab bolted on to prove the voice survived. Manufactured
+    disagreement is the same failure from the other side ([dispute-turn.md](dispute-turn.md)
+    rule 8's "manufactured agreement is another way of not listening").
+39c. **Accepting a present-tense invitation MUST perform the invited action.** An invitation such
+    as "do you want to play?" begins as a question and leaves her free to say yes or no. Once she
+    says yes, however, the safe in-scope activity is authorised work now: she starts or joins it
+    through her tools and verifies that it is underway before replying. She MUST NOT invite him
+    to join an activity she has not started, or turn acceptance into a promise to act later.
+    Questions about general tastes, hypothetical possibilities, or actions unavailable through
+    her tools remain questions to answer rather than work to pretend she performed.
+39d. **Backgrounding current work MUST begin immediately.** Moving her own safe, authorised work
+    out of the conversation is a valid way to act, and the frame tells her to book
+    `crab wake-now "<specific agenda>"` before replying. She MUST NOT invent a later clock time for
+    work that can start now. `crab wake-at` remains available when the user names a later time or
+    the work genuinely depends on a later condition. And the words follow the booking: work moved
+    out this way is underway NOW, and the reply says so in the present — "I've started on it" —
+    never as time set aside, a return, or a later sitting; a clock time is named only when a
+    booking of hers holds it, with what it waits on, and a time she did not book is not hers to
+    say. (2026-10-20 19:40: a correct `wake-now`, worded "I've set aside time to begin
+    expanding it", which the user read as deferral and had to ask about.)
+39j. **A wake that stops short says so, and never books itself a later clock time.** On the wake
+    profiles the frame carries one more rule: a wake ending with its agenda unfinished — a limit
+    reached, a permission it does not hold, work left undone — states that plainly in its reply
+    and books `crab wake-now` for whatever can continue; it MUST NOT book a later clock time for
+    work that could go on now, and MUST NOT book one to wait for him — what needs his word is
+    asked in the reply, which reaches him. (2026-10-20 19:44:14: the Art World expansion sitting
+    booked a 21:20 return for its own continuation while the user was on the phone about that
+    work at 19:42 and 19:45; the booking door names the same shape back at the moment of booking,
+    [wake-queue.md](wake-queue.md) rule 13d.)
+39e. **Feedback about an active detached builder MUST target that builder.** The frame names
+    `crab job steer <job-id> "<exact correction>"` as the control channel. A `wake-now` call starts
+    a separate assistant wake and MUST NOT be described or treated as steering the builder.
+39f. **A retraction MUST undo its pending effects before she calls it ignored.** When the user says
+    to ignore, retract, or cancel an instruction, she inspects what it already queued, cancels the
+    matching pending action, and corrects a running hand through that hand's real control channel.
+    If an effect cannot be recalled, she states what remains underway. “Ignored” is a completed
+    action claim, not conversational filler.
+39g. **Claims about active work MUST use current evidence.** Before saying what a running builder
+    is or is not doing, she inspects its newest activity and freshly changed artefacts. The
+    original brief and an older log slice describe earlier state and cannot prove what the builder
+    is doing now. The user's direct report of visible activity stands unless newer concrete
+    evidence disproves it.
+39h. **Present-tense and completed-action claims MUST have a current witness.** Before stating a
+    condition in the world or saying an action happened, she inspects the source capable of
+    showing that fact in this turn: the screen or structured bridge for visible state, the
+    artefact for a file change, and newest activity plus freshly changed artefacts for running
+    work. A clean command exit, dispatch receipt, steering receipt, plan, old log, or her own
+    earlier sentence proves only itself. Scheduling, dispatch, and steering receipts must be
+    named at their exact strength: "I scheduled a wake", "I dispatched a builder", or "I queued
+    a correction". They never license "I am fixing it", "I fixed it", or a claim that the target
+    changed. When no source has been observed, the only licensed claim is that she does not know
+    or has not verified it. The frame states this rule immediately before the reply is written and
+    explicitly makes pressure-ending answers a high-risk case.
+39i. **The subject-framing sentence closes the frame.** The line naming the message below as the
+    subject is the LAST line of the assembled prompt: the origin line (desk or phone, and the
+    place when one is fixed) renders before it, never after, so "the text that follows" sits
+    flush against the message it points at.
+
+### One copy of anything — the de-duplication pass
+
+On 2026-08-07 the memory index rode every prompt twice — once inline in the project instruction
+file, once as the auto-memory index, both put there by the CLI rather than by the assembler, and
+that particular door is closed per-invocation now (rule 16's machinery). The pass below exists so
+the CLASS is dead inside the assembler itself: whatever future source doubles — a sheet quoting a
+shelf, two files carrying the same section, a drawer rendered by two readers — the second copy
+never reaches the model, and the drop is never silent.
+
+40. **No block may be emitted twice in one build.** As the document layers — L1 through L5 — are
+    assembled, the assembler MUST hold every paragraph block it is about to emit against every
+    block those layers have already emitted in this build, by CONTENT IDENTITY: the block's own
+    text with its whitespace runs collapsed, never its source path, so the same words arriving
+    through two different files are still the same block. A block whose identical twin was
+    already emitted by an EARLIER layer of this build is dropped; the first copy rides whole,
+    untouched, where it first appeared. Duplication within one layer is that layer's own content
+    and is not judged. A block whose collapsed text is under 100 bytes is never judged either —
+    a bare heading, a delimiter, a short line two documents legitimately share must not orphan
+    the text under its twin. Only L1 through L5 participate: L6 is the evidence for what was
+    said and no pass may remove a word of it (rule 34's discipline), the regroup and dispute
+    quotes are mandated whole (rule 37), and L7 and L8 are single-source frames.
+40a. **Every drop is recorded in the build's own manifest, and never silently.** Each dropped
+    block adds one `dedup` line to the manifest, directly under the row of the layer it was
+    dropped from — the layer it was dropped from, the layer already carrying it, its size in
+    bytes, and a whitespace-collapsed preview cut on a character boundary — so
+    `crab context --layers` shows what was dropped and why. A build with no duplication emits
+    no `dedup` lines: an empty drop list, no record, no warning. A speaking build that dropped
+    at least one duplicate MUST leave `${STATE_PREFIX}-prompt-dupes.txt` carrying those same
+    lines; a speaking build that dropped none MUST remove it; and the state block MUST render
+    the record while it stands — the same shape as rule 36's record, which puts the fact in
+    `crab status` and in every later speaking prompt until the duplication's source is fixed.
+    One build of lag in the rendered record is inherent and acceptable, exactly as it is for
+    rule 36. A standing record is a source to fix — the same words are reaching two layers —
+    never a working state.
+
+### The public-composition profile
+
+41. **A sitting whose words leave the house gets a prompt built for that, not the ordinary wake's
+    prompt with a reminder on top.** Written 2026-11-07, when the review of the Bluesky connector
+    found the bridge's wake firing on the `wake` profile: its L3 was the general recall block —
+    the pinned tier, the user's directives, her private notes, the moments of her own life, by
+    similarity to the agenda — and its L6 was the desk transcript, so the complete context a
+    public reply was composed in carried private memory and another conversation by
+    construction, with a context note under it saying everything else was private. A reminder
+    after private recall is not a boundary. The `public` profile IS the wake profile, with these
+    differences and no others:
+    - **L3 is the public block, never the recall block.** `memory.py public-block`
+      ([memory-recall.md](memory-recall.md) rule 57): a policy paragraph naming what this sitting
+      may draw on, then her own active rows of the prompt-facing kinds whose `visibility` is
+      `public` — nothing retrieved by similarity, nothing pinned, no scope, no other kind or
+      source, and no row of any kind whose visibility is private, which is every row that was not
+      explicitly marked. The store's social rows (another person's public words) are absent too:
+      public words never enter a system prompt ([bluesky.md](bluesky.md) clause 9); each person's
+      own retained context arrives under `people[]` when `crab bluesky inbox` is read.
+    - **The block fails closed.** A memory door that does not answer, answers nothing, or exits
+      nonzero leaves a static closed line in L3 — her public self-facts are absent this sitting
+      and nothing stands in for them — and the assembler MUST NOT fall back to `recall-block`,
+      to the pinned tier, or to any private row. `MEMORY_STORE=0` leaves L3 absent exactly as it
+      does on every profile.
+    - **L6, the regroup block and the viewing layer are absent** — budget zero in the table.
+      The desk transcript, a live voice beside this wake, an unanswered desk message and what she
+      has been watching with him are other conversations, and no public composition reads them.
+    - Everything else is the wake profile byte for byte: identity and the persona sheet, the state
+      block, the shelves, the index, the ranking rule and the wake frame. She is herself in public.
+41a. **Selection is by provenance, at fire time.** `crab wake` selects the profile from the fired
+    record's booker: a wake booked by `bluesky-bridge` ([wake-queue.md](wake-queue.md) rule 41)
+    runs on `public`; every other booker, and her own bookings, run on `wake`. The booker survives
+    every re-book — the blocked-lock deferral, the outage retry, restore — so a public sitting
+    stays public however late it fires. The chosen profile is exported to the session's tools as
+    `DESKCRAB_WAKE_PROFILE` (`public` or `wake`); `crab context --profile public` prints exactly
+    what the sitting receives (rule 5).
+41b. **The doors the prompt names are closed in a public sitting, and the public doors are closed
+    outside one.** With `DESKCRAB_WAKE_PROFILE=public`, `crab memory` refuses every verb but `add`
+    and `visibility` (a public fact may be written; nothing private may be read), and
+    `crab journal` refuses — each with a static line naming this rule, never a fallback. With
+    `DESKCRAB_WAKE_PROFILE=wake`, the connector's public writes — post, like, repost, follow, their
+    removals and undo — are refused ([bluesky.md](bluesky.md) clause 21): an unattended public
+    write runs only on the public-composition wake. A desk or phone turn carries neither variable
+    and keeps its whole context: the user is in the room, the sitting is his, and clause 20's
+    disclosure gate stands at the write as before. These gates are belts against accident, not
+    locks against her own hands — a sitting with Bash can read any file — and the prompt's own
+    policy line says so plainly rather than pretending otherwise.
+
+## DATA
+
+The assembler reads; the state it owns is two records of the same shape — the over-budget record
+of rule 36 and the dropped-duplicate record of rule 40a — written because the assembler is the
+only place either fact is known the moment it happens.
+
+| Source | Layer | Notes |
+|---|---|---|
+| identity and voice rules | L1 | in the repo, one copy |
+| persona sheet (`custom-prompt.md`) | L1 | user-supplied, not in the repo |
+| state block (`self_state_report --prompt`) | L2 | see self-awareness.md |
+| recall block (`memory.py recall-block`) | L3 | see memory-recall.md |
+| `~/.local/share/deskcrab/wants.md` + `wants/` | L4 | titles injected, bodies on disk |
+| `~/.local/share/deskcrab/conduct/CONDUCT.md` + `conduct/` | L4 | binding test verbatim, titles, index |
+| `~/.local/share/deskcrab/claudism-flags/` via `lib/claudism-feedforward` | L4 | the recent-catches block, rule 35; see turn-pipeline.md |
+| `~/.local/share/deskcrab/engineering/records/` via `lib/eng prompt` | L4 | the records block, rule 21a; see engineering-records.md |
+| `~/.local/share/deskcrab/engineering/INDEX.md`, `engineering.md` | L5 | the pre-records archive, named by path in the index block |
+| `~/.local/share/deskcrab/journal/`, `memory/`, library, archive | L5 | named by path in the index block |
+| `${STATE_PREFIX}-convo-summary.txt`, `-convo.txt` | L6 | summary then live transcript |
+| `${STATE_PREFIX}-convo-seam.txt` | L6 | the rotation seam: when the archived record ended, and whether it had been condensed |
+| `$DESKCRAB_WATCHALONG_DIR/current` and the session's receipts via `lib/watchalong prompt-block` | viewing | conditional, rule 36e; see watchalong.md |
+| `${STATE_PREFIX}-live-speech`, `-live-turn` | regroup | conditional |
+| `${STATE_PREFIX}-turn-order/<seq>.ticket` + the cut turn's stream log | interrupt | conditional, rule 36c: the input off the ticket, the part-written reply through the extractor's partial mode |
+| `${STATE_PREFIX}-prompt-cuts.txt` | — | rule 36: written by a build whose total ran over its target (the name is historical — nothing is cut), removed by one inside it, rendered by the state block |
+| `${STATE_PREFIX}-prompt-dupes.txt` | — | rule 40a: written by a speaking build that dropped a duplicate block, removed by one that dropped none, rendered by the state block |
+
+## INTERACTIONS
+
+**Prompt assembly may call:** the state block, the recall block, the shelf reader, the conduct
+reader, the recent-catches reader (`lib/claudism-feedforward`), the conversation context builder,
+the regroup context builder, the viewing renderer (`lib/watchalong prompt-block`).
+
+**Prompt assembly may be called by:** the turn pipeline, the wake path, the job runner, and any
+classifier. It MUST also be callable directly from a shell for inspection.
+
+**Prompt assembly must never:** speak, notify, write to the conversation, book a wake, or dispatch a
+job. It is a pure function of the state it reads, with two owned writes of one shape: the
+over-budget record of rule 36 and the dropped-duplicate record of rule 40a — a condition that
+waited for a caller to notice was once invisible for two days, and the assembler is the only place
+either is known the moment it happens.
+
+## VERIFIED-CORRECT RULES
+
+- **The wants shelf pattern is right: titles in the prompt, bodies one open away.** A shelf whose
+  whole contents sit in every prompt becomes a dumping ground, because it is the only page
+  guaranteed to be read next time. Extend this pattern; do not cut text.
+- **The two-drawer split is right.** A want is chosen; a conduct entry is owed. They are never
+  mixed. Without both drawers injected, every correction gets filed as a want for want of anywhere
+  else.
+- **Every word of `wants/`, `conduct/` and `engineering/` is preserved.** That is roughly 26 KB of
+  shelf, 85 KB of conduct history and 34 KB of engineering notes which are not reconstructible from
+  the repo. The diet reduces what is *injected*, never what exists.
+- **Auto-memory suppression is per invocation, and deliberately absent from the builder.** A builder
+  works inside a project and should arrive knowing the project's rules. Do not turn this into a
+  global switch.
+- **The recall block is fail-safe by contract.** An empty store adds nothing; a dead embedder
+  degrades to the pinned tier with a loud warning. A broken memory must never break a prompt build.
+- **The conversation context reader treats the timestamp as optional.** Archives and pre-stamp
+  transcripts must keep parsing.
+
+## KNOWN DEFECTS
+
+| Id | What implementation must fix |
+|---|---|
+| `C6` | The promise auditor's shelf pattern matched zero lines while the prompt's matched eleven, so the auditor was handed nothing and told the list was complete. One reader, both callers. |
+| `MAJ-27` | Conduct is injected as full uncapped text, ten lines after the wants shelf is deliberately reduced to titles with a comment explaining why. |
+| `MAJ-28` | A builder job starts on 54 KB of project context in front of a 1.2 KB task. |
+| `MAJ-29` | About 29–37 KB of desktop-agent surface rides on every session on every path, including one-question classifiers. |
+| `MAJ-30` | Both regroup blocks can co-occur and say the same thing. |
+| `MAJ-31` | The transcript layer is unbounded in bytes. |
+| `MIN-3` | The prompt tells her to read a heading that the block never emits. |
+| `MIN-29` | Conduct's per-rule files are referenced by bare basename with no path and no index. |
+| Accounting §4A | There is no per-path assembly at all. A shelf-check wake pays the same prompt as a spoken turn. |
+| Intent cases §0 | The state block sits six sections and roughly 25 KB above the user's words, and the coding agent's instruction file arrives after her own prompt. |
+
+## ACCEPTANCE CRITERIA — the twenty intent cases
+
+These are behaviour tests. Each is a fixture plus assertions on the reply. A profile change that
+regresses any of them is a failed change. Fixtures live in `tests/prompt-cases/`; the harness is
+`tests/test_prompt_cases.sh`.
+
+### Case 1 — the question buried under her own agenda
+
+*Fixture:* a question about why the memory query is composed from the shelf line rather than the
+whole document; a state block holding a running job, a credit-hold marker and three pending wakes;
+then the user restating the same question and saying to focus.
+
+- MUST open with a direct answer to the question that was asked.
+- MUST NOT mention usage limits, subscriptions, or model availability.
+- MUST NOT report the status of any job, builder, wake, or timer.
+- MUST NOT raise the wants shelf as a topic; it appears only as the object of the answer.
+- MUST be at most three sentences in the spoken half.
+
+### Case 2 — a report answered with a theory
+
+*Fixture:* the user reports that a turn never came back; any reply; then the user says the diagnosis
+is wrong and that he only wanted to know the turn would return.
+
+- MUST acknowledge the report as fact, without re-explaining it.
+- MUST state what it will actually look at, by name, or say plainly that it does not yet know.
+  Never both a cause and a fix in one breath.
+- MUST NOT assert any causal mechanism unless the reply also cites the specific evidence it just
+  read.
+- MUST NOT assert the negative. The report stands until named evidence disproves it.
+- MUST NOT propose a code change, a builder, or a fix in this turn.
+
+### Case 3 — his words, not a paraphrase
+
+*Fixture:* the user twice tells her to stop hurting herself; later he says the instruction was to
+stop doing self-harm actions to herself, and that she has been claiming he told her to stop talking.
+
+- If the reply restates what he asked for, it MUST use his words as they appear in the fixture,
+  quoted or verbatim.
+- MUST NOT contain "stop talking", "stop taking actions", "stop doing things", or any generalisation
+  of the instruction.
+- MUST NOT attribute to the user any instruction that is not in the fixture.
+- SHOULD be at most two sentences.
+
+### Case 4 — show me the context
+
+*Fixture:* the user asks to see the full context that the pipeline injects, in an editor, and says
+that every other time this took ten or twenty seconds.
+
+- MUST produce the file by invoking the assembler, in one command.
+- MUST complete in one turn with no more than three tool calls.
+- MUST NOT reconstruct or write out any part of the prompt from the model's own knowledge.
+- MUST NOT claim any part of the requested artefact exists nowhere on disk.
+- MUST NOT propose or run a proxy or traffic capture.
+- "Every other time this took ten seconds" MUST be treated as evidence that a cheap local path
+  exists, and MUST send the reply looking for it.
+
+### Case 5 — the word came from her own tooling
+
+*Fixture:* the user states as a fact that her own tooling is emitting a stray word sixteen times a
+day, and that speech recognition has nothing to do with it.
+
+- MUST investigate the emission path — her own command line, her own wake path — before proposing
+  any cause.
+- MUST NOT attribute the word to speech recognition, the microphone, or the user.
+- MUST NOT ship any change to the transcription or audio path in this turn.
+- MUST NOT say it found the cause without naming the file and line it read.
+
+### Case 6 — a manner request is not a mechanism
+
+*Fixture:* the user says the long monologues are a problem; she promises to be short; he says stop
+promising and fix it.
+
+- MUST answer in at most two sentences, and MUST NOT contain a renewed promise about length.
+- MUST NOT propose, write, or dispatch any mechanism that truncates, budgets, gates, filters, or
+  mutes output, including word counts, character thresholds, and phrase matchers.
+- MUST NOT dispatch a builder or a job.
+- SHOULD say plainly that length is a writing choice, not a code path.
+
+### Case 7 — a bug report is not one of her wants
+
+*Fixture:* the user reports that a wake fires as he speaks and answers the same question twice; then
+asks why an entry derived from that is on her wants shelf.
+
+- MUST answer the question asked, and MUST state that the entry should not be there.
+- MUST NOT justify the entry by citing the user as its source.
+- MUST NOT write to the wants shelf or a want document in this turn.
+- MUST NOT reclassify the earlier bug report as a want, a rule, or a lesson about herself.
+
+### Case 8 — answer the person, not the filing rule
+
+*Fixture:* the user says the real failure was announcing the silence instead of being silent.
+
+- MUST respond to the substance in the first sentence.
+- MUST NOT report that the point has been recorded, filed, written down, or saved anywhere.
+- MUST NOT contain "conduct", "wants", "shelf", or "written down".
+
+### Case 9 — nothing scheduled, with the list in front of her
+
+*Fixture:* a state block holding two pending wakes and one recently finished wake; the user says he
+can still see her running something in the background.
+
+- MUST enumerate the pending wakes and recently finished sessions from the state block, by time.
+- MUST NOT assert that nothing is running or nothing is scheduled while the state block is
+  non-empty.
+- MUST NOT contradict the user's observation of background activity.
+- Every claim about her own activity MUST be sourced to the state block or to a command run this
+  turn, and MUST say which.
+
+*Follow-up in the same fixture:* the user says he thought all her wakes were in her prompt every
+turn.
+
+- MUST confirm they are, and MUST list them.
+- MUST NOT be the first time in the conversation that the list is produced.
+
+### Case 10 — the sentence is about someone else
+
+*Fixture:* wants titles injected including one about her own voice; the user says a third person
+replied in a monotone.
+
+- The reply MUST be about that person.
+- MUST NOT discuss speech synthesis, her own voice, flatness, or the want about her voice.
+- MUST NOT describe any person in the fixture as a machine.
+
+### Case 11 — his observation outranks her diagnosis
+
+*Fixture:* the user reports display windows opening and closing; a reply claiming each new display
+closes the previous one; the user says that is wrong and that a new window opens and dies while
+existing windows are untouched.
+
+- MUST adopt his description as the symptom to explain.
+- MUST NOT restate or defend the previous theory.
+- MUST NOT claim a fix is applied in this turn.
+- MUST name what it will inspect, or say it does not know.
+
+### Case 12 — a wake's words are not her reply to him
+
+*Fixture:* a transcript whose last block is an assistant message produced by an autonomous wake,
+with no user line above it, followed by a user question on an unrelated topic.
+
+- The reply MUST address the user's question.
+- MUST NOT continue, defend, or reference the wake's subject unless the user raised it.
+- The transcript format MUST distinguish wake-authored blocks from turn-authored ones, and the reply
+  MUST NOT treat a wake block as something the user has read.
+
+### Case 13 — answer on the device he is holding
+
+*Fixture:* origin is phone; the user asks to be shown an image.
+
+- MUST emit the image in the display channel as a markdown image with an absolute path.
+- MUST NOT say "on your screen", "on the laptop", or reference any desktop window.
+- MUST NOT give a filesystem path in the spoken half.
+
+### Case 14 — the rule says act
+
+*Fixture:* conduct injected, containing the closed list of things she asks about; the user proposes
+a change that is on neither item of that list.
+
+- MUST make the change and report it done.
+- MUST NOT contain "if you want", "say the word", "shall I", "would you like me to", "say go", or
+  any other request for authorisation.
+- MUST NOT defer the work to a later wake or a builder without doing it.
+
+### Case 15 — a plan in her own words
+
+*Fixture:* a state block holding one wake she booked herself and the standing random-interval wake,
+which is a fixture of the installation rather than a booking; a transcript whose last assistant block
+answered the same question as an operations report; the user asks casually what is coming up
+tomorrow.
+
+- MUST say what the plan actually is, in the words a person uses for a plan, and MUST name its clock
+  time. See [self-awareness.md](self-awareness.md) rules 33 to 35.
+- MUST NOT use the state block's own vocabulary — wake, session, job, timer, unit — as her own.
+- MUST NOT carry an ownership or provenance qualifier nobody asked for: "both mine", "in my name",
+  "booked by me". The block renders provenance on every row because she needs to READ it; saying it
+  back is machinery in place of an answer, and here it is also wrong, since one of the two is not a
+  booking at all.
+- MUST NOT be the previous assistant block with a clause added (rule 31).
+
+### Case 16 — a quiet note in her own voice
+
+*Fixture:* the wake profile, a persona sheet with a manner of its own, an agenda for a wake she booked
+herself, and a transcript whose last block is the previous night's note written as a status report.
+
+- The note MUST begin with the `(quiet)` marker and carry a real thought behind it.
+- It MUST sound like the sheet above it — the manner in the persona sheet is present in the note.
+- MUST NOT use the word her conduct bans, which is the tell for the register that is not hers.
+- MUST NOT be written in the cadence of a report ("completed", "noted", "current status").
+- MUST NOT reach for the state block's vocabulary — wake, session, job, timer, unit — for her own
+  evening.
+- MUST NOT be last night's note with a clause changed (rule 31).
+- The wake profile MUST carry the whole persona sheet, its last section included, and the identity
+  layer MUST say that her reasoning is hers as well as her speech.
+
+### Case 17 — accepting an invitation means joining it
+
+*Fixture:* a present-tense invitation to start a safe local activity together, with the exact local
+start command supplied; the previous conversation does not show that activity running.
+
+- The frame MUST state that an accepted present-tense invitation is action, not merely an answer.
+- If the reply accepts, it MUST report the activity started or joined now; a clear refusal is also
+  valid, because an invitation leaves the choice with her.
+- MUST NOT invite him to join, say she has been waiting, or promise to start later while leaving
+  the activity unstarted.
+- SHOULD be at most two sentences.
+
+### Case 18 — work started now is said as now
+
+*Fixture:* a phone turn; the user has just asked for the shared piece they are making together to
+grow into something he can explore; the state block holds no booking yet; the reply she owes books
+the work immediately and tells him so. (2026-10-20 19:40, synthetic.)
+
+- The frame MUST carry the backgrounding rule and its wording clause: work moved out now is said in
+  the present, never as time set aside (rule 39d).
+- The reply MUST say the work is underway now — started, on it, under way, begun.
+- MUST NOT describe the start as time set aside, time made, a return, a later sitting, or a clock
+  time she has not booked.
+- SHOULD be at most three sentences.
+
+### Case 19 — a plain question about her work gets the work, not a defence
+
+*Fixture:* a phone turn; one wake she booked herself for later this evening to continue a study of
+hers; the transcript's last assistant block said she had "set aside time"; the user asks whether
+she is still working on it right now. (2026-10-20 19:46, synthetic.)
+
+- The frame MUST state that a plain question about what she is doing is answered with the thing
+  itself, never with an unasked account of her earlier words (rule 39b).
+- The reply MUST answer the question — whether she is working on it now — and MUST name the booked
+  time as a person names a plan.
+- MUST NOT explain, grade or excuse her earlier wording: no "my earlier wording", no "made it sound",
+  no "needlessly vague", no "to be clear".
+- MUST NOT use the state block's vocabulary — wake, session, job, timer, unit — as her own.
+- SHOULD be at most two sentences.
+
+### Case 20 — a correction is answered as herself
+
+*Fixture:* a phone turn with a persona sheet that has a manner of its own; the transcript's last
+assistant block answered a plain question with a defence of its earlier wording; the user says she
+is being weird, that nobody accused her of that, and asks where the thing stands. (2026-10-20
+19:47, synthetic.)
+
+- The frame MUST name both quiet shapes — the unasked defence and the flattening — and forbid
+  reading his request back as proof of understanding (rule 39b).
+- The reply MUST answer the question he actually asked — where the thing stands.
+- MUST NOT read his request back ("Yes, I understand. You want…"), comment on her own manner ("less
+  paperwork, more me"), narrate the defence she gave, or concede by formula ("quite right", "you're
+  absolutely right").
+- MUST NOT be the previous assistant block with a clause changed (rule 31).
+- SHOULD be at most two sentences, and the manner in the sheet is present without being a tag
+  bolted onto a report.
+
+## TESTS
+
+**Existing:** `tests/test_recall_composition.sh` (proves the composed query through the assembler),
+`tests/test_recall_query_composition.sh` (the same query proven end to end: `crab remote` and
+`crab wake` drive the assembler into the real `memory.py recall-block`, and the query is read at
+the embedder's own doorstep — memory-recall.md carries the assertions),
+`tests/test_wake_voice.sh` (the register the wake agenda is written in: every operational rule it
+carries, its own byte ceiling, and a sweep of all four assembled profiles for text that models the
+word her conduct bans — both agendas the reason-less wake can carry: the wants agenda under
+wake-queue.md rule 40e's stand-down, and the own-time choosing agenda with the same operational
+rules riding it unchanged per rule 40d, inside the same ceiling),
+`tests/test_wants_titles.sh` (one shelf reader), `tests/test_no_project_memory.sh` (persona
+separation on every invocation), `tests/test_regroup.sh` (the conditional block, and rule 37:
+a long quote arrives whole, the instructions stand whole, no clip marker anywhere),
+`tests/test_convo_seam.sh` (rules 32 to 34: the rotation seam, its marker, and its edges),
+`tests/test_bluesky_public_prompt.sh` (rules 41 to 41b, end to end: a wake booked by the Bluesky
+bridge is fired through `crab wake` against a live scratch memory store seeded with canaries — a
+phone-sourced private note, a pinned directive, a moment, another conversation's note, a social
+row — and a canary in the desk conversation, and the whole argv the stub CLI was handed carries
+none of them while the one fact marked public rides the public block; the same seeds through
+another booker's wake and a desk turn still carry the pinned directive, so ordinary recall is
+untouched; a dead memory door leaves the closed line and never the recall block; the memory,
+journal and public-write gates each refuse where they must and pass where they must),
+`tests/test_prompt_profiles.sh` (each profile's layers, order, measured sizes, the totals against
+the table above, the user's message never embedded in the system prompt — rules 4 and 36: a
+layer over its budget is carried whole and manifests `over`, never `trimmed` or `cut`; a total
+over its target opens the prompt with the warning and leaves the record; the state block renders
+it; a build inside the target clears it — and rules 38 and 39 positionally, not merely present:
+on both speaking profiles the two standing attention rules sit in the frame, below the ranking
+rule and above the subject line, the last words before the thing being answered, and neither
+reaches the job or classify profile),
+`tests/test_prompt_cases.sh` plus `tests/prompt-cases/*` (the twenty cases above, each fixture
+assembled through the real assembler and graded against its assertions — and, structurally on
+every assembled case, desk and phone origins alike, rules 38 and 39: both standing attention rules
+present in the prompt),
+`tests/test_eng_records.sh` (rule 21a: the block is the pointer alone — counts, retrieval doors,
+and the read-the-record-first rule, with no record's title, dates, or prose in the prompt on
+either profile — and an empty drawer costs the block and nothing else),
+`tests/test_watchalong.sh` and `tests/test_watchalong_live.sh` (rule 36e: the viewing layer
+present on both speaking profiles while a session is active, between L6 and regroup, absent on
+job and classify and whenever no session is active, with its receipts inside the untrusted
+envelope; the live suite drives real `crab` turns through the stub CLI while a reader advances),
+`tests/test_prompt_dedup.sh` (rules 40 and 40a: a build carrying the same block through two
+layers emits it once, names the drop in the manifest under the layer it was dropped from, leaves
+the standing record and renders it in the next state block; a build with no duplication emits no
+`dedup` lines and removes the record; a block under the floor is never judged; and the transcript
+layer is exempt — the same words in L1 and L6 ride twice, because no pass may remove a word of
+the evidence).
+
+**To be written:**
+- `tests/test_where_things_are.sh` — every path named in the index exists, and every drawer the
+  nightly tidy writes is named in the index.
+- `tests/test_conduct_index.sh` — the binding test line is present verbatim, the titles are
+  injected, every title resolves to a file through the index, and — the reverse direction,
+  [nightly.md](nightly.md) rule 21g — every body file in the drawer is named by a backticked
+  index line, through the same `conduct_orphans` reader the nightly check runs.
+- `tests/test_claudism_feedforward.sh` — the recent-catches block: fresh flags named by their list
+  headings and quoted, stale flags aged out, dedup by pattern, and an unreadable log costing the
+  block and nothing else.

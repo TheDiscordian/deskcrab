@@ -1,0 +1,1 @@
+So the new window opens and dies on its own while everything already open stays untouched — that is the symptom, and my explanation was not it. What I will look at is what kills the child process when the session that spawned it exits, the cgroup included.

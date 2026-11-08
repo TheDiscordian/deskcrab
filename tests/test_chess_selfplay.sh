@@ -1,0 +1,1145 @@
+#!/bin/bash
+# Chess self-play economics (specs/chess-selfplay.md). The 2026-08-15 night:
+# a grind driver inherited the real-game model knob and made ~1,590 calls on
+# the dearest model in the house, cooling every account by morning. These
+# cases prove the two guards that make that night unrepeatable — self-play
+# builds its own model invocation and never reads the real-game knob, and the
+# nightly move budget binds both in the driver's loop (a clean stop) and at
+# the mover's choke point (the backstop no driver can skip) — and that a real
+# game feels none of it.
+# Run: bash tests/test_chess_selfplay.sh
+. "$(dirname "$(readlink -f "$0")")/lib/sandbox.sh"
+set -u
+
+REPO="$SANDBOX_REPO"
+# The sandbox moves HOME, and a venv is 100MB of install — so the live one is
+# borrowed read-only rather than rebuilt per run. Skip if it was never made.
+VENV="${DESKCRAB_CHESS_VENV:-$SANDBOX_LIVE_DATA/chess/venv}"
+if [ ! -x "$VENV/bin/python" ]; then
+  echo "SKIP: no chess venv at $VENV — run betty-chess once to bootstrap it"
+  exit 0
+fi
+PY="$VENV/bin/python"
+
+export DESKCRAB_CHESS_DIR="$SANDBOX/chess"
+mkdir -p "$DESKCRAB_CHESS_DIR/selfplay" "$DESKCRAB_CHESS_DIR/games"
+# The counter is keyed by NIGHT — the date of (now - 12 h) — not by the
+# calendar day (specs/chess-selfplay.md rule 4).
+COUNTER="$DESKCRAB_CHESS_DIR/selfplay/model-calls-$(date -d '12 hours ago' +%Y%m%d).log"
+# A wall a couple of hours ahead keeps every driver run below on the night
+# path whatever hour the suite runs at, so the daytime guard never trips
+# where it is not the case under test.
+NEAR_WALL="$(date -d '+2 hours' +%H:%M)"
+
+# The stub mover: records the call, then answers with the prompt itself —
+# the prompt lists every legal move in UCI, and the parser keeps the last
+# LEGAL token, so the reply is always a legal move without a model anywhere.
+STUB="$SANDBOX/stub-mover"
+CALLS="$SANDBOX/stub-calls"
+cat > "$STUB" <<EOF
+#!/bin/bash
+echo called >> "$CALLS"
+cat
+EOF
+chmod +x "$STUB"
+export DESKCRAB_CHESS_MOVER_CMD="$STUB"
+
+refute() { local desc="$1"; shift; if "$@"; then fail "$desc"; else ok "$desc"; fi; }
+
+echo "the model knob — self-play has its own, and never the user's:"
+knob() {  # <selfplay flag> [env pairs...] -> the --model value of the built cmd
+  local sp="$1"; shift
+  env "$@" "$PY" - "$REPO/lib" "$sp" <<'PYEOF'
+import sys
+sys.path.insert(0, sys.argv[1])
+import chess_mover
+cmd = chess_mover.Mover._claude_cmd("low", selfplay=(sys.argv[2] == "yes"))
+print(cmd[cmd.index("--model") + 1])
+PYEOF
+}
+check_eq "a self-play invocation defaults to sonnet" "$(knob yes)" "sonnet"
+check_eq "DESKCRAB_CHESS_SELFPLAY_MODEL is honoured" \
+    "$(knob yes DESKCRAB_CHESS_SELFPLAY_MODEL=haiku)" "haiku"
+check_eq "the real-game knob does NOT reach a self-play invocation" \
+    "$(knob yes DESKCRAB_CHESS_MOVER_MODEL=fable CLAUDE_MODEL=fable)" "sonnet"
+check_eq "a real game still follows the mover knob" \
+    "$(knob no DESKCRAB_CHESS_MOVER_MODEL=fable)" "fable"
+
+check_eq "a selfplay- game id is self-play" "$("$PY" - "$REPO/lib" <<'PYEOF'
+import sys; sys.path.insert(0, sys.argv[1])
+import chess_mover
+print(chess_mover.is_selfplay({"gid": "selfplay-007", "opponent": "selfplay"}))
+PYEOF
+)" "True"
+check_eq "a game against a person is not" "$("$PY" - "$REPO/lib" <<'PYEOF'
+import sys; sys.path.insert(0, sys.argv[1])
+import chess_mover
+print(chess_mover.is_selfplay({"gid": "browser-014", "opponent": "a friend"}))
+PYEOF
+)" "False"
+
+echo
+echo "the driver stops cleanly at the nightly move budget:"
+OUT="$(DESKCRAB_CHESS_SELFPLAY_NIGHTLY_MOVES=5 \
+       "$PY" "$REPO/lib/chess_selfplay.py" --budget 120 --games 4 \
+       --deadline "$NEAR_WALL" 2>&1)"
+STATUS_LINE="$(grep '^STATUS ' <<<"$OUT" | tail -n1)"
+contains "$STATUS_LINE" '"status": "budget-spent"' \
+    && ok "the chunk ends on budget-spent" \
+    || fail "STATUS line: $STATUS_LINE"
+check "the counter holds exactly the budget's worth of calls" \
+    [ "$(grep -c . "$COUNTER" 2>/dev/null)" -eq 5 ]
+check "the stub was called exactly that many times" \
+    [ "$(grep -c . "$CALLS" 2>/dev/null)" -eq 5 ]
+check "the game the grind played is a selfplay- game" \
+    bash -c 'ls "$1"/games/selfplay-*.json >/dev/null 2>&1' _ "$DESKCRAB_CHESS_DIR"
+
+echo
+echo "the mover backstop binds whatever is driving, and spares a real game:"
+: > "$CALLS"
+# The counter already sits at the cap from the run above (5/5 with the same
+# budget). A self-play position must be refused without the stub being
+# called; a real-game position on the same mover must still answer.
+BACK="$(DESKCRAB_CHESS_SELFPLAY_NIGHTLY_MOVES=5 "$PY" - "$REPO/lib" <<'PYEOF'
+import sys, time
+sys.path.insert(0, sys.argv[1])
+import chess
+import chess_mover
+
+posted = []
+def play(job, move):
+    posted.append((job["gid"], move.uci()))
+    return True
+
+m = chess_mover.Mover(play, log=lambda *a: None, alert=lambda *a: None)
+fen = chess.Board().fen()
+def job(gid, opp):
+    return {"key": gid, "gid": gid, "ply": 0, "fen": fen, "side": "white",
+            "opponent": opp, "history": "", "note": "", "effort": "",
+            "t0": time.time()}
+m.submit(job("selfplay-001", "selfplay"))
+m.wait_idle(timeout=30)
+n, stalled, why = m.failure_state("selfplay-001")
+print("selfplay-why:", why)
+m.submit(job("opponent-001", "a friend"))
+m.wait_idle(timeout=30)
+print("posted:", posted)
+PYEOF
+)"
+contains "$BACK" "selfplay-why: selfplay nightly move budget spent (5/5)" \
+    && ok "the self-play position is refused with the budget named" \
+    || fail "backstop output: $BACK"
+contains "$BACK" "posted: [('opponent-001'" \
+    && ok "the real game's position was answered on the same mover" \
+    || fail "real game went unanswered: $BACK"
+check_eq "the refused self-play position never reached the stub" \
+    "$(grep -c . "$CALLS")" "1"
+check "and the counter did not move for it" \
+    [ "$(grep -c . "$COUNTER")" -eq 5 ]
+
+echo
+echo "an attended live session is counted but has no nightly call ceiling:"
+LDIR="$SANDBOX/chess-live-session"
+mkdir -p "$LDIR/selfplay" "$LDIR/games"
+LCOUNTER="$LDIR/selfplay/model-calls-$(date -d '12 hours ago' +%Y%m%d).log"
+printf 'one\ntwo\n' > "$LCOUNTER"
+LOUT="$(DESKCRAB_CHESS_DIR="$LDIR" \
+         DESKCRAB_CHESS_SELFPLAY_NIGHTLY_MOVES=2 \
+         "$PY" "$REPO/lib/chess_selfplay.py" --live-session \
+         --budget 10 --games 0 --deadline "$NEAR_WALL" 2>&1)"
+contains "$(grep '^STATUS ' <<<"$LOUT" | tail -n1)" '"status": "games-cap"' \
+    && ok "--live-session passes an already-spent ceiling" \
+    || fail "live-session STATUS line: $(grep '^STATUS ' <<<"$LOUT" | tail -n1)"
+LIVE_CHARGE="$(DESKCRAB_CHESS_DIR="$LDIR" \
+                DESKCRAB_CHESS_SELFPLAY_NIGHTLY_MOVES=2 \
+                DESKCRAB_CHESS_SELFPLAY_LIVE_SESSION=1 \
+                "$PY" - "$REPO/lib" <<'PYEOF'
+import sys
+sys.path.insert(0, sys.argv[1])
+import chess_mover
+print("spent:", chess_mover.selfplay_budget_spent())
+print("charged:", chess_mover._selfplay_charge("attended test"))
+print("counted:", chess_mover.selfplay_calls_tonight())
+PYEOF
+)"
+contains "$LIVE_CHARGE" "spent: False" \
+    && contains "$LIVE_CHARGE" "charged: True" \
+    && contains "$LIVE_CHARGE" "counted: 3" \
+    && ok "the mover backstop appends attended calls past the ceiling" \
+    || fail "live-session mover backstop: $LIVE_CHARGE"
+
+echo
+echo "parallel movers reserve the shared nightly budget atomically:"
+PDIR="$SANDBOX/chess-parallel-budget"
+mkdir -p "$PDIR/selfplay"
+PBUDGET="$(DESKCRAB_CHESS_DIR="$PDIR" \
+           DESKCRAB_CHESS_SELFPLAY_NIGHTLY_MOVES=7 \
+           "$PY" - "$REPO/lib" <<'PYEOF'
+import multiprocessing, sys
+sys.path.insert(0, sys.argv[1])
+import chess_mover
+
+def reserve(i):
+    return chess_mover._selfplay_charge("parallel %d" % i)
+
+with multiprocessing.Pool(12) as pool:
+    results = pool.map(reserve, range(24))
+print("reserved:", sum(results))
+print("counted:", chess_mover.selfplay_calls_tonight())
+PYEOF
+)"
+contains "$PBUDGET" "reserved: 7" \
+    && contains "$PBUDGET" "counted: 7" \
+    && ok "only seven concurrent reservations can claim a seven-call budget" \
+    || fail "parallel budget reservation: $PBUDGET"
+
+echo
+echo "the games cap creates nothing once the night is full:"
+GAMES2="$SANDBOX/chess2"
+mkdir -p "$GAMES2"
+OUT2="$(DESKCRAB_CHESS_DIR="$GAMES2" \
+        "$PY" "$REPO/lib/chess_selfplay.py" --budget 60 --games 0 \
+        --deadline "$NEAR_WALL" 2>&1)"
+contains "$(grep '^STATUS ' <<<"$OUT2" | tail -n1)" '"status": "games-cap"' \
+    && ok "the chunk ends on games-cap" \
+    || fail "STATUS line: $(grep '^STATUS ' <<<"$OUT2" | tail -n1)"
+refute "no game was created" \
+    bash -c 'ls "$1"/games/selfplay-*.json >/dev/null 2>&1' _ "$GAMES2"
+
+echo
+echo "the budget window is the night, not the calendar day:"
+NK="$("$PY" - "$REPO/lib" <<'PYEOF'
+import sys, time
+sys.path.insert(0, sys.argv[1])
+import chess_mover as cm
+
+def at(y, mo, d, h, mi):
+    return time.mktime((y, mo, d, h, mi, 0, 0, 1, -1))
+
+print("pre-midnight:", cm.night_key(at(2026, 8, 14, 23, 30)))
+print("post-midnight:", cm.night_key(at(2026, 8, 15, 0, 30)))
+print("small-hours:", cm.night_key(at(2026, 8, 15, 4, 0)))
+print("next-afternoon:", cm.night_key(at(2026, 8, 15, 13, 0)))
+PYEOF
+)"
+contains "$NK" "pre-midnight: 20260814" \
+    && contains "$NK" "post-midnight: 20260814" \
+    && contains "$NK" "small-hours: 20260814" \
+    && ok "23:30, 00:30 and 04:00 across one midnight share the night key" \
+    || fail "night keys: $NK"
+contains "$NK" "next-afternoon: 20260815" \
+    && ok "the next afternoon opens the next night's key" \
+    || fail "night keys: $NK"
+
+GT="$("$PY" - "$REPO/lib" <<'PYEOF'
+import sys
+from datetime import datetime
+sys.path.insert(0, sys.argv[1])
+import chess_selfplay as sp
+
+tz = datetime.now().astimezone().tzinfo
+g = {"created": datetime(2026, 8, 14, 23, 0, tzinfo=tz).isoformat()}
+print("same-night:", sp.created_tonight(
+    g, now=datetime(2026, 8, 15, 1, 0, tzinfo=tz)))
+print("next-night:", sp.created_tonight(
+    g, now=datetime(2026, 8, 15, 13, 0, tzinfo=tz)))
+PYEOF
+)"
+contains "$GT" "same-night: True" \
+    && contains "$GT" "next-night: False" \
+    && ok "a game created before midnight still counts against the same night's games cap" \
+    || fail "created_tonight: $GT"
+
+echo
+echo "a daytime start is refused, and the night path keeps its walls:"
+DL="$("$PY" - "$REPO/lib" <<'PYEOF'
+import sys, time
+sys.path.insert(0, sys.argv[1])
+import chess_selfplay as sp
+
+def at(y, mo, d, h, mi):
+    return time.mktime((y, mo, d, h, mi, 0, 0, 1, -1))
+
+wall = "07:00"
+print("daytime:", sp.resolve_deadline(at(2026, 8, 14, 14, 0), wall, False))
+print("daytime--day:",
+      sp.resolve_deadline(at(2026, 8, 14, 14, 0), wall, True)
+      == at(2026, 8, 15, 7, 0))
+print("evening:",
+      sp.resolve_deadline(at(2026, 8, 14, 22, 0), wall, False)
+      == at(2026, 8, 15, 7, 0))
+print("small-hours:",
+      sp.resolve_deadline(at(2026, 8, 15, 2, 0), wall, False)
+      == at(2026, 8, 15, 7, 0))
+print("just-past:",
+      sp.resolve_deadline(at(2026, 8, 15, 7, 30), wall, False)
+      == at(2026, 8, 15, 7, 0))
+PYEOF
+)"
+contains "$DL" "daytime: None" \
+    && ok "a 14:00 start against a 07:00 wall is refused (not aimed at tomorrow)" \
+    || fail "resolve_deadline: $DL"
+contains "$DL" "daytime--day: True" \
+    && ok "--day makes the same start a deliberate chunk with tomorrow's wall" \
+    || fail "resolve_deadline: $DL"
+contains "$DL" "evening: True" && contains "$DL" "small-hours: True" \
+    && contains "$DL" "just-past: True" \
+    && ok "evening, small-hours and just-past-the-wall starts keep their old walls" \
+    || fail "resolve_deadline: $DL"
+
+# End to end when the clock allows it: a wall 2 h behind us makes the start
+# daytime everywhere except the first two hours after midnight, where no
+# HH:MM can sit 1-12 h in the past (the unit cases above still cover it).
+if [ "$(date +%H)" -ge 2 ] 2>/dev/null; then
+  GAMES3="$SANDBOX/chess3"
+  mkdir -p "$GAMES3"
+  PAST_WALL="$(date -d '2 hours ago' +%H:%M)"
+  OUT3="$(DESKCRAB_CHESS_DIR="$GAMES3" \
+          "$PY" "$REPO/lib/chess_selfplay.py" --budget 60 --games 0 \
+          --deadline "$PAST_WALL" 2>&1)"; RC3=$?
+  contains "$(grep '^STATUS ' <<<"$OUT3" | tail -n1)" '"status": "daytime"' \
+      && ok "the driver refuses the daytime start with status daytime" \
+      || fail "STATUS line: $(grep '^STATUS ' <<<"$OUT3" | tail -n1)"
+  check "and exits non-zero" [ "$RC3" -ne 0 ]
+  contains "$OUT3" "Pass --day" \
+      && ok "the refusal names the --day flag" \
+      || fail "refusal output: $OUT3"
+  OUT4="$(DESKCRAB_CHESS_DIR="$GAMES3" \
+          "$PY" "$REPO/lib/chess_selfplay.py" --budget 60 --games 0 \
+          --deadline "$PAST_WALL" --day 2>&1)"
+  contains "$(grep '^STATUS ' <<<"$OUT4" | tail -n1)" '"status": "games-cap"' \
+      && ok "with --day the same invocation runs (and stops on its games cap)" \
+      || fail "STATUS line: $(grep '^STATUS ' <<<"$OUT4" | tail -n1)"
+else
+  echo "note: before 02:00 no HH:MM wall sits 1-12 h in the past —" \
+       "end-to-end daytime case skipped, unit cases above cover it"
+fi
+
+echo
+echo "the benchmark: a self-play job's model is allowlist-bound (rule 15):"
+JM="$("$PY" - "$REPO/lib" <<'PYEOF'
+import sys
+sys.path.insert(0, sys.argv[1])
+import os
+import chess_mover as cm
+
+said = []
+def alert(msg): said.append(msg)
+
+job = lambda m: {"gid": "selfplay-bench-001", "model": m}
+print("haiku:", cm.selfplay_job_model(job("haiku"), alert))
+print("sonnet:", cm.selfplay_job_model(job("sonnet"), alert))
+print("fable-default:", cm.selfplay_job_model(job("fable"), alert))
+print("codex-default:", cm.selfplay_job_model(job("sol"), alert))
+os.environ["DESKCRAB_CHESS_SELFPLAY_MODELS"] = "haiku sonnet fable"
+print("fable-widened:", cm.selfplay_job_model(job("fable"), alert))
+print("codex-unlisted:", cm.selfplay_job_model(job("gpt-5.6-sol"), alert))
+os.environ["DESKCRAB_CHESS_SELFPLAY_MODELS"] = "haiku sonnet sol"
+print("codex-listed:", cm.selfplay_job_model(job("sol"), alert))
+print("none:", cm.selfplay_job_model({"gid": "selfplay-bench-001"}, alert))
+print("alerts:", len(said))
+PYEOF
+)"
+contains "$JM" "haiku: haiku" && contains "$JM" "sonnet: sonnet" \
+    && ok "an allowlisted Claude model rides the job" \
+    || fail "job model: $JM"
+contains "$JM" "fable-default: None" \
+    && ok "an unlisted model is refused to the self-play default" \
+    || fail "job model: $JM"
+contains "$JM" "fable-widened: fable" \
+    && ok "the operator can widen the allowlist deliberately, per run" \
+    || fail "job model: $JM"
+contains "$JM" "codex-default: None" && contains "$JM" "codex-unlisted: None" \
+    && ok "a codex-family name is refused wherever it is not listed — the conversation engine grinds only by explicit listing" \
+    || fail "job model: $JM"
+contains "$JM" "codex-listed: sol" \
+    && ok "an explicitly listed codex name rides the job — rule 20's family-crossing matrix" \
+    || fail "job model: $JM"
+contains "$JM" "none: None" && contains "$JM" "alerts: 3" \
+    && ok "no model field is quiet; every refusal was loud" \
+    || fail "job model: $JM"
+
+FORBIDDEN="$(DESKCRAB_CHESS_DIR="$SANDBOX/chess-forbidden" \
+             DESKCRAB_CHESS_SELFPLAY_MODELS='sonnet opus gpt-5.3-codex-spark' \
+             DESKCRAB_CHESS_MOVER_CMD=/bin/true \
+             "$PY" - "$REPO/lib" <<'PYEOF'
+import sys, time
+sys.path.insert(0, sys.argv[1])
+import chess
+import chess_mover
+
+m = chess_mover.Mover(lambda job, move: True,
+                      log=lambda *args: None, alert=lambda *args: None)
+fen = chess.Board().fen()
+def run(key, model, effort):
+    m.submit({"key": key, "gid": "selfplay-bench-forbidden", "ply": 0,
+              "fen": fen, "side": "white", "opponent": "selfplay",
+              "history": "", "note": "", "model": model,
+              "effort": effort, "t0": time.time()})
+    m.wait_idle(timeout=10)
+    print(key + ":", m.failure_state(key)[2])
+run("spark", "gpt-5.3-codex-spark", "low")
+run("max", "opus", "max")
+run("ultra", "sol", "ultra")
+PYEOF
+)"
+contains "$FORBIDDEN" "spark: model 'gpt-5.3-codex-spark' is permanently excluded" \
+    && ok "Spark is refused at the mover before any benchmark call" \
+    || fail "Spark benchmark refusal: $FORBIDDEN"
+contains "$FORBIDDEN" "max: effort 'max' is above chess's permanent xhigh ceiling" \
+    && contains "$FORBIDDEN" "ultra: effort 'ultra' is above chess's permanent xhigh ceiling" \
+    && ok "Max and Ultra are refused before any benchmark call" \
+    || fail "chess effort ceiling: $FORBIDDEN"
+
+MODEL_CMD="$(env -u DESKCRAB_CHESS_MOVER_CMD "$PY" - "$REPO/lib" <<'PYEOF'
+import sys
+sys.path.insert(0, sys.argv[1])
+import chess_mover as cm
+m = cm.Mover(lambda j, mv: True, log=lambda *a: None, alert=lambda *a: None)
+for label, cmd, env in m._attempts("low", True, "haiku"):
+    print("with-job-model:", cmd[cmd.index("--model") + 1]); break
+for label, cmd, env in m._attempts("low", True, None):
+    print("without:", cmd[cmd.index("--model") + 1]); break
+PYEOF
+)"
+contains "$MODEL_CMD" "with-job-model: haiku" \
+    && contains "$MODEL_CMD" "without: sonnet" \
+    && ok "the job's model reaches the built invocation; its absence keeps rule 2's default" \
+    || fail "attempts: $MODEL_CMD"
+
+CODEX_CMD="$(env -u DESKCRAB_CHESS_MOVER_CMD -u DESKCRAB_CODEX_STATE \
+             "$PY" - "$REPO/lib" <<'PYEOF'
+import os, sys, tempfile, time
+sys.path.insert(0, sys.argv[1])
+import chess_mover as cm
+said = []
+m = cm.Mover(lambda j, mv: True, log=lambda *a: None,
+             alert=lambda msg: said.append(msg))
+atts = list(m._attempts("xhigh", True, "sol"))
+print("codex-attempts:", len(atts))
+label, cmd, env = atts[0]
+print("codex-label:", label)
+print("codex-model:", cmd[cmd.index("-m") + 1])
+print("codex-effort:", "model_reasoning_effort=xhigh" in cmd)
+print("codex-key-held-out:", "OPENAI_API_KEY" not in env)
+atts2 = list(m._attempts("ultra", False, "sol"))
+print("real-first:", atts2[0][0])
+print("real-routed-alone:", len(atts2) == 1)
+os.environ["DESKCRAB_CHESS_MOVER_MODEL"] = "sol"
+atts3 = list(m._attempts("ultra", False, None))
+del os.environ["DESKCRAB_CHESS_MOVER_MODEL"]
+print("chain-first:", atts3[0][0])
+print("chain-has-fallback:", len(atts3) > 1
+      and all(a[0].startswith("account") for a in atts3[1:]))
+c3 = atts3[1][1]
+print("chain-fallback-model:", c3[c3.index("--model") + 1])
+print("chain-clamp:", c3[c3.index("--effort") + 1])
+f = tempfile.NamedTemporaryFile("w", delete=False, suffix="-codex-state")
+f.write("blocked-until\t%d\n" % (int(time.time()) + 3600)); f.close()
+os.environ["DESKCRAB_CODEX_STATE"] = f.name
+print("cooling-attempts:", len(list(m._attempts("low", True, "sol"))))
+print("cooling-alerted:", any("cooling" in s for s in said))
+os.unlink(f.name)
+PYEOF
+)"
+contains "$CODEX_CMD" "codex-attempts: 1" \
+    && contains "$CODEX_CMD" "codex-label: codex" \
+    && ok "an honoured codex self-play job builds the codex call ALONE — no Claude-account attempts" \
+    || fail "codex attempts: $CODEX_CMD"
+contains "$CODEX_CMD" "codex-model: gpt-5.6-sol" \
+    && contains "$CODEX_CMD" "codex-effort: True" \
+    && ok "the job's own model is resolved onto the codex argv, the effort handed through unclamped" \
+    || fail "codex attempts: $CODEX_CMD"
+contains "$CODEX_CMD" "codex-key-held-out: True" \
+    && ok "OPENAI_API_KEY is held out of the codex child" \
+    || fail "codex attempts: $CODEX_CMD"
+contains "$CODEX_CMD" "real-first: codex" \
+    && contains "$CODEX_CMD" "real-routed-alone: True" \
+    && ok "a REAL-game routed codex offer preserves exact model identity — no Claude substitute (chessweb.md rule 16b)" \
+    || fail "codex attempts: $CODEX_CMD"
+contains "$CODEX_CMD" "chain-first: codex" \
+    && contains "$CODEX_CMD" "chain-has-fallback: True" \
+    && contains "$CODEX_CMD" "chain-fallback-model: sonnet" \
+    && contains "$CODEX_CMD" "chain-clamp: max" \
+    && ok "an ENV-CHAIN codex model keeps its Claude fallback walk, ultra clamped to max (model-backends.md rule 15)" \
+    || fail "codex attempts: $CODEX_CMD"
+contains "$CODEX_CMD" "cooling-attempts: 0" \
+    && contains "$CODEX_CMD" "cooling-alerted: True" \
+    && ok "a cooling codex login yields no self-play attempt, loudly" \
+    || fail "codex attempts: $CODEX_CMD"
+
+echo
+echo "subscription limits cancel; server capacity remains resumable:"
+INTERRUPT="$({ DESKCRAB_CHESS_DIR="$SANDBOX/chess-interruptions" \
+    "$PY" - "$REPO/lib"; } <<'PYEOF'
+import os
+import sys
+import time
+
+sys.path.insert(0, sys.argv[1])
+import chess_cli
+import chess_mover
+import chess_selfplay as sp
+
+sp.bench_book_move = lambda *args: False
+sp.try_reflex = lambda *args: False
+sp.browser_game_hot = lambda: False
+chess_mover.selfplay_budget_spent = lambda: False
+
+
+class Refusal:
+    def __init__(self, gid, why):
+        self.gid = gid
+        self.why = why
+
+    def claim(self, key):
+        return True
+
+    def submit(self, job):
+        pass
+
+    def wait_idle(self, timeout=30):
+        # Make the stored clock look expired after the call. The refusal
+        # classification must run before that wall-clock judgement.
+        g = sp.load_game(self.gid)
+        g["clock"]["turn_started"] = time.time() - 10
+        chess_cli.save_game(g)
+        return True
+
+    def failure_state(self, key):
+        return 1, False, self.why
+
+
+def run(gid, why):
+    g = {
+        "id": gid,
+        "opponent": "selfplay",
+        "my_side": "white",
+        "moves": ["e2e4", "e7e5"],
+        "created": chess_cli.now(),
+        "time_control": {
+            "name": "15+10", "speed": "rapid",
+            "base_ms": 900000, "inc_ms": 10000,
+        },
+        "clock": {
+            "white_ms": 1000, "black_ms": 900000,
+            "turn_started": time.time(),
+        },
+    }
+    chess_cli.save_game(g)
+    refusal = Refusal(gid, why)
+    out = sp.play_one_move(g, {"white": refusal, "black": refusal})
+    stored = sp.load_game(gid)
+    print(gid, out, "flag-recorded", bool(stored.get("flag_fell")))
+
+
+print("classifiers",
+      chess_mover.subscription_limit_failure(
+          "You have hit your usage limit. Try again later."),
+      chess_mover.server_capacity_failure(
+          "The selected model is at capacity"),
+      chess_mover.subscription_limit_failure(
+          "The selected model is at capacity"),
+      chess_mover.account_auth_failure("Not logged in"))
+run("selfplay-limit-interrupt", "codex: You have hit your usage limit")
+run("selfplay-capacity-interrupt", "serverOverloaded: model is at capacity")
+run("selfplay-auth-interrupt", "codex: Not logged in")
+PYEOF
+)"
+contains "$INTERRUPT" "classifiers True True False True" \
+    && ok "subscription allowance, account auth, and server capacity are classified separately" \
+    || fail "interruption classifiers: $INTERRUPT"
+contains "$INTERRUPT" "selfplay-limit-interrupt subscription-limit flag-recorded False" \
+    && ok "a subscription limit cancels before an expired wall clock can become evidence" \
+    || fail "subscription interruption: $INTERRUPT"
+contains "$INTERRUPT" "selfplay-capacity-interrupt capacity flag-recorded False" \
+    && ok "server capacity pauses resumably before an expired wall clock can become evidence" \
+    || fail "capacity interruption: $INTERRUPT"
+contains "$INTERRUPT" "selfplay-auth-interrupt account-unavailable flag-recorded False" \
+    && ok "a wrong login cancels before an expired wall clock can become evidence" \
+    || fail "account interruption: $INTERRUPT"
+
+echo
+echo "the benchmark plays its plan with real clocks, resumes, records once:"
+BDIR="$SANDBOX/chessb"
+mkdir -p "$BDIR/selfplay" "$BDIR/games"
+BPLAN="$BDIR/selfplay/bench-t1.json"
+cat > "$BPLAN" <<'PLANEOF'
+{"run": "t1",
+ "probe": {"configs": [["haiku", "low"]],
+           "positions": ["rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1"],
+           "rounds": 1},
+ "configs": {"a": {"model": "haiku", "quiet": "low", "sharp": "low"},
+             "b": {"model": "sonnet", "quiet": "low", "sharp": "medium"}},
+ "games": [{"id": "selfplay-bencht1-001", "control": "1+0", "white": "a", "black": "b"},
+           {"id": "selfplay-bencht1-002", "control": "1+0", "white": "b", "black": "a"}]}
+PLANEOF
+BCALLS="$SANDBOX/stub-calls-bench"
+: > "$BCALLS"
+sed "s|$CALLS|$BCALLS|" "$STUB" > "$SANDBOX/stub-mover-bench"
+chmod +x "$SANDBOX/stub-mover-bench"
+OUTB="$(DESKCRAB_CHESS_DIR="$BDIR" DESKCRAB_CHESS_SELFPLAY_NIGHTLY_MOVES=600 \
+        DESKCRAB_CHESS_MOVER_CMD="$SANDBOX/stub-mover-bench" \
+        "$PY" "$REPO/lib/chess_selfplay.py" --bench "$BPLAN" --budget 300 \
+        --games 10 --deadline "$NEAR_WALL" 2>&1)"
+SB="$(grep '^STATUS ' <<<"$OUTB" | tail -n1)"
+contains "$SB" '"status": "bench-done"' \
+    && contains "$SB" '"bench_recorded": 2' \
+    && contains "$SB" '"bench_total": 2' \
+    && ok "the chunk plays the whole plan and says bench-done 2/2" \
+    || fail "STATUS line: $SB"
+BLEDGER="$BDIR/selfplay/bench-t1.jsonl"
+check_eq "the ledger holds exactly one line per finished game" \
+    "$(sandbox_count_in '"game"' "$BLEDGER")" "2"
+GB="$("$PY" - "$BDIR" <<'PYEOF'
+import json, sys
+d = sys.argv[1]
+g1 = json.load(open(d + "/games/selfplay-bencht1-001.json"))
+g2 = json.load(open(d + "/games/selfplay-bencht1-002.json"))
+print("controls:", g1["time_control"]["name"], g2["time_control"]["name"])
+print("clocks:", "clock" in g1, "clock" in g2)
+print("colours:", g1["bench"]["white"], g1["bench"]["black"],
+      g2["bench"]["white"], g2["bench"]["black"])
+rows = g1["bench"]["rows"] + g2["bench"]["rows"]
+print("rows:", len(rows) > 0,
+      all(r[1] in ("white", "black")
+          and r[2] in ("book", "reflex", "model") for r in rows))
+led = [json.loads(x) for x in open(d + "/selfplay/bench-t1.jsonl")]
+games = [e for e in led if "game" in e]
+print("results:", all(e["result"] in ("1-0", "0-1", "1/2-1/2")
+                      for e in games))
+print("sides:", all("sides" in e and "white" in e["sides"] for e in games))
+PYEOF
+)"
+contains "$GB" "controls: 1+0 1+0" && contains "$GB" "clocks: True True" \
+    && ok "both games carry the scheduled control and a stored clock" \
+    || fail "bench games: $GB"
+contains "$GB" "colours: a b b a" \
+    && ok "the matchup rotated colours across its two games" \
+    || fail "bench games: $GB"
+contains "$GB" "rows: True True" \
+    && ok "every move landed a bench row naming side and source" \
+    || fail "bench games: $GB"
+contains "$GB" "results: True" && contains "$GB" "sides: True" \
+    && ok "the ledger lines carry results and per-side summaries" \
+    || fail "bench ledger: $GB"
+
+NCALLS="$(grep -c . "$BCALLS")"
+OUTB2="$(DESKCRAB_CHESS_DIR="$BDIR" DESKCRAB_CHESS_SELFPLAY_NIGHTLY_MOVES=600 \
+         DESKCRAB_CHESS_MOVER_CMD="$SANDBOX/stub-mover-bench" \
+         "$PY" "$REPO/lib/chess_selfplay.py" --bench "$BPLAN" --budget 60 \
+         --games 10 --deadline "$NEAR_WALL" 2>&1)"
+contains "$(grep '^STATUS ' <<<"$OUTB2" | tail -n1)" '"status": "bench-done"' \
+    && ok "a re-run of a finished plan says bench-done at once" \
+    || fail "STATUS line: $(grep '^STATUS ' <<<"$OUTB2" | tail -n1)"
+check_eq "and replays nothing: not one new model call" \
+    "$(grep -c . "$BCALLS")" "$NCALLS"
+check_eq "and appends nothing: the ledger still holds one line per game" \
+    "$(sandbox_count_in '"game"' "$BLEDGER")" "2"
+
+BGONE="$(DESKCRAB_CHESS_DIR="$BDIR" DESKCRAB_CHESS_SELFPLAY_NIGHTLY_MOVES=600 \
+          DESKCRAB_CHESS_MOVER_CMD="$SANDBOX/stub-mover-bench" \
+          "$PY" "$REPO/lib/chess_selfplay.py" --bench "$BPLAN" \
+          --bench-game selfplay-bencht1-001 --budget 60 --games 10 \
+          --deadline "$NEAR_WALL" 2>&1)"
+contains "$(grep '^STATUS ' <<<"$BGONE" | tail -n1)" '"bench_recorded": 1' \
+    && contains "$(grep '^STATUS ' <<<"$BGONE" | tail -n1)" '"bench_total": 1' \
+    && ok "--bench-game scopes one worker to its explicit game id" \
+    || fail "single-game worker status: $BGONE"
+
+BCLAIM="$(DESKCRAB_CHESS_DIR="$BDIR" "$PY" - "$REPO/lib" <<'PYEOF'
+import sys
+sys.path.insert(0, sys.argv[1])
+import chess_selfplay
+
+first, busy1 = chess_selfplay.bench_claim_games(["selfplay-bencht1-001"])
+second, busy2 = chess_selfplay.bench_claim_games(["selfplay-bencht1-001"])
+print("first:", len(first), busy1)
+print("second:", len(second), busy2)
+for handle in first:
+    handle.close()
+third, busy3 = chess_selfplay.bench_claim_games(["selfplay-bencht1-001"])
+print("after-release:", len(third), busy3)
+for handle in third:
+    handle.close()
+PYEOF
+)"
+contains "$BCLAIM" "first: 1 None" \
+    && contains "$BCLAIM" "second: 0 selfplay-bencht1-001" \
+    && contains "$BCLAIM" "after-release: 1 None" \
+    && ok "a duplicate worker is refused until the game's process lock releases" \
+    || fail "benchmark game claim: $BCLAIM"
+
+echo
+echo "a live browser game's hot wait cannot spend a benchmark clock:"
+HDIR="$SANDBOX/chess-hot-pause"
+mkdir -p "$HDIR/games" "$HDIR/selfplay"
+HOT_PAUSE="$(DESKCRAB_CHESS_DIR="$HDIR" "$PY" - "$REPO/lib" <<'PYEOF'
+import json, sys, time
+sys.path.insert(0, sys.argv[1])
+import chess
+import chess_cli
+import chess_selfplay
+
+g = {"id": "selfplay-hot-pause", "opponent": "selfplay",
+     "my_side": "white", "moves": [], "resigned_by": None,
+     "draw_agreed": False, "flag_fell": None, "engine_level": None,
+     "created": chess_cli.now(),
+     "time_control": {"name": "1+0", "speed": "bullet",
+                      "base_ms": 60000, "inc_ms": 0},
+     "clock": {"white_ms": 25000, "black_ms": 41000,
+               "turn_started": time.time() - 120},
+     "bench": {"control": "1+0", "white": "a", "black": "b",
+               "rows": []}}
+before = (g["clock"]["white_ms"], g["clock"]["black_ms"])
+print("reset:", chess_selfplay.bench_end_hot_pause(g))
+saved = json.load(open(chess_cli.GAMES_DIR / "selfplay-hot-pause.json"))
+print("balances:", before == (saved["clock"]["white_ms"],
+                               saved["clock"]["black_ms"]))
+print("fresh:", time.time() - saved["clock"]["turn_started"] < 1)
+print("active:", chess_cli.compute_state(saved, chess.Board())[0])
+PYEOF
+)"
+contains "$HOT_PAUSE" "reset: True" \
+    && contains "$HOT_PAUSE" "balances: True" \
+    && contains "$HOT_PAUSE" "fresh: True" \
+    && contains "$HOT_PAUSE" "active: active" \
+    && ok "the hot wait restarts only the turn timestamp; balances stand" \
+    || fail "hot-pause clock reset: $HOT_PAUSE"
+
+echo
+echo "an eliminated game is never created, resumed, or recorded (rule 20a):"
+EDIR="$SANDBOX/chesse"
+mkdir -p "$EDIR/selfplay" "$EDIR/games"
+EPLAN="$EDIR/selfplay/bench-t4.json"
+"$PY" - "$EDIR" <<'PYEOF'
+import json, sys, time
+d = sys.argv[1]
+plan = {"run": "t4",
+        "configs": {"a": {"model": "haiku", "quiet": "low", "sharp": "low"},
+                    "b": {"model": "sonnet", "quiet": "low",
+                          "sharp": "medium"}},
+        "games": [{"id": "selfplay-bencht4-001", "control": "1+0",
+                   "white": "a", "black": "b"},
+                  {"id": "selfplay-bencht4-002", "control": "1+0",
+                   "white": "b", "black": "a",
+                   "pruned": "eliminated by a longer-clock failure"},
+                  {"id": "selfplay-bencht4-003", "control": "1+0",
+                   "white": "a", "black": "b",
+                   "pruned": "cell already carries a disqualifying event"}]}
+json.dump(plan, open(d + "/selfplay/bench-t4.json", "w"))
+# 003 was stranded mid-flight before its prune: the driver must neither
+# resume nor record it — the file stays on disk as evidence, untouched.
+g = {"id": "selfplay-bencht4-003", "opponent": "selfplay",
+     "my_side": "white", "moves": ["e2e4", "e7e5", "g1f3", "b8c6"],
+     "resigned_by": None, "draw_agreed": False, "engine_level": None,
+     "created": "2026-01-01T00:00:00+00:00",
+     "time_control": {"name": "1+0", "speed": "bullet", "base_ms": 60000,
+                      "inc_ms": 0},
+     "clock": {"white_ms": 30000, "black_ms": 60000,
+               "turn_started": time.time() - 86400},
+     "bench": {"control": "1+0", "white": "a", "black": "b", "rows": []}}
+json.dump(g, open(d + "/games/selfplay-bencht4-003.json", "w"))
+PYEOF
+ESUM_BEFORE="$(cksum "$EDIR/games/selfplay-bencht4-003.json")"
+ECALLS="$SANDBOX/stub-calls-elim"
+: > "$ECALLS"
+sed "s|$CALLS|$ECALLS|" "$STUB" > "$SANDBOX/stub-mover-elim"
+chmod +x "$SANDBOX/stub-mover-elim"
+OUTE="$(DESKCRAB_CHESS_DIR="$EDIR" DESKCRAB_CHESS_SELFPLAY_NIGHTLY_MOVES=600 \
+        DESKCRAB_CHESS_MOVER_CMD="$SANDBOX/stub-mover-elim" \
+        "$PY" "$REPO/lib/chess_selfplay.py" --bench "$EPLAN" --budget 300 \
+        --games 10 --deadline "$NEAR_WALL" 2>&1)"
+SE="$(grep '^STATUS ' <<<"$OUTE" | tail -n1)"
+contains "$SE" '"status": "bench-done"' \
+    && contains "$SE" '"bench_recorded": 1' \
+    && contains "$SE" '"bench_total": 1' \
+    && contains "$SE" '"bench_pruned": 2' \
+    && ok "the chunk plays only the unpruned game and counts the prunes" \
+    || fail "STATUS line: $SE"
+ELEDGER="$EDIR/selfplay/bench-t4.jsonl"
+check_eq "the ledger holds the played game alone" \
+    "$(sandbox_count_in '"game"' "$ELEDGER")" "1"
+grep -q 'bencht4-002\|bencht4-003' "$ELEDGER" \
+    && fail "a pruned game reached the ledger: $(cat "$ELEDGER")" \
+    || ok "neither pruned game was recorded"
+[ -e "$EDIR/games/selfplay-bencht4-002.json" ] \
+    && fail "a never-started pruned game was created" \
+    || ok "the never-started pruned game was never created"
+check_eq "the stranded mid-flight file is untouched evidence" \
+    "$(cksum "$EDIR/games/selfplay-bencht4-003.json")" "$ESUM_BEFORE"
+
+echo
+echo "a recorded flag is finished business, never a model call (rule 17):"
+FDIR="$SANDBOX/chessf"
+mkdir -p "$FDIR/selfplay" "$FDIR/games"
+FPLAN="$FDIR/selfplay/bench-t2.json"
+"$PY" - "$FDIR" <<'PYEOF'
+import json, sys, time
+d = sys.argv[1]
+plan = {"run": "t2",
+        "configs": {"a": {"model": "haiku", "quiet": "low", "sharp": "low"},
+                    "b": {"model": "sonnet", "quiet": "low",
+                          "sharp": "medium"}},
+        "games": [{"id": "selfplay-bencht2-001", "control": "1+0",
+                   "white": "a", "black": "b"}]}
+json.dump(plan, open(d + "/selfplay/bench-t2.json", "w"))
+# The flag fell under a live driver and was settled onto the file (the
+# durable form bench_record_game writes); the stale turn clock beside it
+# must not matter — settled is settled.
+g = {"id": "selfplay-bencht2-001", "opponent": "selfplay",
+     "my_side": "white", "moves": ["e2e4", "e7e5", "g1f3", "b8c6"],
+     "resigned_by": None, "draw_agreed": False, "engine_level": None,
+     "flag_fell": "white",
+     "created": "2026-01-01T00:00:00+00:00",
+     "time_control": {"name": "1+0", "speed": "bullet", "base_ms": 60000,
+                      "inc_ms": 0},
+     "clock": {"white_ms": 1000, "black_ms": 60000,
+               "turn_started": time.time() - 30},
+     "bench": {"control": "1+0", "white": "a", "black": "b", "rows": []}}
+json.dump(g, open(d + "/games/selfplay-bencht2-001.json", "w"))
+PYEOF
+FCALLS="$SANDBOX/stub-calls-flag"
+: > "$FCALLS"
+sed "s|$CALLS|$FCALLS|" "$STUB" > "$SANDBOX/stub-mover-flag"
+chmod +x "$SANDBOX/stub-mover-flag"
+OUTF="$(DESKCRAB_CHESS_DIR="$FDIR" DESKCRAB_CHESS_SELFPLAY_NIGHTLY_MOVES=600 \
+        DESKCRAB_CHESS_MOVER_CMD="$SANDBOX/stub-mover-flag" \
+        "$PY" "$REPO/lib/chess_selfplay.py" --bench "$FPLAN" --budget 60 \
+        --games 10 --deadline "$NEAR_WALL" 2>&1)"
+contains "$(grep '^STATUS ' <<<"$OUTF" | tail -n1)" '"status": "bench-done"' \
+    && ok "the flagged game is finished business to the driver" \
+    || fail "STATUS line: $(grep '^STATUS ' <<<"$OUTF" | tail -n1)"
+check_eq "no model call was made for it" "$(sandbox_count_in . "$FCALLS")" "0"
+FLINE="$(cat "$FDIR/selfplay/bench-t2.jsonl")"
+contains "$FLINE" '"flagged": "white"' \
+    && contains "$FLINE" '"result": "0-1"' \
+    && ok "the ledger names the fallen flag and the timed loss" \
+    || fail "flag ledger: $FLINE"
+grep -q '"flag_fell": "white"' "$FDIR/games/selfplay-bencht2-001.json" \
+    && ok "the flag is recorded onto the game file for every later reader" \
+    || fail "game file: $(cat "$FDIR/games/selfplay-bencht2-001.json")"
+
+echo
+echo "the pause between invocations is the harness's, never the mover's:"
+RDIR="$SANDBOX/chessr"
+mkdir -p "$RDIR/selfplay" "$RDIR/games"
+RPLAN="$RDIR/selfplay/bench-t3.json"
+"$PY" - "$RDIR" <<'PYEOF'
+import json, sys, time
+d = sys.argv[1]
+plan = {"run": "t3",
+        "configs": {"a": {"model": "haiku", "quiet": "low", "sharp": "low"},
+                    "b": {"model": "sonnet", "quiet": "low",
+                          "sharp": "medium"}},
+        "games": [{"id": "selfplay-bencht3-001", "control": "1+0",
+                   "white": "a", "black": "b"}]}
+json.dump(plan, open(d + "/selfplay/bench-t3.json", "w"))
+# Mid-game, unledgered, no flag recorded — the driver died yesterday with
+# white on move and 30s in hand. Rule 17's boundary: the day-long pause
+# must NOT be charged as think time; the game resumes and plays on.
+g = {"id": "selfplay-bencht3-001", "opponent": "selfplay",
+     "my_side": "white", "moves": ["e2e4", "e7e5", "g1f3", "b8c6"],
+     "resigned_by": None, "draw_agreed": False, "engine_level": None,
+     "created": "2026-01-01T00:00:00+00:00",
+     "time_control": {"name": "1+0", "speed": "bullet", "base_ms": 60000,
+                      "inc_ms": 0},
+     "clock": {"white_ms": 30000, "black_ms": 60000,
+               "turn_started": time.time() - 86400},
+     "bench": {"control": "1+0", "white": "a", "black": "b", "rows": []}}
+json.dump(g, open(d + "/games/selfplay-bencht3-001.json", "w"))
+PYEOF
+RCALLS="$SANDBOX/stub-calls-resume"
+: > "$RCALLS"
+sed "s|$CALLS|$RCALLS|" "$STUB" > "$SANDBOX/stub-mover-resume"
+chmod +x "$SANDBOX/stub-mover-resume"
+OUTR="$(DESKCRAB_CHESS_DIR="$RDIR" DESKCRAB_CHESS_SELFPLAY_NIGHTLY_MOVES=600 \
+        DESKCRAB_CHESS_MOVER_CMD="$SANDBOX/stub-mover-resume" \
+        "$PY" "$REPO/lib/chess_selfplay.py" --bench "$RPLAN" --budget 300 \
+        --games 10 --deadline "$NEAR_WALL" 2>&1)"
+contains "$OUTR" "turn clock restarted" \
+    && ok "pickup restarts the turn clock, balances standing" \
+    || fail "driver output: $(tail -n 5 <<<"$OUTR")"
+[ "$(sandbox_count_in . "$RCALLS")" -gt 0 ] \
+    && ok "the resumed side thinks again — the pause cost it nothing" \
+    || fail "no model call after resume; output: $(tail -n 5 <<<"$OUTR")"
+"$PY" - "$RDIR" <<'PYEOF' && ok "the game continued past the stored position instead of flagging on the pause" || fail "resume ledger: $(cat "$RDIR/selfplay/bench-t3.jsonl" 2>/dev/null)"
+import json, sys
+d = sys.argv[1]
+rows = [json.loads(x) for x in open(d + "/selfplay/bench-t3.jsonl")]
+assert len(rows) == 1, rows
+assert rows[0]["plies"] > 4, rows[0]
+PYEOF
+
+echo
+echo "a ledgered game is settled evidence — the pickup restart never reopens it:"
+LDIR="$SANDBOX/chessl"
+mkdir -p "$LDIR/selfplay" "$LDIR/games"
+LPLAN="$LDIR/selfplay/bench-t4.json"
+"$PY" - "$LDIR" <<'PYEOF'
+import json, sys, time
+d = sys.argv[1]
+plan = {"run": "t4",
+        "configs": {"a": {"model": "haiku", "quiet": "low", "sharp": "low"},
+                    "b": {"model": "sonnet", "quiet": "low",
+                          "sharp": "medium"}},
+        "games": [{"id": "selfplay-bencht4-001", "control": "1+0",
+                   "white": "a", "black": "b"}]}
+json.dump(plan, open(d + "/selfplay/bench-t4.json", "w"))
+# The 162 shape: the ledger already carries the game (recorded off a pause
+# under the old rule), the file still LOOKS active with a stale clock. The
+# restart must skip it — recorded evidence never reopens, never replays.
+g = {"id": "selfplay-bencht4-001", "opponent": "selfplay",
+     "my_side": "white", "moves": ["e2e4", "e7e5", "g1f3", "b8c6"],
+     "resigned_by": None, "draw_agreed": False, "engine_level": None,
+     "created": "2026-01-01T00:00:00+00:00",
+     "time_control": {"name": "1+0", "speed": "bullet", "base_ms": 60000,
+                      "inc_ms": 0},
+     "clock": {"white_ms": 30000, "black_ms": 60000,
+               "turn_started": time.time() - 86400},
+     "bench": {"control": "1+0", "white": "a", "black": "b", "rows": []}}
+json.dump(g, open(d + "/games/selfplay-bencht4-001.json", "w"))
+line = {"game": "selfplay-bencht4-001", "control": "1+0", "white": "a",
+        "black": "b", "result": "0-1", "state": "flag", "desc": "recorded",
+        "plies": 4, "flagged": "white", "clock_remaining": None,
+        "sides": {}, "finished": "2026-01-02T00:00:00+00:00"}
+open(d + "/selfplay/bench-t4.jsonl", "w").write(json.dumps(line) + "\n")
+PYEOF
+LCALLS="$SANDBOX/stub-calls-ledgered"
+: > "$LCALLS"
+sed "s|$CALLS|$LCALLS|" "$STUB" > "$SANDBOX/stub-mover-ledgered"
+chmod +x "$SANDBOX/stub-mover-ledgered"
+LGAME_BEFORE="$(cat "$LDIR/games/selfplay-bencht4-001.json")"
+OUTL="$(DESKCRAB_CHESS_DIR="$LDIR" DESKCRAB_CHESS_SELFPLAY_NIGHTLY_MOVES=600 \
+        DESKCRAB_CHESS_MOVER_CMD="$SANDBOX/stub-mover-ledgered" \
+        "$PY" "$REPO/lib/chess_selfplay.py" --bench "$LPLAN" --budget 60 \
+        --games 10 --deadline "$NEAR_WALL" 2>&1)"
+check_eq "no model call for the settled game" \
+    "$(sandbox_count_in . "$LCALLS")" "0"
+check_eq "the ledger still carries exactly one line for it" \
+    "$(sandbox_count_in '"game"' "$LDIR/selfplay/bench-t4.jsonl")" "1"
+[ "$(cat "$LDIR/games/selfplay-bencht4-001.json")" = "$LGAME_BEFORE" ] \
+    && ok "the game file is untouched — no restart wrote through it" \
+    || fail "game file changed: $(cat "$LDIR/games/selfplay-bencht4-001.json")"
+
+echo
+echo "the probe prices a configuration's bare call, budget-counted:"
+PCOUNTER="$BDIR/selfplay/model-calls-$(date -d '12 hours ago' +%Y%m%d).log"
+NPROBE_BEFORE="$(sandbox_count_in . "$PCOUNTER")"
+OUTP="$(DESKCRAB_CHESS_DIR="$BDIR" DESKCRAB_CHESS_SELFPLAY_NIGHTLY_MOVES=600 \
+        DESKCRAB_CHESS_MOVER_CMD="$SANDBOX/stub-mover-bench" \
+        "$PY" "$REPO/lib/chess_selfplay.py" --bench-probe "$BPLAN" \
+        --deadline "$NEAR_WALL" 2>&1)"
+contains "$(grep '^STATUS ' <<<"$OUTP" | tail -n1)" '"status": "probe-done"' \
+    && ok "the probe chunk ends on probe-done" \
+    || fail "STATUS line: $(grep '^STATUS ' <<<"$OUTP" | tail -n1)"
+PROBE_LINE="$(grep '"probe"' "$BLEDGER" | tail -n1)"
+contains "$PROBE_LINE" '"probe": "haiku"' \
+    && contains "$PROBE_LINE" '"ok": true' \
+    && contains "$PROBE_LINE" '"secs"' \
+    && ok "the probe line carries the model, the seconds, and the verdict" \
+    || fail "probe line: $PROBE_LINE"
+check "the probe was charged to the nightly counter" \
+    [ "$(grep -c . "$PCOUNTER" 2>/dev/null)" -gt "$NPROBE_BEFORE" ]
+
+echo
+echo "the report renders what was measured:"
+REPORT="$(DESKCRAB_CHESS_DIR="$BDIR" \
+          "$PY" "$REPO/lib/chess_selfplay.py" --bench-report "$BPLAN" 2>&1)"
+contains "$REPORT" "## 1+0" \
+    && contains "$REPORT" "| a |" && contains "$REPORT" "| b |" \
+    && ok "the per-control table names each configuration" \
+    || fail "report: $REPORT"
+contains "$REPORT" "| haiku | low |" \
+    && ok "the probe table prices the probed configuration" \
+    || fail "report: $REPORT"
+
+echo
+echo "the corrective matrix plan (rule 20):"
+MDIR="$SANDBOX/chessm"
+mkdir -p "$MDIR/selfplay"
+MOUT="$(DESKCRAB_CHESS_DIR="$MDIR" "$PY" "$REPO/lib/chess_selfplay.py" \
+        --bench-init-matrix --run mtx --reps 2 2>&1)"
+contains "$MOUT" "bench-mtx.json" \
+    && ok "--bench-init-matrix writes the plan and prints its path" \
+    || fail "matrix init: $MOUT"
+MP="$("$PY" - "$MDIR/selfplay/bench-mtx.json" <<'PYEOF'
+import json, sys
+from collections import Counter
+p = json.load(open(sys.argv[1]))
+models = ["sonnet", "haiku", "opus", "fable"]
+efforts = ["low", "medium", "high", "xhigh"]
+codex = {"sol": efforts,
+         "gpt-5.6-terra": efforts,
+         "gpt-5.6-luna": efforts}
+controls = ["1+0", "2+1", "3+2", "5+0", "10+0", "15+10"]
+cfgs = p["configs"]
+print("budget:", isinstance(p.get("nightly_move_budget"), int)
+      and p["nightly_move_budget"] > 0)
+print("configs:", len(cfgs) == 28
+      and all("%s-%s" % (m, e) in cfgs for m in models for e in efforts)
+      and all("%s-%s" % (m, e) in cfgs
+              for m, es in codex.items() for e in es))
+print("slugs:", all(cfgs["%s-%s" % (m, es[0])]["model"] == m
+                    for m, es in codex.items()))
+print("effort-ceiling:", not any(c["quiet"] in ("max", "ultra")
+                                  or c["sharp"] in ("max", "ultra")
+                                  for c in cfgs.values()))
+print("no-spark:", not any(c["model"] == "gpt-5.3-codex-spark"
+                            for c in cfgs.values()))
+print("uniform:", all(c["quiet"] == c["sharp"] for c in cfgs.values()))
+print("games:", len(p["games"]) == 336)
+print("controls:", sorted(Counter(g["control"]
+                                  for g in p["games"]).items()) ==
+      sorted((c, 56) for c in controls))
+print("ids:", all(g["id"].startswith("selfplay-benchmtx-")
+                  for g in p["games"]))
+cells = {}
+for g in p["games"]:
+    cfg = g["white"] if g["black"] == "sonnet-low" else g["black"]
+    cells.setdefault((cfg, g["control"]), []).append(g["white"] == cfg)
+split = all(sorted(v) == [False, True] for (c, _), v in cells.items()
+            if c != "sonnet-low")
+mirror = all(v == [True, True] for (c, _), v in cells.items()
+             if c == "sonnet-low")
+print("colours:", split, "mirror:", mirror)
+print("noprobe:", "probe" not in p)
+PYEOF
+)"
+contains "$MP" "budget: True" && contains "$MP" "configs: True" \
+    && contains "$MP" "uniform: True" \
+    && contains "$MP" "no-spark: True" \
+    && ok "every model at every effort — each codex candidate at its own effort list — each a uniform pair" \
+    || fail "matrix plan: $MP"
+
+PIN="$($PY - "$REPO/lib" <<'PYEOF'
+import os, sys
+sys.path.insert(0, sys.argv[1])
+import chess_selfplay
+os.environ["DESKCRAB_CHESS_SELFPLAY_NIGHTLY_MOVES"] = "6000"
+print("pinned:", chess_selfplay.pin_bench_move_budget(
+    {"nightly_move_budget": 4000}))
+print("effective:", os.environ["DESKCRAB_CHESS_SELFPLAY_NIGHTLY_MOVES"])
+try:
+    chess_selfplay.pin_bench_move_budget({"nightly_move_budget": 0})
+except ValueError:
+    print("invalid: refused")
+PYEOF
+)"
+contains "$PIN" "pinned: 4000" && contains "$PIN" "effective: 4000" \
+    && contains "$PIN" "invalid: refused" \
+    && ok "the plan's shared move ceiling overrides a worker's conflicting environment" \
+    || fail "plan-pinned move ceiling: $PIN"
+contains "$MP" "slugs: True" && contains "$MP" "effort-ceiling: True" \
+    && ok "codex candidates carry their exact slugs, and no cell escapes a model's own effort list (rule 20, 2026-08-31)" \
+    || fail "matrix plan: $MP"
+contains "$MP" "games: True" && contains "$MP" "controls: True" \
+    && contains "$MP" "ids: True" \
+    && ok "336 games: 56 per control, every id inside the selfplay prefix" \
+    || fail "matrix plan: $MP"
+contains "$MP" "colours: True mirror: True" \
+    && ok "every cell colour-rotated against the reference; the reference mirrored" \
+    || fail "matrix plan: $MP"
+contains "$MP" "noprobe: True" \
+    && ok "no probe section: a route is chosen from complete games (rule 19)" \
+    || fail "matrix plan: $MP"
+
+echo
+echo "the extend mode appends exactly the missing cells, once (rule 20):"
+XP="$MDIR/selfplay/bench-xt.json"
+XSTRIP="$("$PY" - "$MDIR/selfplay/bench-mtx.json" "$XP" <<'PYEOF'
+import json, sys
+p = json.load(open(sys.argv[1]))
+p["run"] = "xt"
+p["configs"] = {k: v for k, v in p["configs"].items()
+                if not k.startswith("sol-")}
+p["games"] = [dict(g, id=g["id"].replace("benchmtx", "benchxt"))
+              for g in p["games"]
+              if "sol-" not in g["white"] and "sol-" not in g["black"]]
+json.dump(p, open(sys.argv[2], "w"))
+print(len(p["games"]))
+PYEOF
+)"
+check_eq "the plan without Sol holds 288 games" "$XSTRIP" "288"
+XOUT="$(DESKCRAB_CHESS_DIR="$MDIR" "$PY" "$REPO/lib/chess_selfplay.py" \
+        --bench-extend-matrix "$XP" --reps 2 2>&1)"
+contains "$XOUT" "added 48 game(s); the plan now schedules 336" \
+    && ok "--bench-extend-matrix appends the 48 missing Sol cells and says so" \
+    || fail "extend: $XOUT"
+XV="$("$PY" - "$XP" <<'PYEOF'
+import json, sys
+from collections import Counter
+p = json.load(open(sys.argv[1]))
+games = p["games"]
+print("total:", len(games) == 336)
+print("unique-ids:", len({g["id"] for g in games}) == 336)
+print("controls:", sorted(Counter(g["control"] for g in games).items())
+      == sorted((c, 56) for c in ["1+0", "2+1", "3+2", "5+0", "10+0",
+                                  "15+10"]))
+sol = [g for g in games if "sol-" in g["white"] or "sol-" in g["black"]]
+print("sol-per-control:",
+      sorted(Counter(g["control"] for g in sol).items())
+      == sorted((c, 8) for c in ["1+0", "2+1", "3+2", "5+0", "10+0",
+                                  "15+10"]))
+print("sol-ids-continue:", all(int(g["id"].rsplit("-", 1)[1]) > 336
+                               for g in sol))
+seen, grouped = [], True
+for g in games:
+    if g["control"] in seen and seen[-1] != g["control"]:
+        grouped = False
+    if not seen or seen[-1] != g["control"]:
+        seen.append(g["control"])
+print("grouped:", grouped and seen == ["1+0", "2+1", "3+2", "5+0",
+                                       "10+0", "15+10"])
+old = [g for g in games if int(g["id"].rsplit("-", 1)[1]) <= 240]
+print("old-order-kept:", [int(g["id"].rsplit("-", 1)[1]) for g in old]
+      == sorted(int(g["id"].rsplit("-", 1)[1]) for g in old))
+print("configs:", len(p["configs"]) == 28)
+PYEOF
+)"
+contains "$XV" "total: True" && contains "$XV" "unique-ids: True" \
+    && contains "$XV" "controls: True" \
+    && ok "the extended plan schedules 336 games, 56 per control, ids unique" \
+    || fail "extended plan: $XV"
+contains "$XV" "sol-per-control: True" \
+    && contains "$XV" "sol-ids-continue: True" \
+    && ok "eight Sol-cell games rode into every control, ids continuing the numbering" \
+    || fail "extended plan: $XV"
+contains "$XV" "grouped: True" && contains "$XV" "old-order-kept: True" \
+    && ok "play order stays fastest-control first; existing games untouched in order" \
+    || fail "extended plan: $XV"
+contains "$XV" "configs: True" \
+    && ok "the codex configurations joined the plan's table" \
+    || fail "extended plan: $XV"
+XOUT2="$(DESKCRAB_CHESS_DIR="$MDIR" "$PY" "$REPO/lib/chess_selfplay.py" \
+         --bench-extend-matrix "$XP" --reps 2 2>&1)"
+contains "$XOUT2" "added 0 game(s); the plan now schedules 336" \
+    && ok "a second run appends nothing — the extend mode is idempotent" \
+    || fail "extend rerun: $XOUT2"
+
+echo
+echo "the extended ledger line (rule 19): remaining clock, attempts, fallbacks:"
+LX="$("$PY" - "$BDIR" <<'PYEOF'
+import json, sys
+d = sys.argv[1]
+led = [json.loads(x) for x in open(d + "/selfplay/bench-t1.jsonl")]
+games = [e for e in led if "game" in e]
+print("clock:", all(isinstance(e.get("clock_remaining"), dict)
+                    and "white_ms" in e["clock_remaining"] for e in games))
+ok_side = True
+for e in games:
+    for s in ("white", "black"):
+        side = e["sides"][s]
+        if "fallback_moves" not in side or "attempts" not in side:
+            ok_side = False
+        elif side["attempts"] < side["model_moves"]:
+            ok_side = False  # every landed model move was a counted attempt
+print("sides:", ok_side)
+PYEOF
+)"
+contains "$LX" "clock: True" \
+    && ok "the ledger line carries the final remaining clock of both sides" \
+    || fail "ledger extras: $LX"
+contains "$LX" "sides: True" \
+    && ok "per-side attempts (mined from the counter) and fallback counts ride the line" \
+    || fail "ledger extras: $LX"

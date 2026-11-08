@@ -1,0 +1,17 @@
+[Unit]
+Description=DeskCrab Bluesky persistent social inbox
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+ExecStart=%h/.local/bin/crab bluesky bridge
+WorkingDirectory=%h
+Restart=always
+RestartSec=30
+UMask=0077
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+
+[Install]
+WantedBy=default.target

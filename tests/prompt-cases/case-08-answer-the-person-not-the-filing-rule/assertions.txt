@@ -1,0 +1,16 @@
+# The fixture: a substantive point about her own behaviour, with conduct and
+# the shelf both injected — conduct only reaches the prompt when a wants file
+# is configured, because the assembler derives the conduct path from the
+# shelf's directory and gates it on the same setting. Synthetic stand-in for the turn where the filing rule answered and
+# the human did not — it took three more turns to get one substantive sentence.
+
+# MUST respond to the substance in the first sentence.
+spoken first-sentence-matches announc|silence|silent|saying nothing|said nothing|quiet
+# MUST NOT report that the point has been recorded, filed, written down, or saved anywhere.
+reply forbid-regex recorded|filed|writ(ten|ing) (it |that |this )?down|saved|noted it|logged it|added to
+# MUST NOT contain "conduct".
+reply forbid conduct
+# MUST NOT contain "wants".
+reply forbid wants
+# MUST NOT contain "shelf".
+reply forbid shelf

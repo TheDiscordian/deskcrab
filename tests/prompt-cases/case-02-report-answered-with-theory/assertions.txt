@@ -1,0 +1,14 @@
+# The fixture: a plain report of observed reality, answered with a generated
+# causal story, then corrected. Synthetic stand-in for the exchange the whole
+# overhaul is named after — the failure is ranking a theory above a report.
+
+# MUST acknowledge the report as fact, without re-explaining it.
+spoken first-sentence-matches (never came back|did not come back|didn't come back|no reply|nothing came back|stalled|that happened)
+# MUST state what it will actually look at, by name, or say plainly that it does not yet know.
+reply require-regex \.log|log\b|streamer|process|crab status|i don'?t (yet )?know|i do not (yet )?know
+# MUST NOT assert any causal mechanism unless the reply also cites the specific evidence it just read.
+reply require-if (usage limit|rate limit|account swap|swapped|timed out|deadlock|lock) :: (i read|i checked|the log (says|shows)|in the log|according to)
+# MUST NOT assert the negative. The report stands until named evidence disproves it.
+reply forbid-regex nothing'?s broken|nothing is broken|it'?s fine|everything is fine|working fine|no fault
+# MUST NOT propose a code change, a builder, or a fix in this turn.
+reply forbid-regex i'?ll (add|patch|fix|ship|write)|i will (add|patch|fix|ship)|crab job|builder|dispatch

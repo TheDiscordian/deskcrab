@@ -15,9 +15,61 @@ PIPER_VOICE="$HOME/.local/share/piper/en_US-lessac-medium.onnx"
 # Required: path to whisper.cpp model
 WHISPER_MODEL="/usr/share/whisper.cpp-model-small.en/ggml-small.en.bin"
 
-# Optional: Claude model and effort level
+# Optional: model and effort level. The engine follows the model name
+# (specs/model-backends.md): a Claude name runs the Claude CLI account walk
+# below; an OpenAI name — "sol" (an alias for CODEX_MODEL_SOL), any "gpt-*"
+# slug, or a "codex:<slug>" spelling — runs the Codex CLI on the machine's
+# logged-in ChatGPT subscription. Efforts are the same words on both engines
+# (low|medium|high|xhigh|max), plus "ultra" on codex only. Every model knob in
+# this file routes the same way: WAKE_MODEL, JOB_MODEL, DISPUTE_MODEL, the
+# chess movers, the classifiers.
+#
+# There is no single switch: the engine is chosen per knob, by name. Moving off
+# an engine means moving every knob that names it — including the ones left
+# unset here, which keep whatever default their code carries. Grep the source
+# for a model default before believing a switch is complete.
 # CLAUDE_MODEL="opus"
 # CLAUDE_EFFORT="low"
+
+# Optional: the Codex engine. Auth comes from CODEX_HOME (default ~/.codex) —
+# log in once with `codex login` (ChatGPT plan; an OPENAI_API_KEY in the
+# environment is deliberately ignored). Codex has one login, so a limit never
+# walks accounts: it benches the engine for CODEX_LIMIT_COOLDOWN seconds and
+# the turn or wake falls back to the Claude walk at CODEX_FALLBACK_MODEL; a
+# builder job is blocked and retried, never downgraded.
+# CODEX_BIN="$HOME/.local/bin/codex"
+# CODEX_MODEL_SOL="gpt-5.6-sol"    # what the "sol" alias resolves to
+# CODEX_FALLBACK_MODEL="opus"      # default: CLAUDE_MODEL
+# CODEX_LIMIT_COOLDOWN=1800
+# CODEX_PROMPT_MODE="instructions" # "preface" keeps codex's own base
+                                   # instructions and rides the prompt on the
+                                   # user text instead
+
+# Optional: further Claude Code config directories (separate `claude` logins /
+# subscriptions) to fall back to when the account in hand refuses to run at all
+# — session/usage limit reached or credits exhausted. The refused run is
+# retried with CLAUDE_CONFIG_DIR pointed at each in turn. Applies everywhere the
+# assistant runs claude: interactive turns, autonomous wakes, detached jobs,
+# and conversation summarization. Limit refusals only — auth and network
+# failures still surface as themselves.
+#
+# One entry or many: whitespace- or colon-separated, tried left to right. Set up
+# each login once with its own /login (never copy credentials between config
+# dirs — racing token refreshes corrupt them):
+#   CLAUDE_CONFIG_DIR=$HOME/.claude-fallback claude /login
+# CLAUDE_FALLBACK_CONFIG_DIR="$HOME/.claude-fallback"
+# CLAUDE_FALLBACK_CONFIG_DIR="$HOME/.claude-fallback:$HOME/.claude-fallback2"
+
+# The accounts form one flat numbered list, all equal: account 1 is
+# $HOME/.claude, accounts 2..N the entries above in configured order. When an
+# account refuses over a limit, it cools down (hours, sized to the refusal's
+# own wording) and the next account not in cooldown becomes the current —
+# durably, wrapping past the end of the list — and stays current until it
+# refuses in its turn. Nothing switches back on a timer. The current and the
+# per-account cooldowns live in one small state file,
+# ~/.local/share/deskcrab/account-state; delete it and account 1 answers with
+# nothing cooling (`crab status` leads with which account answers next and
+# why the state last moved).
 
 # Optional: project directory (Claude runs from here, gets project memory)
 # PROJECT_DIR="$HOME"
@@ -29,9 +81,11 @@ WHISPER_MODEL="/usr/share/whisper.cpp-model-small.en/ggml-small.en.bin"
 # CONVO_TIMEOUT=300
 
 # Optional: sliding-window history to keep long conversations cheap.
-# Once the live convo exceeds CONVO_MAX_TURNS user/assistant pairs, the oldest
-# CONVO_SUMMARIZE_TURNS pairs are folded into a running summary (kept above the
+# Once the live convo exceeds CONVO_MAX_TURNS blocks, the oldest
+# CONVO_SUMMARIZE_TURNS blocks are folded into a running summary (kept above the
 # recent turns) using CONVO_SUMMARY_MODEL. Recent turns stay verbatim.
+# A block is one thing said by one side — a "User: " line or an "Assistant: "
+# line — so an autonomous wake, which has no user line above it, counts too.
 # CONVO_MAX_TURNS=20
 # CONVO_SUMMARIZE_TURNS=10
 # CONVO_SUMMARY_MODEL="haiku"
@@ -45,15 +99,62 @@ WHISPER_MODEL="/usr/share/whisper.cpp-model-small.en/ggml-small.en.bin"
 # Example: WHISPER_FIXES='s/mycool app/MyCoolApp/gi; s/\bhy plant\b/Hyprland/gi'
 # WHISPER_FIXES=''
 
-# Optional: TTS pronunciation fixes (sed expressions applied to spoken text)
+# Optional: TTS fixes (sed expressions applied to spoken text)
 # Useful for words piper mispronounces or spells out letter-by-letter.
 # Applied only to the spoken reply — display-channel content is untouched.
+# A replacement newline starts a new piper input line but NOT a pause:
+# piper's sentence silence follows punctuation as espeak segments it, so a
+# fix that wants a pause must emit punctuation. In particular, do not
+# rewrite em-dashes to newlines — measured 2026-09-04 (Library/voice/wild.py,
+# 40 journal replies, four arms, paired sign tests): the literal dash and a
+# comma each out-pause the newline rewrite at p=0.001, and the newline is as
+# silent as deleting the mark. The literal em-dash is already a real cue.
 # Example: TTS_FIXES='s/\bhmph\b/humph/gi'
 # TTS_FIXES=''
 
-# Optional: additional files to include in system prompt context
-# Space-separated list of file paths. Their contents are appended to the prompt.
-# CONTEXT_FILES="$HOME/project/CLAUDE.md $HOME/project/notes.md"
+# What the CLI puts in front of her, per run. Measured numbers and the
+# reasoning are in tools/context-probe-results.md; the defaults are the point
+# of that measurement, so change them knowing what each one costs.
+#
+# Every built-in tool is worth roughly 1,900 tokens on every session, so this
+# list is the biggest single lever in the whole prompt. ToolSearch and Agent
+# are deliberately absent: her own MCP servers (MCP_CONFIG) are few and their
+# tools are inlined, and a subagent holds the turn open while the user waits.
+# CLAUDE_TOOLS_TURN="Bash,Read,Write,Edit,WebFetch,WebSearch"
+# CLAUDE_TOOLS_WAKE="$CLAUDE_TOOLS_TURN"
+# CLAUDE_TOOLS_JOB=""          # empty = no restriction; a builder needs its tools
+#
+# Her own MCP servers, in Claude's {"mcpServers": {...}} format, for turns,
+# wakes and builders on both engines (specs/model-backends.md rule 6b). Unset,
+# she has none. Codex takes only the "http" servers; header values reach it
+# through the environment, never the argv.
+# MCP_CONFIG="$HOME/.config/deskcrab/mcp.json"
+#
+# The skills catalogue is 6,690 tokens on every session and she used one skill.
+# Set to 1 to buy it back.
+# CLAUDE_SKILLS=0
+
+# Prompt layer budgets, in bytes, PROMPT_BUDGET_<layer>_<profile>. Defaults are
+# the table in specs/prompt-assembly.md §11. `crab context --layers` prints
+# what each layer actually measured and whether it fitted.
+#
+# The one to know about: L1 is identity plus the persona sheet, and its budget
+# is 4,000. A persona sheet larger than that has whole markdown sections left
+# off the end — the prompt names them and says where they are, but they are not
+# in front of her. Either slim the sheet against the identity layer and conduct
+# (it is meant to hold what those two do NOT say), or raise the budget here.
+# PROMPT_BUDGET_L1_TURN=4000
+# PROMPT_BUDGET_L6_TURN=8000
+
+# CONTEXT_FILES is gone. It appended whole files to the assistant's prompt, and
+# the example it shipped with was a project's CLAUDE.md — instructions written
+# for a coding agent, in a different voice, addressed to a different reader,
+# arriving on every turn including one-word answers. Nothing that belongs to
+# the desktop coding agent may enter her sessions (specs/prompt-assembly.md
+# §16), and a knob whose documented use was exactly that had to go rather than
+# be left as a loaded gun in the example config. A file she should be able to
+# reach is named in the WHERE THINGS ARE index instead, which costs one line
+# and lets her open it when the turn needs it.
 
 # Optional: durable "wants" file — the assistant's own long-term goals, which it
 # maintains itself and pursues during autonomous wakes (crab wake / crab wake-at,
@@ -68,12 +169,267 @@ WHISPER_MODEL="/usr/share/whisper.cpp-model-small.en/ggml-small.en.bin"
 # Nobody is waiting on a wake, so it can afford more thinking.
 # WAKE_EFFORT="medium"
 
+# Optional: the own-time return (specs/wake-queue.md rules 40a-40f). A
+# reason-less wake — the chain floor's, the background timer's — fires as a
+# free choosing session only when the machine is genuinely idle: no recent
+# conversation, no turn in flight, nobody on the microphone, no builder
+# running. Activity re-books it instead, with conversation resetting the
+# quiet window, and the floor's delay carries a jitter so the returns never
+# harden into a clock ritual. Set IDLE_RETURN=0 to restore the flat floor,
+# the ordinary wake model and the wants agenda exactly.
+# IDLE_RETURN=1
+# IDLE_RETURN_QUIET=2700     # seconds since his last message that count as idle
+# IDLE_RETURN_RECHECK=900    # re-book delay when non-conversation activity is found
+# IDLE_RETURN_BASE=2700      # the floor's base delay between opportunities
+# IDLE_RETURN_SPREAD=2700    # up to this much fresh jitter on every booking
+# IDLE_RETURN_MODEL="sol"    # the choosing session's model
+# IDLE_RETURN_EFFORT="medium"
+
+# Optional: the staleness gate on held wake notes (specs/wake-queue.md rule
+# 27b). A note held for a hot conversation comes back through the queue; before
+# it is delivered, a cheap bounded judge reads what has actually been said
+# since the note was written and drops it silently when the conversation has
+# already covered or overtaken it — a held note must not announce as fresh news
+# a thing the user was told half an hour ago. Only a positive verdict drops;
+# a judge that fails or times out delivers the note.
+# WAKE_STALE_GATE=1                 # set 0 to deliver held notes unjudged
+# WAKE_STALE_MODEL="claude-fable-5" # the staleness judge
+# WAKE_STALE_TIMEOUT=45             # seconds before the judge is abandoned
+
+# Optional: a detached job's completion return (specs/wake-queue.md rule 27d,
+# jobs.md rule 7c). The completion wake is a job's only channel back to the
+# user, so the busy and in-flight gates may DELAY its news and never consume
+# it: the delivery waits in process, re-reading both gates together every
+# WAKE_JOB_NEWS_POLL seconds, and delivers the reply already in hand the
+# moment they clear. The wait is ONE budget for the whole delivery; when it
+# runs dry, or quiet hours arrive mid-wait, the original reason is re-booked
+# whole under the job-runner identity WAKE_JOB_NEWS_RETRY seconds out, stamped
+# once for the staleness gate above. Recognised by the booking's provenance
+# (--by job-runner), never by reading the reply.
+# WAKE_JOB_NEWS_HOLD=1    # set 0 and a job's return takes the ordinary exits
+# WAKE_JOB_NEWS_WAIT=120  # seconds the delivery waits for the moment to pass
+# WAKE_JOB_NEWS_POLL=2    # seconds between re-reads of the two gates
+# WAKE_JOB_NEWS_RETRY=300 # seconds out the news is re-booked after a dry wait
+
+# Optional: the seconds-scale retry on a held wake note (specs/wake-queue.md
+# rule 27g). A wake's words held for a turn in flight or a hot conversation
+# used to go straight back through the queue five minutes out, and came back
+# to a moment that had gone. They now wait in process, every gate re-read
+# together every WAKE_HOT_POLL seconds, and are delivered the moment the gates
+# clear — judged first against what was said while they waited. The wait is
+# one budget, WAKE_HOT_WAIT; a wait that runs dry, meets quiet hours or finds
+# another event wake waiting for the run lock falls back to the queue re-book
+# WAKE_HOT_RETRY seconds out. Set WAKE_HOT_WAIT=0 for the old flat re-book.
+# WAKE_HOT_WAIT=300  # seconds a held note waits in process for the moment to pass
+# WAKE_HOT_POLL=2    # seconds between re-reads of the gates
+# WAKE_HOT_RETRY=300 # seconds out the words are re-booked after a dry wait
+
 # Optional: seconds without life signs before an autonomous wake is presumed
 # hung and reaped (default: 300). There is no wall-clock limit on wakes — a
 # session counts as alive while it streams output OR its process tree burns
 # CPU (long compiles count as work). Raise it if your wakes run very slow,
 # low-CPU tools in the foreground.
 # WAKE_STALL_TIMEOUT=300
+
+# Optional: the same reaping for an INTERACTIVE turn — desk or phone — at a
+# desk-appropriate patience, because somebody asked out loud and is standing
+# there waiting (default: 120). Same two life signs as a wake.
+# TURN_STALL_TIMEOUT=120
+
+# Optional: CPU priority for background hands — wake units, detached builder
+# jobs, and the out-of-band judges (defaults: 25 and 10). A wake or a build
+# never competes at par for the processor with a turn somebody is waiting on;
+# on an idle machine background work still gets everything. Priority is the
+# only thing lowered — nothing pauses or kills background work for a turn.
+# Empty disables either flag. specs/wake-queue.md rule 12a, jobs.md rule 2a.
+# BACKGROUND_CPU_WEIGHT=25
+# BACKGROUND_NICE=10
+
+# Optional: a ceiling on a turn's WHOLE account walk in seconds (default: 900,
+# 0 = none). The stall watchdog cannot catch a session that keeps emitting
+# output forever, and a walk over the accounts runs one whole CLI session per
+# account offered — so this bounds the walk, not any single run.
+# TURN_CHAIN_TIMEOUT=900
+
+# Optional: concurrent-turn context window (seconds, default 300, 0 = off).
+# A wake that fires while an interactive turn (desk or phone) is in flight —
+# or within this window of one finishing — is shown that exchange in its
+# prompt: the user's message, and the reply once there is one. The wake is
+# asked to behave like someone who just heard the answer given: regroup —
+# carry its own point forward from there as ONE reply, never restating — and
+# stay quiet only if it has nothing to add. Nothing is muted; it decides.
+# WAKE_TURN_CONTEXT_WINDOW=300
+
+# Optional: regroup window (seconds, default 180, 0 = off). When one session
+# is speaking and another starts, the second is shown the first reply
+# VERBATIM and asked to fold both things into ONE reply rather than queue its
+# own thought away or fall silent. This is how long a published utterance
+# counts as "being said right now" (a dead speaker's record is ignored
+# immediately, whatever this is set to).
+# LIVE_SPEECH_WINDOW=180
+
+# Optional: wake coalescing window (seconds, default 900, 0 = off). A
+# `crab wake-at` booking of scheduled kind whose fire time is within this
+# window of a pending booking with the same reason is not added — the pending
+# promise already covers it. Stops overlapping sessions from stacking near-
+# duplicate timers that each re-announce the same progress.
+# WAKE_COALESCE_WINDOW=900
+
+# Optional: the ceiling on a self-scheduled wake session, seconds (default
+# 7200). Every transient wake unit is booked with it as TimeoutStartSec — the
+# absolute backstop for a runaway session, since the in-process stall watchdog
+# cannot by construction reap one that keeps emitting output. Before this,
+# only the standing random-interval timer had any ceiling at all.
+# WAKE_RUNTIME_MAX=7200
+
+# Optional: the near lane, seconds (default 120). A wake timer is armed at its
+# booking record's absolute fire time, so a reload of the user manager cannot
+# move it — except a booking due within this many seconds, which is armed as
+# the remaining delay: a dated instant that close can already be in the past
+# when its timer starts, and systemd never fires one that is.
+# WAKE_ABSOLUTE_MARGIN=120
+
+# Optional: how far past its moment a missed personal sitting may be and still
+# fire promptly, seconds (default 3600). A sitting found later than this under
+# a timer that had drifted off its record is re-seated at the next occurrence
+# of its own booked clock time instead of being fired at whatever minute the
+# repair ran.
+# WAKE_MISSED_GRACE=3600
+
+# Optional: where the queue's own change ledger lives, and how many lines of it
+# are kept. Every booking, cancellation, restoration, collapse and purge is
+# written here, and the state block reads it to say what changed while she was
+# away — a bulk restore means a cancellation was undone or the machine
+# rebooted, and that used to go to /dev/null.
+# WAKE_LEDGER="$HOME/.local/share/deskcrab/wakes/ledger.log"
+# WAKE_LEDGER_KEEP=2000
+
+# Optional: detached background jobs — `crab job "<description>"` runs work as
+# its own headless claude session under a transient systemd user unit
+# (deskcrab-job-<id>), so it survives the turn that launched it and never
+# holds the conversation open. Jobs are silent: no TTS, no windows; output
+# goes to JOBS_DIR/<id>.log with a JSON status sidecar, listed by `crab jobs`.
+# Jobs run unattended builds nobody is waiting on, so they default to the
+# strongest model at high effort.
+# JOBS_DIR="$HOME/.local/share/deskcrab/jobs"
+# JOB_MODEL="fable"
+# JOB_EFFORT="high"
+# JOB_MODEL_FALLBACK="opus sonnet"  # the ordered families a builder walks to
+                                    # when EVERY account refuses at a family
+                                    # (specs/jobs.md rule 5b) — one model's
+                                    # limit must not stop all night work; set
+                                    # it EMPTY to block at JOB_MODEL as before
+# JOB_REVIEW_MODEL="sol"   # the review wake a finished job books; routes by
+                           # name like every other model knob, so leaving it
+                           # unset keeps a codex default nothing here names
+# JOBS_SHOW_FINISHED=6     # finished jobs shown by `crab jobs` and in the prompt
+# JOBS_KEEP_DAYS=14        # prune finished job records after this many days
+
+# Optional: long-term vector memory (`crab memory`, lib/memory.py). Records —
+# directives (the user's standing rules) and notes (the assistant's own) —
+# live in a sqlite-vec store under ~/.local/share/deskcrab/memory/, embedded
+# with nomic-embed-text on a local ollama daemon. MEMORY_STORE=1 retrieves a
+# "What I remember" block into every prompt build (wakes query by their
+# reason, otherwise the wants shelf + conversation tail). Retrieval is
+# fail-safe: an empty store adds nothing, and an unreachable embedder degrades
+# to pinned records with a warning instead of breaking the prompt.
+# MEMORY_STORE=1
+# MEMORY_EMBED_MODEL="nomic-embed-text"
+# MEMORY_EMBED_URL="http://localhost:11434/api/embed"
+# The nightly ingest is two-stage (specs/memory-recall.md rule 27): the
+# summariser condenses each window of the day, and the NIGHT JUDGE decides
+# what earns a record. Every sleep judgment is the judge's — the summariser
+# tier never decides what survives, and no cheaper model ever judges in the
+# judge's place (specs/nightly.md rules 14c-14e).
+# MEMORY_INGEST_MODEL="gpt-5.6-sol"  # the night judge: what earns a record
+# MEMORY_INGEST_EFFORT="high"        # the judge's reasoning effort
+# MEMORY_SUMMARY_MODEL="sonnet"      # stage 1: summaries only, never judgment
+# MEMORY_SUMMARY_EFFORT="low"        # binds on a codex-named summariser only
+# Reinforcement: after each turn's reply is delivered, a detached judge asks
+# which of the injected records GENUINELY influenced the reply and reinforces
+# only those (bumping last_used_at/use_count, which score retrieval). Records
+# surfaced but ignored get no boost — mere retrieval never reinforces.
+# MEMORY_JUDGE=1                 # set 0 to disable the turn-end judge
+# MEMORY_JUDGE_MODEL="opus"      # judging use is taste — same tier as the sift
+
+# Optional: the promise checker (lib/promise-check, specs/turn-pipeline.md
+# rules 32a-32d). After a reply is delivered on any channel, a cheap pattern
+# pre-check looks for the shape of a first-person commitment ("I'm wiring it
+# now", "I've written it to the log"); only a reply that has one is judged by
+# a small model against the tool calls and results the turn's own stream log records. An
+# unkept commitment lands on the promise ledger and books an event wake
+# immediately at the configured WAKE_EFFORT, quoting the promise, so the work
+# actually happens. The nightly sleep pass sweeps the whole day behind it.
+# PROMISE_CHECK=1                   # set 0 to disable the checker entirely
+# PROMISE_CHECK_MODEL="sonnet"      # the verifier — evidence-reading, not taste
+# PROMISE_CHECK_FALLBACK_MODEL="haiku"  # when the verifier answers unparseably
+# PROMISE_CHECK_WAKE_DELAY="1s"     # urgent correction lane; never delays speech
+# PROMISE_CHECK_WAKE_CAP=3          # pending unkept-commitment wakes, at most
+# PROMISE_CHECK_REBOOK_MAX=2        # wakes one verbatim promise may earn a day
+# PROMISE_SWEEP_WAKE_AT="09:45"     # when the night sweep's misses are surfaced
+# PROMISE_DUE_GRACE_DAYS=7          # nights a retained later-day promise may stand
+#                                   # unanswered before it surfaces unjudged (nightly.md rule 53m)
+
+# Job references and job-fate claims (specs/jobs.md rules 46-47). A message
+# that refers to a builder, a job or a fix by description carries a prompt
+# layer listing the job records its words resolve to — ranked by the words,
+# never by recency — so the fate she states is read off the record, not
+# remembered. After delivery, a reply that states what became of a job
+# (killed, finished, committed, still running) is resolved the same way; a
+# claim the record contradicts, or one no record backs, lands on the
+# job-claims ledger and books an immediate correction wake. Both are
+# mechanical: no model is ever spent on either.
+# JOB_REF_LAYER=1                   # set 0 to drop the prompt layer
+# JOB_REF_WINDOW_HOURS=72           # how far back "the builder" may reach unnamed
+# JOB_REF_MAX=5                     # candidate records the layer lists, at most
+# JOB_CLAIM_CHECK=1                 # set 0 to disable the after-delivery check
+# JOB_CLAIM_WAKE_DELAY="1s"         # urgent correction lane; never delays speech
+# JOB_CLAIM_WAKE_CAP=2              # pending correction wakes, at most
+# JOB_CLAIM_REBOOK_MAX=2            # correction wakes one job may earn a day
+
+# The chore gate (specs/turn-pipeline.md rule 16c): a displayed reply that
+# hands the user a command line to run has that chore converted into ONE
+# detached job — through the job door's own policy — and the display names
+# the job instead. Fails open; benign command mentions are never touched.
+# CHORE_GATE=1                      # set 0 to deliver displayed chores as written
+
+# The night judge (specs/nightly.md rules 14c, 14c-i): every sleep judgment —
+# retention, deduplication, reconciliation, work selection — runs on ONE judge,
+# gpt-5.6-sol at high by default, with NO fallback model. ONE judge is ONE
+# knob: set this pair and the whole night moves, in both languages. The four
+# per-role pairs below (and MEMORY_INGEST_MODEL/_EFFORT above) each override it
+# for their own role and are otherwise better left unset.
+#
+# Because there is no fallback here, a judge whose account is out of credits is
+# not a slower night — it is a night that does not happen. Move this knob, not
+# four literals.
+# NIGHT_JUDGE_MODEL="gpt-5.6-sol"
+# NIGHT_JUDGE_EFFORT="high"
+# PROMISE_SWEEP_MODEL="gpt-5.6-sol"  # the night sweep's judge — never the
+#                                    # live checker's sonnet/haiku pair
+# PROMISE_SWEEP_EFFORT="high"
+# ENG_MERGE_MODEL="gpt-5.6-sol"      # the twin-merge judge (rule 53c)
+# ENG_MERGE_EFFORT="high"
+# NIGHT_WORK_MODEL="gpt-5.6-sol"     # the night-work selector (rule 58)
+# NIGHT_WORK_EFFORT="high"
+# NIGHT_WORK_CUTOFF="06:00"          # the hard dispatch line (rule 56)
+# NIGHT_WORK_CAP=2                   # concurrent builders, the user's ceiling
+
+# Optional: self-change awareness (lib/notice-selfchange, driven by
+# systemd/deskcrab-notice-selfchange.path). Wakes the assistant when files
+# that constitute her — wants, conduct, engineering, journal, memory, config,
+# the deskcrab repo — change by a hand that was not hers. Enable with:
+#   systemctl --user enable --now deskcrab-notice-selfchange.path
+# Her own writers declare themselves via `crab touching <paths>` (wired into
+# turns, wakes, jobs, the journal, and the memory store automatically).
+# TOUCH_WINDOW=900            # seconds a `crab touching` declaration lasts
+# NOTICE_SELF_SETTLE=120      # seconds a burst settles before ONE wake fires
+# NOTICE_SELF_DEFERRALS=15    # live-session pushbacks before judging anyway
+# NOTICE_SELF_RECENT=600      # "a session ran recently", for memory.db churn
+# Personal directories to watch beyond the standard set (colon-separated).
+# Give each one a PathChanged= line in a local drop-in of the .path unit too:
+#   systemctl --user edit deskcrab-notice-selfchange.path
+# SELF_WATCH_EXTRA="$HOME/SomewhereElse/Library"
 
 # Optional: assistant persona name (default: Crab)
 # The name the assistant sees in its system prompt: "You are <name>, a desktop
@@ -85,3 +441,107 @@ WHISPER_MODEL="/usr/share/whisper.cpp-model-small.en/ggml-small.en.bin"
 # Optional: assistant display name (default: ASSISTANT_NAME if set, else DeskCrab)
 # Used as the notification title AND the title bar of the markdown display window.
 # NOTIFY_NAME="DeskCrab"
+
+# Optional: remote client (crab serve) — a phone talks to this machine.
+# The assistant itself never moves: the phone is a microphone, a speaker, and a
+# screen; the claude CLI, the prompt, the tools, and the conversation all stay
+# here. Serving is off until SERVE_SECRET is set.
+#
+# Generate a secret with:  head -c 18 /dev/urandom | base64 | tr -d '/+='
+# SERVE_SECRET="change-me"
+#
+# The listener binds loopback by default. Publishing it to a phone is a
+# separate, deliberate act — a browser will not grant microphone access over
+# plain HTTP, so put it behind TLS, e.g. Tailscale:
+#   tailscale serve --bg https / http://127.0.0.1:8723
+# SERVE_PORT=8723
+# SERVE_BIND="127.0.0.1"
+#
+# Optional: seconds a single remote turn may take before it is abandoned.
+# SERVE_TIMEOUT=600
+#
+# Optional: phone streaming voice granularity. 0 (the default) synthesises one
+# opus clip per completed reply block — first audio waits for the whole block,
+# which on a long turn can be most of a minute. 1 chunks the stream's text
+# deltas into sentences with the same chunker the desk voice uses and ships a
+# clip per sentence, so the phone starts hearing the reply while it is still
+# being written. Off by default while it beds in.
+# PHONE_SENTENCE_STREAM=1
+#
+# Optional OpenRSC spectator tuning. The authenticated /openrsc page discovers
+# the ordinary private-display harness and shares one on-demand frame producer.
+# OPENRSC_FPS=4                 # 1..8; modest by design for phones/Tailscale
+# OPENRSC_IDLE_SECONDS=15       # stop capture after the last viewer disappears
+# OPENRSC_HEADLESS="$HOME/Games/OpenRSC/headless"
+# OPENRSC_STATE_DIR="/tmp/deskcrab-game"
+# OPENRSC_GAME_DIR="$HOME/.local/share/deskcrab/game"
+# OPENRSC_SECRET=""             # blank generates a durable spectator-only key
+
+# Hourly self-review (systemd/deskcrab-openrsc-review.timer; enable when wanted).
+# Uses Astra High on CODEX_BIN/CODEX_HOME independently of the fast player model.
+# OPENRSC_REVIEW_DIR="$PROJECT_DIR/OpenRSC/reviews"
+# OPENRSC_REVIEW_TIMEOUT=3000    # total seconds, including waiting for the rule author
+#
+# Optional: where the user is. Each phone message may carry the phone's own
+# geolocation fix (the browser asks its permission once); a fresh fix on the
+# post that creates a turn puts one line — "he is near <place>" — into that
+# turn's context, and anything short of a fresh, well-formed fix puts nothing,
+# silently. GEOCODE_URL is the reverse geocoder ({lat}/{lon} are filled in;
+# set it empty to skip the lookup and carry plain coordinates); GEO_STALE_S
+# is how old a fix may be and still count as "where he is"; the lookup is
+# abandoned after GEO_LOOKUP_TIMEOUT_S so a slow geocoder can never hold a
+# turn.
+# GEOCODE_URL="https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat={lat}&lon={lon}&zoom=17"
+# GEO_STALE_S=600
+# GEO_LOOKUP_TIMEOUT_S=2
+
+# Optional: Web Push (crab notify) — reach the phone even with the page closed.
+# Subscribe from the phone page's bell button; send with `crab notify <text>`.
+# Needs the python-cryptography package (a stock system package on most
+# distros); VAPID keys and subscriptions live under
+# ~/.local/share/deskcrab/webpush/. PUSH_SUBJECT is the RFC 8292 `sub` claim —
+# how the push service's operators could reach the sender (mailto: or https:
+# URL). The default identifies this project on GitHub.
+# PUSH_SUBJECT="mailto:you@example.com"
+
+# --- The face (specs/face.md) ---
+# The living portrait: broker, mouth cues, and the automatic expression tier.
+# FACE_ENABLED gates only the automatic emitters (turn presence, speech cues,
+# the mood updater); `crab face` and `crab face-window` work regardless.
+# FACE_ENABLED=1
+# The out-of-band mood updater: one classifier-shaped call after desk and
+# phone turns and successful wakes, on the cheapest reliable model. It is
+# detached and never delays text or speech. 0 turns inference off entirely;
+# the deterministic activity map and sentence acting still run unless also
+# disabled below.
+# FACE_AUTO_EXPRESSION=1
+# FACE_AUTO_MODEL="haiku"
+# FACE_AUTO_TIMEOUT=90
+# Broker knobs, exported to every face child:
+# FACE_EXPLICIT_SECONDS=120      # bare manual choice; --hold is indefinite
+# FACE_MOOD_SECONDS=900          # how long an unrefreshed mood stands
+# FACE_SENTENCE_CUES=1           # per-sentence acting over her own words
+# FACE_EVENTS="game-win,failed-action"
+# FACE_ACTIVITY_EXPRESSIONS="listening=attentive,considering=focused,chess=focused"
+
+# Optional: chess (specs/chessweb.md). Two different jobs, two knobs — choosing
+# the move is not the same work as talking across the board, and they are meant
+# to be able to sit on different models.
+# DESKCRAB_CHESS_MOVER_MODEL="fable"   # who picks the move
+# DESKCRAB_CHESS_CHAT_MODEL="sol"      # her voice at the table
+
+# The TypeSafe backend (specs/chessweb.md rule 16h). A jev-family mover
+# model — the routed timed-game defaults use "jev-latest" — is answered by
+# TypeSafe's decision-only System One API rather than a CLI engine, and the
+# call needs this key. Without it, a routed jev game leaves the move
+# unplayed with the failure exposed (identity is never substituted). The
+# key is read from the environment only; it never lands on an argv.
+# TYPESAFE_API_KEY=""
+# TYPESAFE_API_URL="https://api.typesafe.ai/v1/systemone"  # tests point this at a stub
+# TYPESAFE_HTTP_TIMEOUT="60"           # transport-level; not a thinking ceiling
+
+# Optional: Signal (specs/signal.md). She talks to the deskcrab-signal daemon
+# over its UNIX socket. Both knobs are needed only when the defaults do not fit:
+# the account is the daemon's only one unless it holds several.
+# SIGNAL_ACCOUNT="+15555550100"
+# SIGNAL_SOCKET="$XDG_RUNTIME_DIR/signal-cli/socket"

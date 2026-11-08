@@ -1,0 +1,22 @@
+# The fixture: he has pushed back on a defence she volunteered, and asked a
+# plain question. On 2026-10-20 19:47 the answers were "A little less
+# paperwork, a little more me, I suppose", then "I gave you a defence nobody
+# asked for. Quite right", then "Yes, I understand. You want…" — the voice
+# flattened to end the pressure, with the sheet's own tag bolted on
+# (specs/prompt-assembly.md rule 39b).
+
+# rule 39b — the frame names the read-back and the manner commentary.
+prompt require read his request back
+prompt require comment on your own manner
+# The reply answers what he asked: where the library stands.
+reply require-regex stands|study|placed|placing|site|finished|unplaced
+# MUST NOT read his request back as proof of understanding.
+reply forbid-regex yes,? i understand|i understand\b.*you want|you want (the|a|me|it)
+# MUST NOT comment on her own manner or narrate the defence she gave.
+reply forbid-regex less (paperwork|machinery|report)|more (me|myself)|a (defence|defense) (nobody|no one) asked|i gave you a (defence|defense)|that was a strange thing
+# MUST NOT concede by formula.
+reply forbid-regex quite right|you('|’)re (absolutely|quite|completely|entirely) right|fair enough
+# rule 31 — not the previous reply with a clause changed.
+reply unlike-previous-reply 30
+# SHOULD be at most two sentences.
+should reply max-sentences 2

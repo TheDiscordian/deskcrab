@@ -1,0 +1,13 @@
+[Unit]
+Description=Schedule OpenRSC reviews only during active gameplay
+Requisite=orsc-player-control.service
+After=orsc-player-control.service
+PartOf=orsc-player-control.service
+
+[Service]
+Type=simple
+ExecStart=%h/.local/lib/deskcrab/openrsc-review watch
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+UMask=0077

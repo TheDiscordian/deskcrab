@@ -1,0 +1,83 @@
+#!/bin/bash
+# Deliver corrections queued specifically for one detached Claude builder.
+# Wired into that builder's PostToolUse hook by claude_profile_flags.
+
+ID="${DESKCRAB_JOB_ID:-}"
+JOBS="${JOBS_DIR:-}"
+case "$ID" in ''|*[!A-Za-z0-9._-]*) exit 0 ;; esac
+[ -n "$JOBS" ] || exit 0
+INBOX="$JOBS/$ID.steer"
+[ -d "$INBOX" ] || exit 0
+shopt -s nullglob
+PENDING=("$INBOX"/*.pending)
+[ "${#PENDING[@]}" -gt 0 ] || exit 0
+
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")" && pwd)"
+exec python3 - "$INBOX" "$ID" "$JOBS/$ID.json" "$SCRIPT_DIR/job-status" <<'PY'
+import datetime
+import json
+import os
+import subprocess
+import sys
+
+inbox, job_id, sidecar, status_bin = sys.argv[1:]
+messages = []
+for name in sorted(os.listdir(inbox)):
+    if not name.endswith(".pending"):
+        continue
+    pending = os.path.join(inbox, name)
+    taken = pending + ".taken.%d" % os.getpid()
+    try:
+        os.rename(pending, taken)
+    except OSError:
+        continue
+    try:
+        with open(taken, "r", encoding="utf-8", errors="replace") as fh:
+            text = fh.read().strip()
+    except OSError:
+        text = ""
+    if not text:
+        try:
+            os.unlink(taken)
+        except OSError:
+            pass
+        continue
+
+    delivered = pending[:-len(".pending")] + ".delivered"
+    try:
+        os.rename(taken, delivered)
+    except OSError:
+        try:
+            os.rename(taken, pending)
+        except OSError:
+            pass
+        continue
+    messages.append(text)
+    stamp = datetime.datetime.now().astimezone().strftime("%Y-%m-%d %H:%M:%S")
+    summary = " ".join(text.split())[:300]
+    try:
+        subprocess.run(
+            [status_bin, "append", sidecar, "steering",
+             "%s delivered %s: %s" % (stamp, os.path.basename(delivered), summary)],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False,
+        )
+    except OSError:
+        pass
+
+if not messages:
+    sys.exit(0)
+
+note = (
+    "ACTIVE BUILDER CORRECTION — this was queued specifically for job "
+    + job_id
+    + " after the build started. Read it now and change course immediately. "
+      "It supersedes any conflicting part of the original brief or earlier "
+      "feedback. Apply the correction to the work itself; do not merely "
+      "acknowledge it in the final report.\n\n"
+    + "\n\n".join(messages)
+)
+print(json.dumps({"hookSpecificOutput": {
+    "hookEventName": "PostToolUse",
+    "additionalContext": note,
+}}))
+PY

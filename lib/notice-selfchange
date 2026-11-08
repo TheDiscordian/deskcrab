@@ -1,0 +1,951 @@
+#!/bin/bash
+# Notice changes to the files that constitute the assistant — wants, conduct,
+# engineering threads, journal, memory, config, her own code, and any personal
+# directories — and wake her about the ones made by a hand that was not hers.
+#
+#   notice-selfchange [attempt]
+#
+#   attempt  internal — deferral counter, do not pass by hand
+#
+# Same shape as notice-newfiles: driven by a systemd .path unit (the kernel's
+# own inotify, no polling daemon), keeps a snapshot, seeds silently on first
+# run so an existing tree never fires, and settles a burst of changes into ONE
+# wake. What is new here is attribution — her own writes must never wake her —
+# so a change is dropped when:
+#   * a `crab touching` suppression record covers it (the writer declared
+#     itself: touch_suppress in lib/common.sh, wired into wakes, turns, jobs,
+#     the day journal, the engineering records tool, and the memory store).
+#     Those records come in two tiers:
+#     STRONG (the path was in a provable write position; excuses anything,
+#     subtrees included) and WEAK (the path merely appeared in a command she
+#     ran; exact paths only, and never excuses a deletion), or
+#   * a LIVE session's `crab claim` names it — creations and modifications
+#     only: a deletion is never excused by a fuzzy claim match, because a
+#     deleted want must always surface unless the deleter declared it, or
+#     A record counts if it was alive at any point since judgement last ran,
+#     not merely at this instant: the diff covers that whole interval, and the
+#     interval can outlast a declaration's window, or
+#   * its mtime falls inside the run window of one of her own sessions — the
+#     live registrations (a session still running extends to now) and the
+#     finished-sessions log, each start..end widened by a small grace. A hand
+#     of hers that was demonstrably running when the byte landed does not need
+#     to have declared itself: the ledger records when a session ran, never
+#     which paths its tools touched, so the window alone is the rule (spec
+#     rule 25b; deletions again exempt), or
+#   * it lies under the workdir of one of her own detached jobs and its mtime
+#     falls inside that job's window, read from the jobs ledger this watcher
+#     already sits beside. A builder she dispatched is her own hand at one
+#     remove, and the whole job is ONE window: every save it makes, committed
+#     or not, is the job's for the job's whole life. The window follows the
+#     state — dispatched/running run to now under an age ceiling, finished
+#     closes at its recorded finish plus a short collection grace, collection
+#     closes at once — and the most recently started job wins a shared
+#     workdir (spec rule 25c; deletions again exempt, and the quiet line
+#     names the job id and its state so the claim is traceable, never
+#     invisible and never misnamed), or
+#   * it is plumbing only her own machinery writes — the day journal drawer
+#     and the wakes ledger, by path, jobs or no jobs (spec rule 25d;
+#     deletions again exempt), or
+#   * it is memory.db and any of her sessions ran recently — sqlite plumbing
+#     touches that file on ~every prompt build, and every opener of the store
+#     is her own code (deletions again exempt).
+# Whatever survives is written to a report (what, when, and a git diff where
+# the file is tracked) and handed to a normal event wake — which brings its
+# own quiet-hours, busy-user and single-wake discipline. Nothing here speaks,
+# and the wake's agenda offers awareness, never an instruction.
+set -u
+
+ATTEMPT="${1:-0}"
+
+# lib/ lives beside the crab script in the repo; ~/.local/lib/deskcrab is a
+# symlink to it, so resolve before stepping up. The repo is also part of the
+# watch set — the code that runs her is a file that constitutes her.
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+CRAB="$SCRIPT_DIR/crab"
+
+# Config is sourced the way common.sh sources it, but nothing else of
+# common.sh: this runs on every inotify trigger and must stay light.
+DESKCRAB_CONF="${DESKCRAB_CONF:-$HOME/.config/deskcrab/deskcrab.conf}"
+[ -f "$DESKCRAB_CONF" ] && . "$DESKCRAB_CONF"
+
+DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab"
+CONF_DIR="$(dirname "$DESKCRAB_CONF")"
+STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/deskcrab"
+SNAP="$STATE_DIR/notice-self.snap"
+SUPPRESS="$STATE_DIR/notice-self.suppress"
+PENDING="$STATE_DIR/notice-self.pending"
+# The paths covered by the last fire, sorted. The cooldown only silences these.
+REPORTED="$STATE_DIR/notice-self.reported"
+# When judgement last actually ran. The snapshot diff below reports every
+# change since that moment, so the suppression records consulted must cover
+# that same interval — see SUP_FLOOR.
+JUDGED="$STATE_DIR/notice-self.judged"
+LOGFILE="$STATE_DIR/notice-self.log"
+HEARTBEAT="$STATE_DIR/notice-self.heartbeat"
+SESSIONS_DIR="${DESKCRAB_STATE_PREFIX:-/tmp/deskcrab}-sessions"
+SESSIONS_LOG="${DESKCRAB_STATE_PREFIX:-/tmp/deskcrab}-sessions.log"
+JOBS_DIR="${JOBS_DIR:-$DATA_DIR/jobs}"
+
+# Personal directories beyond the standard set (colon-separated), e.g. the
+# assistant's own library. Set in deskcrab.conf; the .path unit needs matching
+# PathChanged= lines in a local drop-in for inotify to see them promptly.
+SELF_WATCH_EXTRA="${SELF_WATCH_EXTRA:-}"
+
+# The one deferral unit and the one judgement lock (rules 24a, 24b). Both are
+# single by name on purpose: a burst may leave at most one re-check armed, and
+# at most one run may be judging.
+DEFER_UNIT="deskcrab-notice-self-defer"
+JUDGE_LOCK="$STATE_DIR/notice-self.judge.lock"
+
+SETTLE="${NOTICE_SELF_SETTLE:-60}"            # post-fire cooldown, seconds
+MAX_DEFERRALS="${NOTICE_SELF_DEFERRALS:-15}"  # live-session pushbacks before judging anyway
+RECENT="${NOTICE_SELF_RECENT:-600}"           # "a session ran recently", for memory.db
+KEEP_REPORTS="${NOTICE_SELF_KEEP_REPORTS:-10}"
+RUNWIN_GRACE="${NOTICE_SELF_RUNWIN_GRACE:-90}"  # run-window slack, seconds each side
+# A finished job's window outlives its recorded finish by this much: collection
+# runs in the runner's own process moments later, so ten minutes covers a
+# loaded machine and the collector's own hand in the tree — and a finished
+# sidecar the collector never reaches stops claiming instead of claiming
+# for ever (spec rule 25c).
+JOBWIN_GRACE="${NOTICE_SELF_JOBWIN_GRACE:-600}"
+# No dispatched/running sidecar claims past this age: the longest run the
+# ledger has ever recorded is 3.2 hours, so a day cuts no real builder short,
+# while a sidecar orphaned by a crashed runner cannot hold a tree indefinitely.
+JOBWIN_CEILING="${NOTICE_SELF_JOBWIN_CEILING:-86400}"
+# Private shadows of the non-git constituents (spec rule 25e). deskcrab.conf
+# is not git-tracked, so an outside edit to the file that configures her used
+# to report blind (2026-08-28, twice in one day). Every watched TEXT file no
+# git repository tracks keeps a copy under the data dir, mirrored by absolute
+# path; the report diffs against it, and the copy advances only after the
+# report has landed — so a burst of edits between reports shows the whole
+# distance. The conf holds secrets, so the tree is 0700, every copy and every
+# report 0600, and a diff reaches the report file and nowhere else.
+SHADOW_DIR="${NOTICE_SELF_SHADOW_DIR:-$DATA_DIR/self-shadows}"
+BASELINES_DIR="$DATA_DIR/self-baselines"   # the 2026-08-28 manual stopgap drawer
+SHADOW_MAX="${NOTICE_SELF_SHADOW_MAX:-1048576}"            # bytes; larger files are named, never copied
+SHADOW_DIFF_LINES="${NOTICE_SELF_SHADOW_DIFF_LINES:-400}"  # report diff bound
+
+TAB=$'\t'
+NOW=$(date +%s)
+mkdir -p "$STATE_DIR"
+
+log() { printf '%s %s\n' "$(date '+%F %T')" "$*" >> "$LOGFILE"; }
+
+# --- the shadow drawer: private baselines for what git cannot diff -----------
+# (spec rule 25e). Nothing in here ever writes a byte of file content to the
+# log, to stdout, or into a wake — the report file is the only place a diff
+# lands, and it is 0600. Defined above the snapshot flow because the seed and
+# no-change paths call ensure_shadows before the judgement machinery exists.
+declare -A _GITDIR_CACHE
+git_covered() {  # <path> — tracked by whatever git repository contains it.
+    # The per-directory cache keeps the extra watch set (thousands of files,
+    # no repo anywhere near them) at one failed rev-parse per directory.
+    local d c; d="$(dirname "$1")"
+    c="${_GITDIR_CACHE[$d]:-}"
+    if [ -z "$c" ]; then
+        if git -C "$d" rev-parse --git-dir >/dev/null 2>&1; then c=repo; else c=norepo; fi
+        _GITDIR_CACHE[$d]="$c"
+    fi
+    [ "$c" = repo ] || return 1
+    git -C "$d" ls-files --error-unmatch -- "$1" >/dev/null 2>&1
+}
+
+is_text() {  # <path> — empty counts as text; grep -I decides the rest
+    [ ! -s "$1" ] || grep -qI '' -- "$1" 2>/dev/null
+}
+
+shadow_eligible() {  # <path> — a readable non-git text file inside the cap
+    [ -f "$1" ] && [ -r "$1" ] || return 1
+    local sz; sz="$(stat -c %s -- "$1" 2>/dev/null)" || return 1
+    case "$sz" in ''|*[!0-9]*) return 1 ;; esac
+    [ "$sz" -le "$SHADOW_MAX" ] || return 1
+    is_text "$1" || return 1
+    ! git_covered "$1"
+}
+
+shadow_install() {  # <src> <shadow path> — 0600 under a 0700 tree, atomically
+    ( umask 077; mkdir -p "$(dirname "$2")" ) 2>/dev/null || return 1
+    cp -- "$1" "$2.new.$$" 2>/dev/null || { rm -f -- "$2.new.$$"; return 1; }
+    chmod 600 "$2.new.$$" 2>/dev/null
+    mv -f -T -- "$2.new.$$" "$2" 2>/dev/null
+}
+
+refresh_shadow() {  # <path> — record the file as it stands right now
+    shadow_install "$1" "$SHADOW_DIR$1"
+}
+
+seed_shadow() {  # <path> — first sighting. A conf-dir file with a same-named
+    # manual baseline seeds FROM the baseline (the 2026-08-28 stopgap drawer,
+    # incorporated rather than discarded), so the first report after this
+    # feature lands still diffs from the last state a hand recorded.
+    local sp b; sp="$SHADOW_DIR$1"
+    [ -e "$sp" ] && return 0
+    b="$BASELINES_DIR/$(basename "$1")"
+    if [ "$(dirname "$1")" = "$CONF_DIR" ] && [ -f "$b" ] \
+        && [ "$(basename "$1")" != "README.md" ]; then
+        shadow_install "$b" "$sp"
+    else
+        shadow_install "$1" "$sp"
+    fi
+}
+
+ensure_shadows() {  # <snapshot file> — the one-time full seed. After it, the
+    # marker makes this a single stat on every trigger; new files are seeded
+    # as they surface through judgement.
+    [ -f "$SHADOW_DIR/.seeded" ] && return 0
+    ( umask 077; mkdir -p "$SHADOW_DIR" ) 2>/dev/null || return 1
+    chmod 700 "$SHADOW_DIR" 2>/dev/null
+    # One git call covers the whole code repo; everything else is judged per
+    # file, the per-directory cache doing the heavy lifting.
+    local tracked n=0 p
+    tracked="$(mktemp "${DESKCRAB_STATE_PREFIX:-/tmp/deskcrab}-notice-trk.XXXXXX")"
+    git -C "$SCRIPT_DIR" ls-files --cached 2>/dev/null \
+        | awk -v r="$SCRIPT_DIR/" '{print r $0}' > "$tracked"
+    while IFS= read -r p; do
+        [ -n "$p" ] || continue
+        [ -e "$SHADOW_DIR$p" ] && continue
+        shadow_eligible "$p" || continue
+        seed_shadow "$p" && n=$(( n + 1 ))
+    done < <(awk -F'\t' -v tf="$tracked" '
+        BEGIN { while ((getline line < tf) > 0) t[line] = 1 }
+        !($2 in t) { print $2 }' "$1")
+    rm -f -- "$tracked"
+    : > "$SHADOW_DIR/.seeded"
+    log "shadows seeded ($n files)"
+}
+
+# Proof of life, stamped before any early exit: a watcher that has quietly
+# stopped being triggered is indistinguishable from a world where nothing
+# changed, and the second reading is the comfortable one. lib/canary-selfchange
+# pokes a watched directory and waits for this number to move.
+printf '%s\n' "$NOW" > "$HEARTBEAT" 2>/dev/null
+
+# Deployment is independent of attribution: her own declared edits must also
+# reach installed units. Check again on exit for edits made during this run.
+# The helper owns its lock and retries; a failure must not abort noticing.
+sync_units() {
+    [ -x "$SCRIPT_DIR/lib/unit-sync" ] || return 0
+    "$SCRIPT_DIR/lib/unit-sync" >> "$LOGFILE" 2>&1 \
+        || log 'unit refresh failed; automatic retry on next watcher/canary'
+    return 0
+}
+trap sync_units EXIT
+sync_units
+
+# --- the watch set: one "sig<TAB>path" line per file, sorted by path --------
+# sig is size.mtime — an opaque token; any difference means "modified".
+snapshot() {
+    {
+        # Identity files in the data dir: the wants shelf and the top-level
+        # design docs, conduct, engineering, the day journal, the memory db.
+        # Deliberately NOT jobs/, wakes/, archive/, webpush/, venv/ — plumbing
+        # that churns on every session and would drown the signal.
+        find "$DATA_DIR" -maxdepth 1 -type f -name '*.md' -printf '%s.%T@\t%p\n' 2>/dev/null
+        # Some of these drawers are git repositories of their own (conduct
+        # is). The commits are the record; the plumbing under .git — refs,
+        # logs, index, COMMIT_EDITMSG — is noise, so prune it, the same
+        # invisibility `git ls-files` gives the code repo below.
+        local d
+        for d in wants conduct engineering journal; do
+            [ -d "$DATA_DIR/$d" ] \
+                && find "$DATA_DIR/$d" -name .git -prune -o -type f -printf '%s.%T@\t%p\n' 2>/dev/null
+        done
+        [ -f "$DATA_DIR/memory/memory.db" ] \
+            && stat --printf '%s.%Y\t%n\n' "$DATA_DIR/memory/memory.db" 2>/dev/null
+        # Her configuration: deskcrab.conf, custom-prompt.md, whatever else.
+        [ -d "$CONF_DIR" ] && find "$CONF_DIR" -maxdepth 1 -type f -printf '%s.%T@\t%p\n' 2>/dev/null
+        # The code that runs her: everything git tracks or would track —
+        # .gitignore respected, .git internals invisible by construction.
+        if [ -d "$SCRIPT_DIR/.git" ]; then
+            git -C "$SCRIPT_DIR" ls-files --cached --others --exclude-standard -z 2>/dev/null \
+                | (cd "$SCRIPT_DIR" && xargs -0 -r stat --printf '%s.%Y\t%n\n' 2>/dev/null) \
+                | awk -F'\t' -v r="$SCRIPT_DIR/" '{print $1 "\t" r $2}'
+        fi
+        local IFS=':'
+        for d in $SELF_WATCH_EXTRA; do
+            # A plain file counts too — a single context file is as much a part
+            # of her as a directory of them. And an extra directory may be a
+            # git repository of its own too — same .git prune as the drawers.
+            [ -d "$d" ] \
+                && find "$d" -name .git -prune -o -type f -printf '%s.%T@\t%p\n' 2>/dev/null
+            [ -f "$d" ] && stat --printf '%s.%Y\t%n\n' "$d" 2>/dev/null
+        done
+    } | sort -t "$TAB" -k2
+}
+
+CUR="$(mktemp "${DESKCRAB_STATE_PREFIX:-/tmp/deskcrab}-notice-self.XXXXXX")"
+snapshot > "$CUR"
+
+# First run seeds silently: an existing tree is history, not news.
+if [ ! -f "$SNAP" ]; then
+    mv "$CUR" "$SNAP"
+    printf '%s\n' "$NOW" > "$JUDGED"
+    log "seeded ($(wc -l < "$SNAP") files)"
+    ensure_shadows "$SNAP"
+    exit 0
+fi
+
+# A function because it is read TWICE: once here, and again by a run that had
+# to wait for the judgement lock, against whatever the run ahead of it left in
+# the snapshot (rule 24b).
+snapshot_diff() {
+    awk -F'\t' '
+        NR==FNR { old[$2]=$1; next }
+        { new[$2]=$1 }
+        END {
+            for (p in new) if (!(p in old))               print "created\t"  p
+            for (p in old) if (!(p in new))               print "deleted\t"  p
+            for (p in new) if ((p in old) && old[p]!=new[p]) print "modified\t" p
+        }' "$SNAP" "$CUR" | sort
+}
+CHANGES="$(snapshot_diff)"
+
+if [ -z "$CHANGES" ]; then
+    ensure_shadows "$CUR"
+    rm -f "$CUR"
+    printf '%s\n' "$NOW" > "$JUDGED"
+    exit 0
+fi
+
+# --- debounce and deferral ---------------------------------------------------
+live_sessions() {
+    local f pid
+    for f in "$SESSIONS_DIR"/*; do
+        [ -e "$f" ] || continue
+        case "$f" in *.claim|*.ckpt) continue ;; esac
+        pid="$(basename "$f")"
+        [ -d "/proc/$pid" ] && return 0
+    done
+    grep -q '"state": *"running"' "$JOBS_DIR"/*.json 2>/dev/null && return 0
+    return 1
+}
+
+# A cooldown must never silence a NEW cut. It exists only so that repeated
+# saves to the same file don't wake her once per save; anything touching a
+# path the last fire did not already cover is fresh news and is judged now.
+unreported_paths() {
+    [ -s "$REPORTED" ] || return 0
+    printf '%s\n' "$CHANGES" | cut -f2 | sort -u > "$CUR.paths"
+    comm -23 "$CUR.paths" "$REPORTED" | grep -q . && { rm -f "$CUR.paths"; return 0; }
+    rm -f "$CUR.paths"
+    return 1
+}
+
+defer_armed() {
+    local u
+    for u in "$DEFER_UNIT.timer" "$DEFER_UNIT.service"; do
+        [ "$(systemctl --user is-active "$u" 2>/dev/null)" = active ] && return 0
+    done
+    return 1
+}
+
+defer() {
+    # ONE pending re-check for the whole burst (rule 24a). Every trigger used
+    # to mint a unit of its own, each with its own deferral counter, so a busy
+    # minute left dozens armed at once and every one of them landed at the same
+    # moment to scan the whole tree in parallel over the same changes. An armed
+    # re-check already covers this trigger: it reads the tree when it FIRES, so
+    # what arrived after it was booked is in the reading it will take.
+    if defer_armed; then
+        date +%s > "$PENDING"
+        rm -f "$CUR"
+        exit 0
+    fi
+    # A unit left behind failed would refuse the name for ever.
+    systemctl --user reset-failed "$DEFER_UNIT.timer" "$DEFER_UNIT.service" 2>/dev/null
+    # If the timer can't be placed there may never be another directory change
+    # to re-trigger on, so a failure here falls through and judges now rather
+    # than dropping the event on the floor.
+    if systemd-run --user --quiet --unit="$DEFER_UNIT" \
+        --on-active="$SETTLE" "$0" "$(( ATTEMPT + 1 ))" 2>/dev/null; then
+        date +%s > "$PENDING"
+        rm -f "$CUR"
+        exit 0
+    fi
+}
+
+if [ "$ATTEMPT" -eq 0 ]; then
+    # The FIRST change of a burst is judged now, with no wait at all — a cut
+    # gets reacted to the moment it happens. What the settle window buys is
+    # only silence afterwards: a fresh pending marker means this trigger is
+    # the tail of a burst already reported, so it books one trailing re-check
+    # instead of waking again per save.
+    if [ -f "$PENDING" ] \
+        && [ $(( NOW - $(cat "$PENDING" 2>/dev/null || echo 0) )) -lt "$SETTLE" ] \
+        && ! unreported_paths; then
+        defer
+    fi
+elif live_sessions && [ "$ATTEMPT" -lt "$MAX_DEFERRALS" ]; then
+    # One of her is mid-work. Wait it out so its writes get their touching
+    # records (turn paths record them at stream end) and are judged as hers.
+    # Bounded on purpose: a wedged session must not silence this for ever.
+    defer
+fi
+# --- one judgement at a time (rule 24b) --------------------------------------
+# Everything from the diff above to the snapshot advance below is one reading
+# of the tree: the diff is taken against the snapshot at the top, the snapshot
+# only moves at the bottom, and the whole attribution walk sits in between.
+# Two runs inside that window see the SAME changes and each book their own
+# wake — one change, two wakes, which is rule 24 broken by concurrency rather
+# than by counting. So a run that finds another judging does not judge beside
+# it: it folds itself into the one re-check and leaves.
+# Opened only once the file is known writable: a failed `exec` redirection ends
+# a non-interactive shell outright, and a watcher that cannot lock must still
+# report.
+: >> "$JUDGE_LOCK" 2>/dev/null
+[ -w "$JUDGE_LOCK" ] && exec 8>>"$JUDGE_LOCK"
+if [ -w "$JUDGE_LOCK" ] && ! flock -n 8 2>/dev/null; then
+    log "another judgement is running; folding this trigger into the re-check"
+    defer
+    # Only reached when the re-check could not be booked at all. Waiting is
+    # then the honest move — but what the run ahead advanced past is no longer
+    # news, so the tree is re-read against the snapshot it left behind and only
+    # what is still new is judged.
+    flock 8 2>/dev/null
+    CHANGES="$(snapshot_diff)"
+    if [ -z "$CHANGES" ]; then
+        ensure_shadows "$CUR"
+        rm -f "$CUR"
+        printf '%s\n' "$NOW" > "$JUDGED"
+        exit 0
+    fi
+fi
+
+# Stamp the fire time and the paths it covers: this is what the cooldown above
+# measures from, and the only set it is allowed to silence.
+date +%s > "$PENDING"
+printf '%s\n' "$CHANGES" | cut -f2 | sort -u > "$REPORTED"
+
+# --- attribution: which of these changes were her own hand? ------------------
+# Prune expired suppression records first, under the writers' lock.
+#
+# The floor is NOT "now". The changes under judgement are everything that
+# happened since judgement last ran, and that interval can be far longer than
+# a declaration's 15-minute window: a burst defers, a nine-minute wake writes
+# continuously, a poke lands while the service is busy and is swallowed. A
+# record honoured only if it is alive at scan time then loses to the clock,
+# and a file she wrote herself at the START of the gap is reported to her as
+# an intruder's. That happened on 2026-08-07: two engineering notes written
+# 05:05, declared until 05:21, judged at 05:40, and she was woken about her
+# own hand.
+#
+# So a record is honoured by this scan if it was alive at ANY point in the
+# same interval the diff covers. Bounded by a backstop so a watcher that has
+# not judged for days cannot be silenced by ancient declarations.
+LAST_JUDGED="$(cat "$JUDGED" 2>/dev/null || echo "$NOW")"
+case "$LAST_JUDGED" in ''|*[!0-9]*) LAST_JUDGED="$NOW" ;; esac
+SUP_BACKSTOP="${NOTICE_SUPPRESS_BACKSTOP:-21600}"
+SUP_FLOOR="$LAST_JUDGED"
+[ "$SUP_FLOOR" -lt $(( NOW - SUP_BACKSTOP )) ] && SUP_FLOOR=$(( NOW - SUP_BACKSTOP ))
+[ "$SUP_FLOOR" -gt "$NOW" ] && SUP_FLOOR="$NOW"
+ACTIVE="$(mktemp "${DESKCRAB_STATE_PREFIX:-/tmp/deskcrab}-notice-sup.XXXXXX")"
+if [ -f "$SUPPRESS" ]; then
+    {
+        flock 9
+        awk -F'\t' -v floor="$SUP_FLOOR" '($1+0) >= floor' "$SUPPRESS" > "$SUPPRESS.new" \
+            && mv "$SUPPRESS.new" "$SUPPRESS"
+    } 9>>"$SUPPRESS.lock"
+    cp "$SUPPRESS" "$ACTIVE" 2>/dev/null
+fi
+
+# Every live session's claim text, lowercased, one blob.
+CLAIMS=""
+for f in "$SESSIONS_DIR"/*.claim; do
+    [ -e "$f" ] || continue
+    pid="$(basename "$f" .claim)"
+    [ -d "/proc/$pid" ] || continue
+    CLAIMS="$CLAIMS $(tr 'A-Z' 'a-z' < "$f")"
+done
+
+# Her run windows, one "start<TAB>end" epoch pair per line (spec rule 25b).
+# Two sources. Live registrations: field 4 of the record is the start epoch,
+# and a session still running extends to now. The finished-sessions log:
+# start datetime plus a numeric duration; a reaped line carries "?" for the
+# duration and only the reaper's clock in field 2, which is an upper bound on
+# the death, resolved against the start's date (rolled a day forward when it
+# reads earlier — no session runs 24 hours). Built once per judgement, not
+# per path. The log is its own bound — a few hundred lines in /tmp, gone on
+# reboot — so no backstop is applied here: unlike a declaration, whose life
+# is measured against scan time, a window matches the MTIME, and "this byte
+# landed while I was running" does not weaken with age.
+RUNWINS="$(mktemp "${DESKCRAB_STATE_PREFIX:-/tmp/deskcrab}-notice-runwin.XXXXXX")"
+{
+    for f in "$SESSIONS_DIR"/*; do
+        [ -e "$f" ] || continue
+        case "$f" in *.claim|*.ckpt) continue ;; esac
+        pid="$(basename "$f")"
+        [ -d "/proc/$pid" ] || continue
+        IFS="$TAB" read -r _ _ _ epoch _ < "$f" || true
+        case "$epoch" in ''|*[!0-9]*) continue ;; esac
+        printf '%s\t%s\n' "$epoch" "$NOW"
+    done
+    [ -s "$SESSIONS_LOG" ] && awk -F'\t' -v now="$NOW" '
+        {
+            s = $1; gsub(/[-:]/, " ", s); st = mktime(s)
+            if (st < 0 || st > now) next
+            if ($3 ~ /^[0-9]+$/) { en = st + $3 }
+            else {
+                d = $1; sub(/ .*/, "", d)
+                e = d " " $2; gsub(/[-:]/, " ", e); en = mktime(e)
+                if (en < 0) next
+                if (en < st) en += 86400
+            }
+            print st "\t" en
+        }' "$SESSIONS_LOG"
+} > "$RUNWINS"
+
+in_own_run_window() {  # <path> — never consulted for deletions
+    [ -s "$RUNWINS" ] || return 1
+    local mt s e
+    mt="$(stat -c %Y "$1" 2>/dev/null)"
+    case "$mt" in ''|*[!0-9]*) return 1 ;; esac
+    while IFS="$TAB" read -r s e; do
+        case "$s" in ''|*[!0-9]*) continue ;; esac
+        case "$e" in ''|*[!0-9]*) continue ;; esac
+        [ "$mt" -ge $(( s - RUNWIN_GRACE )) ] && [ "$mt" -le $(( e + RUNWIN_GRACE )) ] \
+            && return 0
+    done < "$RUNWINS"
+    return 1
+}
+
+# Her detached jobs' windows, one "start<TAB>end<TAB>live<TAB>workdir<TAB>id
+# <TAB>state" line per ledger sidecar (spec rule 25c). A builder job she
+# dispatched is her own hand at one remove: everything under the job's workdir
+# is that job's claimed tree for its window — every save one window, a change
+# the job already committed as much as a mid-edit one, and several jobs each
+# claiming their own workdir independently. Like a run window, the match is
+# against the MTIME: a byte that landed while the job ran is the job's
+# whatever instant judgement finally happens, and a byte from before dispatch
+# or after the window's close belongs to nobody. The window follows the
+# STATE, because only the state says whether the hand could still be moving:
+# dispatched/running run to now, live, capped at the age ceiling (past it the
+# sidecar is an orphan — its first-ceiling bytes stay its own, nothing after);
+# finished closes at collection when one was recorded, else at its recorded
+# finish plus the collection grace — the ledger's own history holds finished
+# sidecars that never collect, they predate the collector whose terminal
+# state is collected, and an open-ended finished claim handed every write in
+# this tree to a job thirteen days dead (2026-08-24); failed/stopped/died
+# close at their recorded finish as before. The sidecar is parsed by its own
+# fixed shape (json indent=1, top-level keys at one space), each key anchored
+# to that indent so the history array's nested "state" lines can never
+# masquerade as the live field. Workdirs resolve through symlinks the way
+# every snapshot path does.
+JOBWINS="$(
+    for f in "$JOBS_DIR"/*.json; do
+        [ -e "$f" ] || continue
+        awk -v now="$NOW" -v grace="$JOBWIN_GRACE" -v ceil="$JOBWIN_CEILING" '
+            function unq(s) { sub(/^[^:]*: *"?/, "", s); sub(/"?,?[[:space:]]*$/, "", s); return s }
+            /^ "id":/                 { id = unq($0) }
+            /^ "workdir":/            { wd = unq($0) }
+            /^ "state":/              { st = unq($0) }
+            /^ "started_epoch":/      { sp = unq($0) + 0 }
+            /^ "collected_at_epoch":/ { ce = unq($0) + 0 }
+            /^ "finished_epoch":/     { fe = unq($0) + 0 }
+            END {
+                if (id == "" || wd == "" || sp <= 0) exit
+                sub(/\/+$/, "", wd)
+                if (st == "dispatched" || st == "running") {
+                    if (now - sp <= ceil)
+                        printf "%s\t%s\t1\t%s\t%s\t%s\n", sp, now, wd, id, st
+                    else
+                        printf "%s\t%s\t0\t%s\t%s\t%s\n", sp, sp + ceil, wd, id, st
+                }
+                else if (st == "finished")
+                    printf "%s\t%s\t0\t%s\t%s\t%s\n", sp, \
+                        (ce > 0 ? ce : (fe > 0 ? fe : sp) + grace), wd, id, st
+                else if (ce > 0 || fe > 0)
+                    printf "%s\t%s\t0\t%s\t%s\t%s\n", sp, (ce > 0 ? ce : fe), wd, id, st
+            }
+        ' "$f"
+    done | while IFS="$TAB" read -r s e l wd id st; do
+        rwd="$(readlink -f -- "$wd" 2>/dev/null)"
+        printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$s" "$e" "$l" "${rwd:-$wd}" "$id" "$st"
+    done
+)"
+
+# Sets JOB_HIT_ID and JOB_HIT_STATE on a hit, so the quiet line and the
+# report can name the claiming job — and its ledger state, never a guessed
+# one — rather than swallowing the change invisibly. Among several windows
+# covering one byte (two jobs sharing a workdir), the MOST RECENTLY STARTED
+# job wins, never the first in ledger order: glob order is oldest first, and
+# first-match attribution handed every write in this tree to a thirteen-days-
+# dead sidecar while the night's real owner was never consulted (2026-08-24).
+JOB_HIT_ID=""
+JOB_HIT_STATE=""
+suppressed_by_job() {  # <path> — never consulted for deletions
+    JOB_HIT_ID=""; JOB_HIT_STATE=""
+    [ -n "$JOBWINS" ] || return 1
+    local mt s e live wd id st best=-1
+    mt="$(stat -c %Y "$1" 2>/dev/null)"
+    case "$mt" in ''|*[!0-9]*) return 1 ;; esac
+    while IFS="$TAB" read -r s e live wd id st; do
+        [ -n "$id" ] || continue
+        case "$s" in ''|*[!0-9]*) continue ;; esac
+        case "$e" in ''|*[!0-9]*) continue ;; esac
+        case "$1" in "$wd"|"$wd"/*) ;; *) continue ;; esac
+        [ "$mt" -ge "$s" ] && [ "$mt" -le "$e" ] || continue
+        [ "$s" -gt "$best" ] && { best="$s"; JOB_HIT_ID="$id"; JOB_HIT_STATE="$st"; }
+    done <<< "$JOBWINS"
+    [ -n "$JOB_HIT_ID" ]
+}
+
+job_over_path() {  # <path> — a LIVE (dispatched/running, under the age
+    # ceiling) job's workdir covers it, mtime aside; most recent start wins
+    JOB_HIT_ID=""; JOB_HIT_STATE=""
+    [ -n "$JOBWINS" ] || return 1
+    local s e live wd id st best=-1
+    while IFS="$TAB" read -r s e live wd id st; do
+        [ "$live" = 1 ] || continue
+        case "$s" in ''|*[!0-9]*) continue ;; esac
+        case "$1" in "$wd"|"$wd"/*) ;; *) continue ;; esac
+        [ "$s" -gt "$best" ] && { best="$s"; JOB_HIT_ID="$id"; JOB_HIT_STATE="$st"; }
+    done <<< "$JOBWINS"
+    [ -n "$JOB_HIT_ID" ]
+}
+
+# The unconditional my-own-plumbing list, by path (spec rule 25d): drawers
+# written by exactly one hand of her own machinery, where no declaration, no
+# session window and no job is ever involved. The day journal is written only
+# by the journaller, the wakes ledger only by the wake machinery. Deletions
+# are still never excused — a vanished day of the journal must surface.
+PLUMBING_PATHS="$DATA_DIR/journal:$DATA_DIR/wakes"
+plumbing_path() {  # <path> — never consulted for deletions
+    local d IFS=':'
+    for d in $PLUMBING_PATHS; do
+        case "$1" in "$d"|"$d"/*) return 0 ;; esac
+    done
+    return 1
+}
+
+# Sets TOUCH_TIER to "" (strong), "weak", or "weakdir" on a hit.
+#   strong  — an exact file or a declared directory subtree; excuses anything.
+#   weak    — a file named in a command of mine; the caller refuses deletions.
+#   weakdir — a *directory* named in a command of mine, matched on a path
+#             beneath it. The caller allows this for CREATIONS ONLY. A file
+#             that did not exist and now does, inside a directory I named
+#             seconds ago, is mine — that is how every tool which derives its
+#             own output name works (lilypond .ly -> .pdf, timidity -Ow, a
+#             render script). Modifications stay loud, so a mere `grep -r` over
+#             my library still cannot silence an edit to a want, and deletions
+#             are refused outright.
+TOUCH_TIER=""
+suppressed_by_touch() {  # <path>
+    local p="$1" exp rec tier
+    TOUCH_TIER=""
+    [ -s "$ACTIVE" ] || return 1
+    local hit=1
+    while IFS="$TAB" read -r exp rec tier; do
+        [ -n "$rec" ] || continue
+        if [ "$p" = "$rec" ]; then
+            [ -z "$tier" ] && { TOUCH_TIER=""; return 0; }   # strong wins outright
+            TOUCH_TIER="$tier"; hit=0; continue
+        fi
+        case "$p" in "$rec"/*)
+            if [ -z "$tier" ]; then TOUCH_TIER=""; return 0; fi
+            # weakest of all — never overrides a weak exact hit already found
+            [ "$hit" = 0 ] || { TOUCH_TIER="weakdir"; hit=0; }
+            ;;
+        esac
+    done < "$ACTIVE"
+    return "$hit"
+}
+
+suppressed_by_claim() {  # <path> — never consulted for deletions
+    [ -n "$CLAIMS" ] || return 1
+    local lp t
+    lp="$(printf '%s' "$1" | tr 'A-Z' 'a-z')"
+    for t in $(printf '%s' "$CLAIMS" | tr -cs 'a-z0-9./_~-' ' '); do
+        # Path-shaped tokens (contain / or .) match at 4+ chars; bare words
+        # need 5+ so "want"/"the" never blanket-suppresses a whole tree.
+        case "$t" in
+            */*|*.*) [ "${#t}" -ge 4 ] || continue ;;
+            *)       [ "${#t}" -ge 5 ] || continue ;;
+        esac
+        case "$lp" in *"$t"*) return 0 ;; esac
+    done
+    return 1
+}
+
+recent_activity() {
+    live_sessions && return 0
+    [ -f "$SESSIONS_LOG" ] \
+        && [ $(( NOW - $(stat -c %Y "$SESSIONS_LOG" 2>/dev/null || echo 0) )) -lt "$RECENT" ] \
+        && return 0
+    return 1
+}
+
+FIRE_KIND=() FIRE_PATH=() QUIET_FRESH=()
+while IFS="$TAB" read -r kind path; do
+    [ -n "$path" ] || continue
+    why=""
+    if suppressed_by_touch "$path"; then
+        if [ -z "$TOUCH_TIER" ]; then
+            why="touching"
+        elif [ "$TOUCH_TIER" = "weakdir" ]; then
+            [ "$kind" = "created" ] \
+                && why="touching (weak — created under a directory of mine)"
+        elif [ "$kind" != "deleted" ]; then
+            why="touching (weak — named in a command of mine)"
+        fi
+    fi
+    if [ -n "$why" ]; then
+        :
+    elif [ "$kind" != "deleted" ] && suppressed_by_claim "$path"; then
+        why="claimed by a live session"
+    elif [ "$kind" != "deleted" ] && in_own_run_window "$path"; then
+        why="own run window (a session of mine was running when this landed)"
+    elif [ "$kind" != "deleted" ] && plumbing_path "$path"; then
+        why="own plumbing (only my own machinery writes here)"
+    elif [ "$kind" != "deleted" ] && suppressed_by_job "$path"; then
+        # The wording follows the state (rule 25c): a job is quoted with its
+        # ledger state and only dispatched/running may ever read as running.
+        why="a detached job of mine claimed this tree — job $JOB_HIT_ID ($JOB_HIT_STATE)"
+    elif [ "$kind" != "deleted" ] && [ "$path" = "$DATA_DIR/memory/memory.db" ] && recent_activity; then
+        why="own plumbing (memory store, session active)"
+    fi
+    if [ -n "$why" ]; then
+        log "quiet: $kind $path ($why)"
+        [ "$kind" != "deleted" ] && QUIET_FRESH+=("$path")
+    else
+        FIRE_KIND+=("$kind"); FIRE_PATH+=("$path")
+    fi
+done <<< "$CHANGES"
+
+# The judged burst is consumed either way — a suppressed change was hers, not
+# something to re-litigate on the next trigger.
+mv "$CUR" "$SNAP"
+printf '%s\n' "$NOW" > "$JUDGED"
+rm -f "$ACTIVE" "$RUNWINS"
+
+# A suppressed change was hers: its state is judged and known, so the shadow
+# advances with it now, with no report — otherwise her own edits would be
+# billed to the next outside hand's diff (spec rule 25e).
+for p in ${QUIET_FRESH[@]+"${QUIET_FRESH[@]}"}; do
+    shadow_eligible "$p" && refresh_shadow "$p"
+done
+
+if [ "${#FIRE_PATH[@]}" -eq 0 ]; then
+    ensure_shadows "$SNAP"
+    exit 0
+fi
+
+# --- the report: what changed, when, and the diff where git knows it ---------
+# Written to a private temp first (mktemp's 0600 survives the mv), the shadow
+# staging beside it: the shadows advance ONLY once the report holding their
+# diffs is safely on disk at its final name, so a report that could not land
+# leaves the old shadow — and the unshown distance — intact for the next
+# attempt (spec rule 25e).
+REPORT="$STATE_DIR/notice-self-report-$NOW.md"
+STAGE_PATH=() STAGE_FILE=()
+
+# Report lines for a path the code repo cannot diff. Prints to the report
+# ONLY — the diff may carry secrets, so not a line of it goes to the log, the
+# wake text, or stdout. Stages the refreshed shadow beside the real one; the
+# caller installs the stage only after the report lands.
+shadow_report() {  # <kind> <path>
+    local kind="$1" p="$2" sp stage base label dtmp rc lines size
+    sp="$SHADOW_DIR$p"
+    if [ "$kind" = "deleted" ]; then
+        if [ -f "$sp" ]; then
+            echo "- the last content this watcher saw is held privately at: $sp"
+        else
+            echo "- no shadow was kept (tracked elsewhere, binary, oversize, or never seen); the content is not recoverable here"
+        fi
+        return 0
+    fi
+    if [ ! -e "$p" ]; then
+        echo "- already gone again; nothing to diff"
+        return 0
+    fi
+    if [ ! -r "$p" ]; then
+        echo "- unreadable (permissions); no diff"
+        [ -f "$sp" ] && echo "- the last readable state stands at: $sp"
+        return 0
+    fi
+    if git_covered "$p"; then
+        echo "- tracked by a git repository of its own; the commits there are the record, no shadow kept"
+        return 0
+    fi
+    size="$(stat -c %s -- "$p" 2>/dev/null || echo 0)"
+    if [ "$size" -gt "$SHADOW_MAX" ]; then
+        echo "- too large for a shadow diff ($size bytes; cap $SHADOW_MAX)"
+        [ -f "$sp" ] && echo "- the prior shadow stands, stale, at: $sp"
+        return 0
+    fi
+    if ! is_text "$p"; then
+        echo "- not a text file; no diff"
+        [ -f "$sp" ] && echo "- the last text state stands at: $sp"
+        return 0
+    fi
+    # Stage the exact bytes this report describes: the diff below and the
+    # shadow that replaces the old one after the report lands are one copy.
+    ( umask 077; mkdir -p "$(dirname "$sp")" ) 2>/dev/null
+    stage="$sp.stage.$$"
+    if ! cp -- "$p" "$stage" 2>/dev/null; then
+        rm -f -- "$stage"
+        echo "- could not copy the file for a shadow; no diff"
+        return 0
+    fi
+    chmod 600 "$stage" 2>/dev/null
+    base="$sp" label="the last shadow"
+    if [ ! -f "$sp" ]; then
+        base="" label=""
+        # First sighting. A conf-dir file may have a manual baseline from the
+        # 2026-08-28 stopgap drawer — incorporated, never silently discarded.
+        if [ "$(dirname "$p")" = "$CONF_DIR" ] \
+            && [ "$(basename "$p")" != "README.md" ] \
+            && [ -f "$BASELINES_DIR/$(basename "$p")" ]; then
+            base="$BASELINES_DIR/$(basename "$p")"
+            label="the manual baseline (self-baselines)"
+        fi
+    fi
+    if [ -z "$base" ]; then
+        echo "- first sighting: no prior shadow; one is kept privately from now on"
+    else
+        dtmp="$(mktemp "${DESKCRAB_STATE_PREFIX:-/tmp/deskcrab}-notice-diff.XXXXXX")"
+        diff -u --label "$p ($label)" --label "$p (now)" -- "$base" "$stage" > "$dtmp" 2>/dev/null
+        rc=$?
+        if [ "$rc" -eq 0 ]; then
+            echo "- content identical to $label (metadata-only change)"
+        elif [ "$rc" -eq 1 ]; then
+            lines="$(wc -l < "$dtmp")"
+            echo "- private diff from $label:"
+            echo '```diff'
+            head -n "$SHADOW_DIFF_LINES" "$dtmp"
+            [ "$lines" -gt "$SHADOW_DIFF_LINES" ] \
+                && echo "[diff truncated at $SHADOW_DIFF_LINES of $lines lines]"
+            echo '```'
+        else
+            echo "- diff against $label failed; the shadow is refreshed without one"
+        fi
+        rm -f -- "$dtmp"
+    fi
+    STAGE_PATH+=("$p"); STAGE_FILE+=("$stage")
+    return 0
+}
+
+RTMP="$(mktemp "$STATE_DIR/notice-self-report-tmp.XXXXXX" 2>/dev/null)" || RTMP=""
+[ -n "$RTMP" ] && {
+    echo "# Outside changes to your own files — $(date '+%F %T')"
+    echo
+    echo "These paths are part of you and changed on disk without a touching"
+    echo "record, a live claim, a run window of yours, a detached job's workdir"
+    echo "claim, or your own plumbing explaining them."
+    for want_kind in deleted created modified; do
+        header_done=0
+        for i in "${!FIRE_PATH[@]}"; do
+            [ "${FIRE_KIND[$i]}" = "$want_kind" ] || continue
+            [ "$header_done" -eq 1 ] || { echo; echo "## ${want_kind^}"; header_done=1; }
+            path="${FIRE_PATH[$i]}"
+            echo
+            echo "### $path"
+            if [ "$want_kind" = "deleted" ]; then
+                echo "- gone from disk (was in the last snapshot)"
+            else
+                echo "- mtime now: $(stat -c '%y' "$path" 2>/dev/null || echo '(already gone again)')"
+            fi
+            # A path a live job claims that surfaced anyway — a deletion, or a
+            # byte from outside the job's window — names its job AND its
+            # state, so the claim over this tree is traceable rather than
+            # invisible, and only a dispatched or running job can ever be
+            # printed as such (rule 25c).
+            if job_over_path "$path"; then
+                echo "- under the workdir of my own $JOB_HIT_STATE job $JOB_HIT_ID, whose writes"
+                echo "  are claimed; this surfaced anyway — a deletion, or a byte from outside"
+                echo "  the job's window"
+            fi
+            case "$path" in
+                "$SCRIPT_DIR"/*)
+                    rel="${path#"$SCRIPT_DIR"/}"
+                    if git -C "$SCRIPT_DIR" ls-files --error-unmatch -- "$rel" >/dev/null 2>&1; then
+                        if [ "$want_kind" = "deleted" ]; then
+                            echo "- git-tracked; last committed version: \`git -C $SCRIPT_DIR show HEAD:$rel\`"
+                            git -C "$SCRIPT_DIR" log -1 --oneline -- "$rel" 2>/dev/null \
+                                | sed 's/^/- last commit: /'
+                        else
+                            DIFF="$(git -C "$SCRIPT_DIR" diff -- "$rel" 2>/dev/null | head -400)"
+                            if [ -n "$DIFF" ]; then
+                                echo '```diff'
+                                printf '%s\n' "$DIFF"
+                                echo '```'
+                            else
+                                echo "- matches git HEAD — the change arrived as a commit:"
+                                git -C "$SCRIPT_DIR" log -3 --oneline -- "$rel" 2>/dev/null | sed 's/^/  - /'
+                            fi
+                        fi
+                    elif [ "$want_kind" = "deleted" ] \
+                        && [ "$(git -C "$SCRIPT_DIR" cat-file -t "HEAD:$rel" 2>/dev/null)" = "blob" ]; then
+                        # A STAGED deletion (`git rm`) has left the index, so
+                        # the membership test above answers "untracked" for a
+                        # file HEAD still holds whole — and no shadow was ever
+                        # kept for it, because it was tracked when last seen.
+                        # The 2026-09-28 alarm called ten such files lost.
+                        # Ask HEAD before declaring loss (spec rule 25f).
+                        echo "- a staged deletion: gone from the index too, but HEAD still holds it: \`git -C $SCRIPT_DIR show HEAD:$rel\`"
+                        git -C "$SCRIPT_DIR" log -1 --oneline -- "$rel" 2>/dev/null \
+                            | sed 's/^/- last commit: /'
+                        # Out of the index while it stayed on disk, and seen
+                        # untracked since: the shadow may be the later state.
+                        [ -f "$SHADOW_DIR$path" ] \
+                            && echo "- a shadow of it as last seen untracked is also held privately at: $SHADOW_DIR$path (it may be later than the HEAD blob)"
+                    else
+                        echo "- in the repo but not git-tracked"
+                        shadow_report "$want_kind" "$path"
+                    fi
+                    ;;
+                *)
+                    shadow_report "$want_kind" "$path"
+                    ;;
+            esac
+        done
+    done
+} > "$RTMP" 2>/dev/null
+if [ -n "$RTMP" ] && mv -T -- "$RTMP" "$REPORT" 2>/dev/null; then
+    # The report is on disk under its final name: NOW the shadows may advance.
+    for i in "${!STAGE_PATH[@]}"; do
+        mv -f -T -- "${STAGE_FILE[$i]}" "$SHADOW_DIR${STAGE_PATH[$i]}" 2>/dev/null \
+            || rm -f -- "${STAGE_FILE[$i]}"
+    done
+else
+    # The report never landed. The old shadows — and the distance they still
+    # hold — stay exactly as they were, for the next attempt to show whole.
+    rm -f -- ${RTMP:+"$RTMP"} ${STAGE_FILE[@]+"${STAGE_FILE[@]}"}
+    log "report write FAILED ($REPORT); shadows left as they were"
+fi
+ensure_shadows "$SNAP"
+ls -1t "$STATE_DIR"/notice-self-report-*.md 2>/dev/null \
+    | tail -n +"$(( KEEP_REPORTS + 1 ))" | xargs -r rm -f
+
+# --- the wake: deletions first, awareness not instruction --------------------
+summarize() {  # <kind> — up to 3 basenames, then a count
+    local i names=() n=0 total=0
+    for i in "${!FIRE_PATH[@]}"; do
+        [ "${FIRE_KIND[$i]}" = "$1" ] || continue
+        total=$(( total + 1 ))
+        [ "$n" -lt 3 ] && { names+=("$(basename "${FIRE_PATH[$i]}")"); n=$(( n + 1 )); }
+    done
+    [ "$total" -eq 0 ] && return 0
+    local joined; joined="$(IFS=', '; echo "${names[*]}")"
+    [ "$total" -gt "$n" ] && joined="$joined (+$(( total - n )) more)"
+    printf '%s: %s' "$1" "$joined"
+}
+
+SUMMARY=""
+for k in deleted created modified; do
+    part="$(summarize "$k")"
+    [ -n "$part" ] && SUMMARY="${SUMMARY:+$SUMMARY; }$part"
+done
+
+log "waking: $SUMMARY (report: $REPORT)"
+# The snapshot has already advanced, so nothing is left to race on: drop the
+# judgement lock rather than handing it to the exec'd process, which would keep
+# it for as long as the booking takes.
+exec 8>&- 2>/dev/null
+# Through book(), with this watcher's name on the record: it is one of the
+# hands that book wakes in her name, and until each of them stamped
+# its own identity, "nothing scheduled by me" was unanswerable. Booking rather
+# than firing also gets the session out of THIS unit, where it used to run as
+# a child of the very watcher it might be reporting on.
+# exec does not run EXIT traps.
+sync_units
+exec "$CRAB" wake-at --by notice-selfchange 5s event "Files that are part of you changed on disk, and not by your own hand — $SUMMARY. What, when, and diffs where git knows them: $REPORT. This is awareness, not a task: inquire, examine, or quietly take note, as you see fit."

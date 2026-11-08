@@ -1,0 +1,1 @@
+Your own tooling just sent the bare word help to the laptop again — that is the sixteenth time today. Speech recognition has nothing to do with it and I never said it. Find where it is being emitted.

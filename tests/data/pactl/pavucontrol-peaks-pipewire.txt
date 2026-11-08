@@ -1,0 +1,179 @@
+Source Output #131264
+	Driver: PipeWire
+	Owner Module: n/a
+	Client: 131263
+	Source: 36
+	Sample Specification: float32le 1ch 144Hz
+	Channel Map: mono
+	Format: pcm, format.sample_format = "\"float32le\""  format.rate = "144"  format.channels = "1"  format.channel_map = "\"mono\""
+	Corked: no
+	Mute: no
+	Volume: mono: 65536 / 100% / 0.00 dB
+	        balance 0.00
+	Buffer Latency: 0 usec
+	Source Latency: 0 usec
+	Resample method: PipeWire
+	Properties:
+		client.api = "pipewire-pulse"
+		pulse.server.type = "unix"
+		application.name = "PulseAudio Volume Control"
+		application.id = "org.PulseAudio.pavucontrol"
+		application.icon_name = "audio-card"
+		application.version = "6.2"
+		application.process.id = "4242"
+		application.process.user = "user"
+		application.process.host = "desk"
+		application.process.binary = "pavucontrol"
+		application.language = "C.UTF-8"
+		window.x11.display = ":1"
+		application.process.machine_id = "00000000000000000000000000000000"
+		media.name = "Peak detect"
+		pulse.corked = "false"
+		node.rate = "1/144"
+		node.latency = "1/144"
+		stream.monitor = "true"
+		target.object = "36"
+		stream.capture.sink = "true"
+		node.passive = "true"
+		stream.is-live = "true"
+		node.name = "PulseAudio Volume Control"
+		node.want-driver = "true"
+		node.autoconnect = "true"
+		node.dont-reconnect = "true"
+		media.class = "Stream/Input/Audio"
+		resample.peaks = "true"
+		channelmix.normalize = "true"
+		port.ignore-latency = "true"
+		port.group = "stream.0"
+		adapt.follower.spa-node = ""
+		object.register = "false"
+		factory.id = "7"
+		clock.quantum-limit = "8192"
+		node.loop.name = "data-loop.0"
+		library.name = "audioconvert/libspa-audioconvert"
+		client.id = "398"
+		object.id = "131864"
+		object.serial = "131264"
+		pulse.attr.fragsize = "4"
+		pulse.attr.maxlength = "4194304"
+		node.driver-id = "61"
+		module-stream-restore.id = "source-output-by-application-id:org.PulseAudio.pavucontrol"
+Source Output #131266
+	Driver: PipeWire
+	Owner Module: n/a
+	Client: 131265
+	Source: 62
+	Sample Specification: float32le 1ch 144Hz
+	Channel Map: mono
+	Format: pcm, format.sample_format = "\"float32le\""  format.rate = "144"  format.channels = "1"  format.channel_map = "\"mono\""
+	Corked: no
+	Mute: no
+	Volume: mono: 65536 / 100% / 0.00 dB
+	        balance 0.00
+	Buffer Latency: 0 usec
+	Source Latency: 0 usec
+	Resample method: PipeWire
+	Properties:
+		client.api = "pipewire-pulse"
+		pulse.server.type = "unix"
+		application.name = "PulseAudio Volume Control"
+		application.id = "org.PulseAudio.pavucontrol"
+		application.icon_name = "audio-card"
+		application.version = "6.2"
+		application.process.id = "4242"
+		application.process.user = "user"
+		application.process.host = "desk"
+		application.process.binary = "pavucontrol"
+		application.language = "C.UTF-8"
+		window.x11.display = ":1"
+		application.process.machine_id = "00000000000000000000000000000000"
+		media.name = "Peak detect"
+		pulse.corked = "false"
+		node.rate = "1/144"
+		node.latency = "1/144"
+		stream.monitor = "true"
+		target.object = "62"
+		node.passive = "true"
+		stream.is-live = "true"
+		node.name = "PulseAudio Volume Control"
+		node.want-driver = "true"
+		node.autoconnect = "true"
+		node.dont-reconnect = "true"
+		media.class = "Stream/Input/Audio"
+		resample.peaks = "true"
+		channelmix.normalize = "true"
+		port.ignore-latency = "true"
+		port.group = "stream.0"
+		adapt.follower.spa-node = ""
+		object.register = "false"
+		factory.id = "7"
+		clock.quantum-limit = "8192"
+		node.loop.name = "data-loop.0"
+		library.name = "audioconvert/libspa-audioconvert"
+		client.id = "398"
+		object.id = "131866"
+		object.serial = "131266"
+		pulse.attr.fragsize = "4"
+		pulse.attr.maxlength = "4194304"
+		node.driver-id = "61"
+		module-stream-restore.id = "source-output-by-application-id:org.PulseAudio.pavucontrol"
+Source Output #131270
+	Driver: PipeWire
+	Owner Module: n/a
+	Client: 131269
+	Source: 61
+	Sample Specification: float32le 1ch 144Hz
+	Channel Map: mono
+	Format: pcm, format.sample_format = "\"float32le\""  format.rate = "144"  format.channels = "1"  format.channel_map = "\"mono\""
+	Corked: no
+	Mute: no
+	Volume: mono: 65536 / 100% / 0.00 dB
+	        balance 0.00
+	Buffer Latency: 0 usec
+	Source Latency: 0 usec
+	Resample method: PipeWire
+	Properties:
+		client.api = "pipewire-pulse"
+		pulse.server.type = "unix"
+		application.name = "PulseAudio Volume Control"
+		application.id = "org.PulseAudio.pavucontrol"
+		application.icon_name = "audio-card"
+		application.version = "6.2"
+		application.process.id = "4242"
+		application.process.user = "user"
+		application.process.host = "desk"
+		application.process.binary = "pavucontrol"
+		application.language = "C.UTF-8"
+		window.x11.display = ":1"
+		application.process.machine_id = "00000000000000000000000000000000"
+		media.name = "Peak detect"
+		pulse.corked = "false"
+		node.rate = "1/144"
+		node.latency = "1/144"
+		stream.monitor = "true"
+		target.object = "61"
+		stream.capture.sink = "true"
+		node.passive = "true"
+		stream.is-live = "true"
+		node.name = "PulseAudio Volume Control"
+		node.want-driver = "true"
+		node.autoconnect = "true"
+		node.dont-reconnect = "true"
+		media.class = "Stream/Input/Audio"
+		resample.peaks = "true"
+		channelmix.normalize = "true"
+		port.ignore-latency = "true"
+		port.group = "stream.0"
+		adapt.follower.spa-node = ""
+		object.register = "false"
+		factory.id = "7"
+		clock.quantum-limit = "8192"
+		node.loop.name = "data-loop.0"
+		library.name = "audioconvert/libspa-audioconvert"
+		client.id = "398"
+		object.id = "131870"
+		object.serial = "131270"
+		pulse.attr.fragsize = "4"
+		pulse.attr.maxlength = "4194304"
+		node.driver-id = "61"
+		module-stream-restore.id = "source-output-by-application-id:org.PulseAudio.pavucontrol"

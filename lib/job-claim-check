@@ -1,0 +1,170 @@
+#!/usr/bin/env bash
+# job-claim-check — a job's fate is a fact on its record, not a memory.
+#
+# On 2026-08-21 at 18:09 the user referred plainly to the similar-game builder
+# that had finished that evening, and the reply said — three times running —
+# that it had been killed two minutes in. That was the OTHER builder, the
+# errand one dispatched an hour later and stopped at fifty-six seconds. Every
+# one of those jobs had a record the whole time; nothing read it before
+# speaking. The promise checker beside this one audits a claim of WORK against
+# the tool record; this audits a claim of FATE — a specific job ran, was
+# killed, died, finished, committed, is running — against the jobs ledger and
+# the day's journal, mechanically, with no model in the loop: lib/job-resolve
+# resolves which job the words mean (his message and the claiming sentence,
+# never recency) and compares the claimed fate with the record's state.
+#
+# A MISMATCH (the record contradicts the claim) or an UNBACKED claim (no
+# record in the window to back it) lands on the durable ledger and books an
+# immediate correction wake on the queue's urgent lane, quoting the claim and
+# the record's own line, so the next thing he hears is what the record says.
+# SUPPORTED claims are traced and nothing else; so is UNVERIFIED, the verdict
+# on a negation the record can neither confirm nor contradict ("killed before
+# it committed anything", on a stopped run collection never observed) — a
+# negation is not an invented past, and the record cannot accuse it.
+# specs/jobs.md rules 46-47c, specs/turn-pipeline.md rule 32g,
+# specs/wake-queue.md rule 43c.
+#
+# Usage:
+#   job-claim-check turn <kind> <epoch> <pid> <jobs-dir> <journal-dir> <ledger> <user-text> <reply>
+#   job-claim-check inspect <jobs-dir> <journal-dir> <user-text> <reply>
+#
+# turn is the detached form: every failure path exits 0 with a trace line.
+# inspect prints the verdict lines and exits 3 on a mismatch, 4 on an
+# unbacked claim, 0 when every claim is supported or unverified, or there
+# is none.
+set -uo pipefail
+
+# readlink -f before dirname, or the deployed symlink's logical `..` walks
+# into ~/.local/lib and sources a lib/common.sh that does not exist.
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+# shellcheck source=common.sh
+. "$SCRIPT_DIR/lib/common.sh"
+
+CHECK_LOG="${STATE_PREFIX}-job-claims.log"
+check_log() {
+    printf '%s\t%s\t%s\n' "$(date '+%F %T')" "${KIND:-inspect}" "$1" >> "$CHECK_LOG" 2>/dev/null
+}
+
+ledger_append() {  # <ledger> <key=value>...
+    python3 - "$@" <<'PY'
+import fcntl, json, os, sys, time
+path = sys.argv[1]
+rec = {"time": time.strftime("%Y-%m-%dT%H:%M:%S%z")}
+for kv in sys.argv[2:]:
+    k, _, v = kv.partition("=")
+    rec[k] = int(v) if k in ("epoch", "pid") and v.isdigit() else v
+os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+with open(path, "a", encoding="utf-8") as f:
+    fcntl.flock(f, fcntl.LOCK_EX)
+    f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+    f.flush()
+PY
+}
+
+# How many correction wakes this job (or this unbacked claim) has earned
+# today — the per-class bound, like the promise checker's rebook cap.
+booked_today() {  # <ledger> <job-id>
+    python3 - "$1" "$2" "$(date +%F)" <<'PY' 2>/dev/null || echo 0
+import json, sys
+path, job, day = sys.argv[1], sys.argv[2], sys.argv[3]
+n = 0
+try:
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            try:
+                rec = json.loads(line)
+            except ValueError:
+                continue
+            if (rec.get("time", "")[:10] == day and rec.get("job") == job
+                    and str(rec.get("wake", "")).startswith("booked")):
+                n += 1
+except OSError:
+    pass
+print(n)
+PY
+}
+
+resolve_claims() {  # <jobs-dir> <journal-dir> <user-text> <reply>
+    python3 "$LIB_DIR/job-resolve" claims "$1" "$2" "${JOB_REF_WINDOW_HOURS:-72}" "$4" "$3" 2>/dev/null
+}
+
+cmd_inspect() {
+    local JOBS="${1:-$JOBS_DIR}" JOURNAL="${2:-$DAY_JOURNAL_DIR}" USER_TEXT="${3:-}" REPLY="${4:-}"
+    local OUT RC=0
+    OUT="$(resolve_claims "$JOBS" "$JOURNAL" "$USER_TEXT" "$REPLY")"
+    [ -n "$OUT" ] || { echo "no job-fate claim in the reply"; return 0; }
+    printf '%s\n' "$OUT"
+    grep -q '^MISMATCH' <<<"$OUT" && RC=3
+    [ "$RC" = 0 ] && grep -q '^UNBACKED' <<<"$OUT" && RC=4
+    return $RC
+}
+
+cmd_turn() {
+    KIND="${1:-}"; EPOCH="${2:-}"; PID="${3:-}"
+    local JOBS="${4:-$JOBS_DIR}" JOURNAL="${5:-$DAY_JOURNAL_DIR}" LEDGER="${6:-$JOB_CLAIM_LEDGER}"
+    local USER_TEXT="${7:-}" REPLY="${8:-}"
+    [ -n "$(printf '%s' "$REPLY" | tr -d '[:space:]')" ] || exit 0
+    local OUT
+    if ! OUT="$(resolve_claims "$JOBS" "$JOURNAL" "$USER_TEXT" "$REPLY")"; then
+        check_log "resolver failed — nothing judged"
+        exit 0
+    fi
+    if [ -z "$OUT" ]; then
+        check_log "no job-fate claim once resolved — nothing judged"
+        exit 0
+    fi
+    local VERDICT FATE JOB RECORD CLAIM N_OK=0 N_BAD=0 N_UNSEEN=0
+    local DELAY="${JOB_CLAIM_WAKE_DELAY:-1s}" CAP="${JOB_CLAIM_WAKE_CAP:-2}"
+    local REBOOK_MAX="${JOB_CLAIM_REBOOK_MAX:-2}"
+    while IFS=$'\t' read -r VERDICT FATE JOB RECORD CLAIM; do
+        [ -n "$VERDICT" ] || continue
+        case "$VERDICT" in
+            SUPPORTED)
+                N_OK=$((N_OK + 1))
+                check_log "SUPPORTED ($FATE, job $JOB): $CLAIM"
+                continue ;;
+            UNVERIFIED)
+                # A negation nothing on the record observed either way:
+                # traced so the trail shows it was read, never booked.
+                N_UNSEEN=$((N_UNSEEN + 1))
+                check_log "UNVERIFIED ($FATE, job $JOB): $CLAIM — the record holds no observation either way; nothing booked"
+                continue ;;
+        esac
+        N_BAD=$((N_BAD + 1))
+        local WHY WAKE_NOTE="" BOOKING KEY
+        case "$VERDICT" in
+            MISMATCH) WHY="the record says otherwise — $RECORD" ;;
+            *)        WHY="no record backs it — $RECORD" ;;
+        esac
+        KEY="$JOB"; [ "$KEY" = "-" ] && KEY="unbacked"
+        if [ "$(booked_today "$LEDGER" "$KEY")" -ge "$REBOOK_MAX" ]; then
+            WAKE_NOTE="not booked — $REBOOK_MAX correction wakes already booked today for $KEY"
+        else
+            # Bounded for the wake record: one line, no tabs, the claim and
+            # the record line both quoted so the waking hand needs no lookup.
+            local Q_CLAIM Q_WHY
+            Q_CLAIM="$(printf '%s' "$CLAIM" | tr '\t\n' '  ' | utf8_head 400)"
+            Q_WHY="$(printf '%s' "$WHY" | tr '\t\n' '  ' | utf8_head 900)"
+            BOOKING="$("$SCRIPT_DIR/crab" wake-at --by job-claim-check \
+                --cap "$CAP" --cap-prefix "$JOB_CLAIM_REASON_PREFIX" \
+                "$DELAY" event "$JOB_CLAIM_REASON_PREFIX \"$Q_CLAIM\" — said at $(date '+%H:%M') on the $KIND channel; $Q_WHY. Tell him what the record says, in a sentence or two, naming the job by what it was for; if two jobs were confused, say which was which. Do not restate the claim, and do not invent a fate for any job whose record you have not read ('crab job show <id>')." 2>&1)"
+            case "$BOOKING" in
+                *"Not booked"*|*"already pending"*)
+                    WAKE_NOTE="not booked (${BOOKING%%$'\n'*})" ;;
+                *)  WAKE_NOTE="booked immediately at configured wake effort" ;;
+            esac
+        fi
+        ledger_append "$LEDGER" \
+            "kind=$KIND" "epoch=$EPOCH" "pid=$PID" "verdict=$VERDICT" \
+            "fate=$FATE" "job=$KEY" "claim=$CLAIM" "record=$RECORD" "wake=$WAKE_NOTE"
+        check_log "$VERDICT ($FATE, job $KEY): $CLAIM — $WAKE_NOTE"
+    done <<< "$OUT"
+    check_log "verdict: $N_OK supported, $N_UNSEEN unverified, $N_BAD mismatched or unbacked"
+    exit 0
+}
+
+case "${1:-}" in
+    turn)    shift; cmd_turn "$@" ;;
+    inspect) shift; cmd_inspect "$@" ;;
+    *) sed -n '2,30p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+esac

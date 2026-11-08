@@ -1,0 +1,753 @@
+#!/bin/bash
+# Detached job worker. Runs ONE claude builder session under the systemd user
+# manager, not under the turn that asked for it.
+#
+# Why this exists: a subagent dispatched from inside a turn is a child of that
+# turn's claude process. When the turn ends the child dies, so every "an agent
+# is working on it in the background" was false the moment the reply finished —
+# and worse, while the turn was alive it held the session open, so the next
+# push-to-talk had nothing to talk to. Both halves of that are the same bug:
+# work was welded to a conversation. Here systemd owns the process; the turn
+# that started it can end a second later and the work carries on.
+#
+# Silent by contract: nothing here speaks, notifies, or opens windows. The
+# job's outputs are its log, its JSON status sidecar, and (when wants are
+# configured) one event wake so the assistant hears that it finished.
+#
+# Usage (called by `crab job`, not by hand):
+#   job-runner <id> <workdir>
+
+set -u
+ID="$1"; WORKDIR="$2"
+START=$(date +%s)
+
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0")")/.." && pwd)"
+source "$SCRIPT_DIR/lib/common.sh"
+
+# Builders may render or analyse sound, but they never get the desk's audio
+# devices.  This is deliberately inherited by every tool they launch.
+deskcrab_silence_tool_audio
+
+# The account log's session-kind column names the path that recorded the
+# refusal (specs/account-fallback.md rule 11). This runner never calls
+# session_register — nothing interactive to register — so without this the
+# column defaulted to "session" and a night of builder refusals hid among
+# the interactive ones. Not exported: the builder's own CLI session has no
+# business inheriting it.
+SESSION_KIND=job
+# The builder role (specs/engineering-records.md rules 16 and 16d): exported,
+# deliberately, so every `crab eng` the builder's own hands run inherits it —
+# a builder never settles the ask it was dispatched against. Under this
+# marker `settle` and `kill` are refused (so are the review verdicts, accept
+# and reject); the builder's one door for a completion claim is
+# `crab eng review`, and the review that wakes on completion judges it
+# against the original ask. Exported here and nowhere else.
+export DESKCRAB_ENG_ROLE=builder
+
+mkdir -p "$JOBS_DIR"
+LOG="$JOBS_DIR/$ID.log"
+STATUS="$JOBS_DIR/$ID.json"
+# The stream the live viewer follows. A job used to run with no stream format at
+# all, writing plain text to a log outside every glob the viewer looks at, so
+# the longest-running and least supervised work in the system was the one piece
+# of it nobody could watch. It writes here in the stream format, under the
+# prefix crab-debug globs, and $LOG stays exactly what it has always been: the
+# human report, which is what the completion wake tells her to read and what the
+# day journal keeps.
+STREAMLOG="${DESKCRAB_STATE_PREFIX:-/tmp/deskcrab}-debug-job-$ID.log"
+: > "$STREAMLOG"
+# ...and the job streams are reaped HERE rather than by claim_debuglog's
+# three-hour sweep, which is what a desk turn runs. That sweep's rule — three
+# quiet hours means a dead session — is true of turns and false of builders: a
+# job can sit inside one compile for longer than that without writing a byte,
+# and having its live stream unlinked underneath it emptied the attempt slice,
+# blinded the limit test, and left a blocked run with nothing to record. A job
+# stream is dropped when its JOB has ended, which is a question only this side
+# can ask.
+for _s in "${DESKCRAB_STATE_PREFIX:-/tmp/deskcrab}"-debug-job-*.log; do
+    [ -e "$_s" ] || continue
+    [ "$_s" = "$STREAMLOG" ] && continue
+    _sid="${_s##*-debug-job-}"; _sid="${_sid%.log}"
+    case "$("$LIB_DIR/job-status" get "$JOBS_DIR/$_sid.json" state 2>/dev/null)" in
+        running) continue ;;
+    esac
+    find "$_s" -mmin +180 -delete 2>/dev/null
+done
+unset _s _sid
+TASK="$("$LIB_DIR/job-status" get "$STATUS" description)"
+[ -n "$TASK" ] || { echo "job-runner: no status file (or empty task) for $ID" >> "$LOG"; exit 1; }
+# The errands owed at completion (specs/jobs.md rules 7j-7k), read here for
+# the duplicate hand-off below and RE-READ at wake time, after the final
+# state write, where the list is complete.
+mapfile -t ERRANDS < <("$LIB_DIR/job-status" list "$STATUS" on_done 2>/dev/null)
+
+# Single flight (specs/jobs.md rule 44). The door's sidecar scan cannot see
+# two dispatches racing in the same instant — on 2026-09-03 the 02:30 tidy
+# and a tidy queued behind an account limit since 22:21 dispatched the moment
+# the limit lifted, both against wants.md — so the key is held as a real
+# lock for the life of this run: a non-blocking flock on flight/<key>.lock,
+# taken HERE, before the builder, the workdir declaration, or any work file.
+# The descriptor stays open until this process (and everything it spawned)
+# exits, and the kernel releases the flock on ANY death — clean, failed,
+# SIGKILLed — so a stale lockfile from a dead pid can never block the next
+# run: the flock is the arbiter, the file's `<pid> <id>` line is only
+# legibility for a hand reading the drawer. The loser exits without touching
+# a single work file, its refusal — key and incumbent — in its own log and
+# sidecar (state `duplicate`), with no completion wake (the incumbent's own
+# wake is the news) and no retry.
+JOB_FLIGHT_SLUG="$("$LIB_DIR/job-status" get "$STATUS" slug 2>/dev/null)"
+JOB_FLIGHT_KEY="$("$LIB_DIR/job-status" flight-key "$JOB_FLIGHT_SLUG" "$TASK" 2>/dev/null)"
+if [ -n "$JOB_FLIGHT_KEY" ]; then
+    mkdir -p "$JOBS_DIR/flight" 2>/dev/null
+    exec 8>>"$JOBS_DIR/flight/$JOB_FLIGHT_KEY.lock"
+    if flock -n 8; then
+        printf '%s %s\n' "$$" "$ID" > "$JOBS_DIR/flight/$JOB_FLIGHT_KEY.lock" 2>/dev/null
+    else
+        INCUMBENT="$("$LIB_DIR/job-status" flight-incumbent "$JOBS_DIR" \
+            "$JOB_FLIGHT_SLUG" "$TASK" "$ID" dispatched,running 2>/dev/null)"
+        [ -n "$INCUMBENT" ] || INCUMBENT="$(awk '{print $2; exit}' \
+            "$JOBS_DIR/flight/$JOB_FLIGHT_KEY.lock" 2>/dev/null)"
+        INCUMBENT="${INCUMBENT%% *}"
+        echo "job-runner: single-flight key '$JOB_FLIGHT_KEY' is already held by job ${INCUMBENT:-unknown} — two hands must never run one brief at once (jobs.md rule 44). This run exits WITHOUT touching any work file; the incumbent's log is $JOBS_DIR/${INCUMBENT:-unknown}.log" >> "$LOG"
+        # Rule 7j: the errands ride to the hand that runs the brief — the
+        # incumbent's wake is the news, so it must arrive holding them. A
+        # hand-off that cannot land is said out loud; an errand nothing
+        # carries is the whole defect this field exists to end.
+        for _e in ${ERRANDS[@]+"${ERRANDS[@]}"}; do
+            _h=""
+            if [ -n "$INCUMBENT" ] && _h="$("$LIB_DIR/job-status" errand "$JOBS_DIR/$INCUMBENT.json" "$_e" 2>&1)"; then
+                echo "job-runner: on-done errand handed to incumbent job $INCUMBENT: $_e" >> "$LOG"
+                printf '%s job-runner: on-done errand handed over by duplicate %s, owed at completion — %s\n' \
+                    "$(date '+%F %T')" "$ID" "$_e" >> "$JOBS_DIR/$INCUMBENT.log"
+            else
+                echo "job-runner: on-done errand could NOT be handed to the incumbent (${INCUMBENT:-unknown}): ${_h:-no incumbent id}. It is owed and nothing carries it: $_e" >> "$LOG"
+            fi
+        done
+        unset _e _h
+        "$LIB_DIR/job-status" set "$STATUS" state=duplicate finished=now exit=0 \
+            summary="single flight: key '$JOB_FLIGHT_KEY' held by job ${INCUMBENT:-unknown} — stood down without touching any work file"
+        exit 0
+    fi
+fi
+
+# The per-job model override (specs/jobs.md rule 5c), off the sidecar: the
+# conf's own JOB_MODEL assignment clobbered any inherited environment when
+# common.sh sourced it above, so the record is the one carrier that survives
+# into this worker — and through requeue and the block retry.
+JOB_MODEL_REQUEST="$("$LIB_DIR/job-status" get "$STATUS" model_request 2>/dev/null)"
+[ -n "$JOB_MODEL_REQUEST" ] && JOB_MODEL="$JOB_MODEL_REQUEST"
+
+JOB_BACKEND="$(model_backend "$JOB_MODEL")"
+# The per-job correction hook reads these from the builder process. The
+# sidecar stamp lets `crab job steer` refuse older jobs that began without
+# this channel instead of pretending a queued file can reach them.
+JOB_STEERABLE=0
+if [ "$JOB_BACKEND" = claude ] && [ -x "$LIB_DIR/job-steer-mail" ]; then
+    JOB_STEERABLE=1
+    export DESKCRAB_JOB_ID="$ID" JOBS_DIR
+fi
+# The engineering record this build was dispatched against, if any (jobs.md
+# rules 7b and 27-29, specs/engineering-records.md). Success is gated below on
+# the record having been touched after dispatch — the sidecar's started_epoch
+# is the dispatch time, written before this worker existed.
+RECORD="$("$LIB_DIR/job-status" get "$STATUS" record 2>/dev/null)"
+DISPATCH_EPOCH="$("$LIB_DIR/job-status" get "$STATUS" started_epoch 2>/dev/null)"
+ENG_DIR="$(deskcrab_home)/engineering/records"
+
+# The durable twin of the tool-call stream (specs/jobs.md rule 22a). The
+# stream is the job's falsifiable trace, and it used to live only under the
+# state prefix, where the reap above — or the next boot — erased it as soon
+# as the job ended: the runs whose claims most needed auditing were the ones
+# whose evidence was gone by morning. The tees below feed this file the same
+# bytes as $STREAMLOG, live, so a run that dies mid-build keeps whatever
+# trace it had produced. Pruned with the record by report's keep-days sweep.
+# Initialised here, after the single-flight gate, so a duplicate that stood
+# down leaves no archive at all. Truncated, not appended: `crab job dispatch`
+# re-dispatches a queued record under its own id, and a stale trace in front
+# of a fresh run would read as the fresh run's opening acts.
+STREAM_ARCHIVE="$JOBS_DIR/$ID.stream.log"
+: > "$STREAM_ARCHIVE"
+# The pid and its start time let `crab jobs` tell a hard-killed job from a
+# running one — a SIGKILLed worker never gets to write its own outcome. The
+# same write moves the sidecar off `dispatched`: the worker exists now, and
+# state=running is its first word (specs/jobs.md rule 9).
+"$LIB_DIR/job-status" set "$STATUS" state=running pid=$$ pidstart="$(_proc_starttime $$)" \
+    stream="$STREAMLOG" stream_archive="$STREAM_ARCHIVE" steerable="$JOB_STEERABLE"
+for _e in ${ERRANDS[@]+"${ERRANDS[@]}"}; do
+    echo "job-runner: on-done errand owed at completion — the completion wake carries it as an OWED action: $_e" >> "$LOG"
+done
+unset _e
+# systemctl stop TERMs the whole unit: claude dies first, then this trap runs.
+# Without it a deliberately stopped job would look identical to a crashed one.
+# The day journal gets the stop too, with whatever log the job managed to write.
+trap '"$LIB_DIR/job-status" set "$STATUS" state=stopped finished=now; day_journal_append job "$START" "$(( $(date +%s) - START ))" "$$" "$TASK" "$(cat "$LOG" 2>/dev/null)" "stopped"; exit 143' TERM
+
+CLAUDE_BIN="${CLAUDE_BIN:-$(command -v claude 2>/dev/null || echo "$HOME/.local/bin/claude")}"
+
+# A builder writes freely in its workdir and this runner writes the job log —
+# declare both for the self-change watcher, for as long as a job may run, so
+# a build in her own repo never reads as an intruder's hand. Renewed after the
+# run to cover the report and any trailing writes.
+touch_suppress -w "${JOB_TOUCH_WINDOW:-14400}" "$WORKDIR" "$JOBS_DIR" 2>/dev/null
+
+# A builder, not a persona. It reports back to the assistant, and it is told
+# plainly that unproven work must be reported as unproven — the failure this
+# whole mechanism exists to end is a confident "done" behind which nothing ran.
+SYS="You are a detached build agent working for $ASSISTANT_NAME on her own machine.
+Nobody is watching this run and nothing you output is spoken or shown: work
+silently — never use TTS, notify-send, or windows; file output only. Your final
+message is a report she will read later in $LOG, so make it concrete — what you
+changed, file:line, what you ran, and what the output was.
+
+Hard rules:
+- Never call `crab` with bare message text, or use its remote, notify, play,
+  wake, or other presentation doors. You are neither Ryan nor Beatrice, and
+  those doors reject builder contexts. Communicate only through this job log,
+  your checkpoint/sidecar, and the engineering record when one is attached.
+- Test what you claim. If you could not verify something, say so in plain words
+  rather than implying it works. An unproven claim is worse than an admitted gap.
+- Run long commands in the FOREGROUND and wait for them. Your session — and
+  everything it left running in the background — is killed the moment your
+  final message is written, so a backgrounded command is work that silently
+  never happens. If something must outlive you, dispatch it with 'crab job'.
+- Your FINAL verification — the suite or live check you commit on — runs in
+  the foreground, and this is a gate, not advice: collection reads your tool
+  record, and a run whose last tool call was a background dispatch
+  (run_in_background, a trailing '&', nohup, setsid) is marked FAILED as
+  having died waiting, whatever your report says (jobs.md rule 39a). Wait
+  for the result, then commit, then report.
+- If you commit, stage with an explicit \`git add -- <paths>\` (never \`git add -A\`;
+  another hand may have files open in the same repo).
+- Read the repo's CLAUDE.md before changing anything in it.
+- If the task turns out to be wrong or impossible, stop and report why. Do not
+  invent adjacent work to have something to show.
+- End your report with one machine-readable line, the LAST line of your final
+  message: \`VERDICT: tests=<passed>/<failed> commit=<sha>\` — your END-STATE
+  test totals across the suites you ran and the commit they were measured on
+  (commit=none if you committed nothing; tests=0/0 if you ran none). This line
+  is what collection quotes as your result. Without it, a scrape of your prose
+  decides — and a deliberate red run proven before your fix can be quoted as
+  your outcome."
+
+# A build against an engineering record owes that record its outcome
+# (jobs.md rule 29). Said in the prompt, because the gate below is real: a
+# builder that never hears about the obligation can only ever fail it.
+if [ -n "$RECORD" ]; then
+    SYS="$SYS
+
+This job was dispatched against engineering record '$RECORD'. Before your
+final message, write your outcome into that record and SUBMIT it for review:
+  crab eng touch $RECORD '<progress and evidence, as you go>'
+  crab eng review $RECORD '<what you delivered and how you verified it>'
+Both are hard conditions of success: the runner refuses to mark this job
+finished unless the record has been touched since dispatch AND has entered
+review. You CANNOT settle the record — 'crab eng settle' is refused to a
+builder, because deciding that the ask was delivered belongs to the review
+that wakes on your completion and compares the artefact against the original
+ask. If the task proved wrong or impossible, submit THAT in plain words: an
+honest inability is also a submission for the review to judge. Read the
+record first with 'crab eng show $RECORD' so your entry lands on the thread
+it answers."
+fi
+
+cd "$WORKDIR" 2>/dev/null || cd "$HOME"
+# Deliberately NOT prefixed with $CLAUDE_NO_AUTO_MEMORY, unlike every other
+# claude run in this project (see the comment on it in lib/common.sh). That
+# switch exists to keep the WORKDIR's auto-memory out of HER prompt, because
+# it is the user's coding agent's memory and she is not that agent. A builder
+# is: it is a headless coding session working inside his project, and the
+# project's own memory index is precisely the rules it should arrive knowing.
+# An account refusing over a usage/session limit is not a dead job: the build
+# moves to the next account, a family every offered account refused moves the
+# build to the next FAMILY in the ordered list (specs/jobs.md rule 5b), and
+# only a walk with nothing left in it anywhere blocks.
+#
+# ATT_OFF marks where the current attempt's output begins: every judgement below
+# reads only the final attempt's slice of the STREAM, so an earlier attempt's
+# refusal kept as history can never masquerade as the last one's outcome.
+ATT_OFF=$(wc -c < "$STREAMLOG" 2>/dev/null || echo 0)
+RC=0
+ATTEMPT=0
+CODEX_PRE_BLOCKED=""
+# The ordered family walk (specs/jobs.md rule 5b): this job's own model first
+# — the sidecar's per-job request (rule 5c) already folded into JOB_MODEL
+# above — then JOB_MODEL_FALLBACK in the user's order, duplicates dropped by
+# family key. Within a family nothing substitutes the model (rule 5a): the
+# account walk rides refusals at --model unchanged. Only a family EVERY
+# offered account refused moves the walk on, and the move is loud — the log
+# names both families, the attempts record carries it, and the sidecar's
+# model is re-stamped to what actually ran (rule 35). One family's dry spell
+# stopping all night work was the 2026-08-28 record this walk closes.
+JOB_MODEL_WALK="$JOB_MODEL"
+for _FB in $JOB_MODEL_FALLBACK; do
+    _FBK="$(job_model_key "$_FB")"; _DUP=""
+    for _M in $JOB_MODEL_WALK; do
+        [ "$(job_model_key "$_M")" = "$_FBK" ] && { _DUP=1; break; }
+    done
+    [ -n "$_DUP" ] || JOB_MODEL_WALK="$JOB_MODEL_WALK $_FB"
+done
+unset _FB _FBK _DUP _M
+FAMILIES_REFUSED=""
+JOB_MODEL_USED="$JOB_MODEL"
+for JOB_TRY_MODEL in $JOB_MODEL_WALK; do
+    TRY_BACKEND="$(model_backend "$JOB_TRY_MODEL")"
+    if [ -n "$FAMILIES_REFUSED" ]; then
+        echo "job-runner: every account refused at $JOB_MODEL_USED — walking to $JOB_TRY_MODEL, the next family in the ordered list (jobs.md rule 5b)" >> "$LOG"
+        "$LIB_DIR/job-status" append "$STATUS" attempts \
+            "$(date '+%F %T') family walk: every account refused at $JOB_MODEL_USED — trying $JOB_TRY_MODEL" 2>/dev/null
+        # Rule 35: the sidecar's model is what the builder ACTUALLY ran
+        # with, so a fallback family is on the record, never misreported.
+        "$LIB_DIR/job-status" set "$STATUS" model="$JOB_TRY_MODEL" 2>/dev/null
+    fi
+    JOB_MODEL_USED="$JOB_TRY_MODEL"
+    FAMILY_REFUSED=""
+    CODEX_PRE_BLOCKED=""
+    if [ "$TRY_BACKEND" = "codex" ]; then
+        # The engine follows the model name (specs/model-backends.md rule
+        # 14): a codex-family try runs the one codex login — refused or
+        # cooling, the family walk moves on exactly as a dry Claude family
+        # does, and only a walk with nothing left blocks. The builder keeps
+        # full hands on either engine: codex's own sandbox and approvals are
+        # off exactly as --dangerously-skip-permissions is the Claude
+        # builder's shape. The brief rides as a preface on the task rather
+        # than replacing codex's base instructions — a builder is a coding
+        # agent, and codex's own coding instructions are the ones it should
+        # keep.
+        ATTEMPT=$(( ATTEMPT + 1 ))
+        ACCT="codex"
+        CODEX_SLUG="$(codex_model_resolve "$JOB_TRY_MODEL")"
+        if codex_available "$JOB_TRY_MODEL"; then
+            echo "job-runner: building on codex ($CODEX_SLUG)" >> "$LOG"
+            ATT_OFF=$(wc -c < "$STREAMLOG" 2>/dev/null || echo 0)
+            codex_mcp_args
+            (
+                env -u OPENAI_API_KEY ${CODEX_MCP_ENV[@]+"${CODEX_MCP_ENV[@]}"} \
+                    "$CODEX_BIN" exec \
+                    --ignore-user-config --skip-git-repo-check \
+                    --dangerously-bypass-approvals-and-sandbox --json --color never \
+                    -C "$PWD" -m "$CODEX_SLUG" \
+                    -c "model_reasoning_effort=$JOB_EFFORT" \
+                    -c "$CODEX_MCP_ARG" \
+                    "$SYS
+
+--- the task ---
+
+$TASK" </dev/null 2>&1 \
+                    | CODEX_STREAM_MODEL="$CODEX_SLUG" "$LIB_DIR/codex-stream" \
+                    | tee -a "$STREAMLOG" "$STREAM_ARCHIVE" \
+                    | "$LIB_DIR/job-log-stream" >> "$LOG"
+                exit "${PIPESTATUS[0]}"
+            )
+            RC=$?
+            if [ "$RC" -eq 0 ]; then
+                "$LIB_DIR/job-status" append "$STATUS" attempts \
+                    "$(date '+%F %T') codex: ran clean" 2>/dev/null
+            elif REFUSAL="$(codex_stream_refusal "$STREAMLOG" "$ATT_OFF")"; then
+                codex_limit_record "$REFUSAL" "$JOB_TRY_MODEL"
+                "$LIB_DIR/job-status" append "$STATUS" attempts \
+                    "$(date '+%F %T') codex: refused — $REFUSAL" 2>/dev/null
+                FAMILY_REFUSED=1
+            else
+                "$LIB_DIR/job-status" append "$STATUS" attempts \
+                    "$(date '+%F %T') codex: failed (exit $RC)" 2>/dev/null
+            fi
+        else
+            # Cooling or absent: this family never boots. The reason is kept
+            # in hand — the post-run judgement cannot read a refusal out of
+            # a stream no CLI ever wrote to — and the walk moves on.
+            CODEX_PRE_BLOCKED="codex is $(codex_unavailable_why "$JOB_TRY_MODEL")"
+            echo "job-runner: $CODEX_PRE_BLOCKED — this family never began" >> "$LOG"
+            "$LIB_DIR/job-status" append "$STATUS" attempts \
+                "$(date '+%F %T') codex: $CODEX_PRE_BLOCKED" 2>/dev/null
+            RC=1
+            FAMILY_REFUSED=1
+        fi
+    else
+    # The walk offers every account (specs/account-fallback.md rule 10),
+    # rotated to the current; what an account can answer is learned by
+    # calling it, never remembered (rule 8).
+    FAM_FIRST=1
+    PREV_ACCT=""
+    LAST_OUTCOME=""
+    for ACCT in $(claude_accounts "$JOB_TRY_MODEL"); do
+        CONFDIR="$(claude_account_dir "$ACCT")"
+        ATTEMPT=$(( ATTEMPT + 1 ))
+        if [ -n "$FAM_FIRST" ]; then
+            echo "job-runner: building as account $ACCT (CLAUDE_CONFIG_DIR=$CONFDIR)" >> "$LOG"
+        else
+            echo "job-runner: account $PREV_ACCT is over its limit — retrying as account $ACCT (CLAUDE_CONFIG_DIR=$CONFDIR)" >> "$LOG"
+        fi
+        FAM_FIRST=""
+        PREV_ACCT=$ACCT
+        ATT_OFF=$(wc -c < "$STREAMLOG" 2>/dev/null || echo 0)
+        (
+            # Every account is addressed explicitly, account 1 included
+            # (specs/account-fallback.md rule 3) — never by whatever the
+            # environment arrived holding: a job dispatched from a turn inherits
+            # the turn's override (job_start forwards it on purpose), and a rule
+            # shaped as "absent means X" once re-ran the account that had just
+            # refused while another entry was never tried at all.
+            export CLAUDE_CONFIG_DIR="$CONFDIR"
+            # The job profile: no MCP servers and no skills catalogue, and
+            # deliberately no --tools restriction — a builder needs whatever the
+            # work needs. See claude_profile_flags; --tools without the empty MCP
+            # config is the shape that TRIPLES the context.
+            claude_profile_flags job
+            # $LOG fills AS the builder writes, not at completion. This used to
+            # exec straight into $STREAMLOG and turn the attempt's slice back into
+            # prose only after the CLI exited, so for a running job `crab job log`
+            # showed nothing, a stopped one kept nothing, and both were read, over
+            # and over, as "the job produced nothing". The tee keeps $STREAMLOG
+            # byte-identical for the viewer and the refusal slices below; the
+            # filter (lib/job-log-stream) writes the human report event by event,
+            # so a job killed mid-build leaves exactly what it had said by then.
+            # The subshell's exit code must stay the CLI's own — tee and the
+            # filter exit 0 whatever happened in front of them.
+            "$CLAUDE_BIN" -p --dangerously-skip-permissions \
+                --model "$JOB_TRY_MODEL" --effort "$JOB_EFFORT" \
+                --verbose --output-format stream-json \
+                "${CLAUDE_PROFILE_FLAGS[@]}" \
+                --append-system-prompt "$SYS" \
+                "$TASK" 2>&1 \
+                | tee -a "$STREAMLOG" "$STREAM_ARCHIVE" \
+                | "$LIB_DIR/job-log-stream" >> "$LOG"
+            exit "${PIPESTATUS[0]}"
+        )
+        RC=$?
+        if [ "$RC" -eq 0 ]; then
+            # The walk on the record (jobs.md rule 37): a morning reader sees
+            # which logins tonight's build burned without opening the stream.
+            LAST_OUTCOME=clean
+            "$LIB_DIR/job-status" append "$STATUS" attempts \
+                "$(date '+%F %T') account $ACCT: ran clean" 2>/dev/null
+            break
+        fi
+        # Judged on the CLI's OWN events in this attempt's slice, never on its raw
+        # bytes. A stream carries every byte of every tool result, so grepping it
+        # for the limit signature made a builder that merely READ a file
+        # containing the wording — lib/common.sh, which holds the signature's own
+        # patterns — and then exited non-zero for any reason look like an account
+        # refusal: the current account rotated and every further dispatch was held
+        # for half an hour, on the strength of a file the builder opened.
+        # claude_stream_refusal is the same judgement the turn and wake walks use
+        # — and so is the mid-build CUT (specs/jobs.md rule 15a, account-fallback
+        # rule 12a): a limit that stops a builder half-way through its work moves
+        # the build to the next account at once, exactly as a refusal does, instead
+        # of journalling the CLI's complaint as the builder's closing words. Four
+        # builders died that way inside ten minutes on the night of 2026-08-11.
+        # A final attempt that ends cut stays a real failure, never blocked — the
+        # blocked judgement below still demands no genuine output at all.
+        if REFUSAL="$(claude_stream_refusal "$STREAMLOG" "$ATT_OFF")"; then
+            LAST_OUTCOME=refused
+            "$LIB_DIR/job-status" append "$STATUS" attempts \
+                "$(date '+%F %T') account $ACCT: refused — $REFUSAL" 2>/dev/null
+        elif REFUSAL="$(claude_stream_limit_cut "$STREAMLOG" "$ATT_OFF")"; then
+            LAST_OUTCOME=cut
+            "$LIB_DIR/job-status" append "$STATUS" attempts \
+                "$(date '+%F %T') account $ACCT: cut mid-run — $REFUSAL" 2>/dev/null
+        else
+            LAST_OUTCOME=failed
+            "$LIB_DIR/job-status" append "$STATUS" attempts \
+                "$(date '+%F %T') account $ACCT: failed (exit $RC)" 2>/dev/null
+            break
+        fi
+        claude_limit_record "$ACCT" "$REFUSAL" "$JOB_TRY_MODEL"
+    done
+    # A list that ended on a refusal or a cut was offered nothing with
+    # credit: the family is dry, and the walk above decides where to go.
+    case "$LAST_OUTCOME" in refused|cut) FAMILY_REFUSED=1 ;; esac
+    fi
+    [ "$RC" -eq 0 ] && break
+    # A genuine failure ends the job at the family it happened on (rule 5b):
+    # the walk exists for refusals, not for a second opinion on a broken
+    # build.
+    [ -n "$FAMILY_REFUSED" ] || break
+    FAMILIES_REFUSED="${FAMILIES_REFUSED:+$FAMILIES_REFUSED,}$(job_model_key "$JOB_TRY_MODEL")"
+done
+trap - TERM
+
+# The token ledger (specs/metrics.md rule 13): the whole walk sits in one
+# stream, so the parser splits the attempts on the CLI's own init events and
+# reads the accounts off the swap markers each retry logged above. The hint
+# is the walk's own last account NUMBER — equal to the only account when the
+# walk never swapped, which is the one case the hint decides.
+token_ledger_record "$STREAMLOG" job "$JOB_MODEL_USED" "$JOB_EFFORT" \
+    "$ACCT" "$(( $(date +%s) - START ))"
+
+# Renewed: the status write, the day journal, and the completion wake below
+# all still touch her files after a run that may have outlived the first
+# declaration's window.
+touch_suppress -w 900 "$WORKDIR" "$JOBS_DIR" 2>/dev/null
+
+# A correction queued after the builder's final tool call had no boundary at
+# which the hook could deliver it. Never bless that off-course result as a
+# clean finish (specs/jobs.md rule 7g); preserve the correction as an explicit
+# undelivered receipt for the completion wake and the next reader.
+STEER_INBOX="$JOBS_DIR/$ID.steer"
+shopt -s nullglob
+PENDING_STEER=("$STEER_INBOX"/*.pending)
+shopt -u nullglob
+if [ "${#PENDING_STEER[@]}" -gt 0 ]; then
+    RC=1
+    for _pending in "${PENDING_STEER[@]}"; do
+        _undelivered="${_pending%.pending}.undelivered"
+        mv "$_pending" "$_undelivered" 2>/dev/null || continue
+        "$LIB_DIR/job-status" append "$STATUS" steering \
+            "$(date '+%F %T') undelivered $(basename "$_undelivered")" 2>/dev/null || true
+    done
+    echo "job-runner: a live correction arrived after the builder's last tool boundary and was not delivered. The result is not accepted as current; read $STEER_INBOX/*.undelivered before continuing." >> "$LOG"
+fi
+
+STATE=finished
+[ "$RC" -eq 0 ] || STATE=failed
+# The record hook (jobs.md rules 27-28): a build dispatched against an
+# engineering record may not end successful unless that record's last_touched
+# is newer than this job's dispatch — the builder wrote its outcome back to
+# the thread it came from. The comparison is asked of the tool that owns the
+# format, never re-implemented here; a record the drawer no longer holds
+# fails the same way, because an untouchable record cannot pass. A run that
+# failed on its own keeps its own reason, and a blocked run never began, so
+# no record was owed.
+RECORD_UNTOUCHED=""
+if [ "$STATE" = finished ] && [ -n "$RECORD" ]; then
+    # The comparison floors on the ending gate's own attach write (jobs.md
+    # rule 27, engineering-records.md rule 15b): the gate touches the record
+    # moments AFTER dispatch to land the job id on it, and without the floor
+    # that attach would stand in for the builder's entry. Read here at check
+    # time, never at boot — the attach lands while the worker is starting.
+    RECORD_FLOOR="${DISPATCH_EPOCH:-0}"
+    ATTACH_EPOCH="$("$LIB_DIR/job-status" get "$STATUS" record_attached_epoch 2>/dev/null)"
+    if [ -n "$ATTACH_EPOCH" ] && [ "$ATTACH_EPOCH" -gt "${RECORD_FLOOR:-0}" ] 2>/dev/null; then
+        RECORD_FLOOR="$ATTACH_EPOCH"
+    fi
+    if ! DESKCRAB_ENG_DIR="$ENG_DIR" python3 "$LIB_DIR/eng" \
+            touched-since "$RECORD" "${RECORD_FLOOR:-0}" 2>/dev/null; then
+        STATE=failed
+        RC=1
+        RECORD_UNTOUCHED=1
+        echo "job-runner: the build ran clean, but engineering record '$RECORD' was never updated — its last_touched is not newer than this job's dispatch. A job dispatched against a record succeeds only by writing its outcome back to it (crab eng touch $RECORD '...'). Marked failed; the work above may still be real, so read the log and the record before repeating it." >> "$LOG"
+    fi
+fi
+# The completion-review gate (jobs.md rule 29a, engineering-records.md rule
+# 16): a clean record build ends SUBMITTED, never self-settled — and never
+# merely narrated. A record still `open` at check time means the builder
+# touched the thread without claiming anything for the review to judge, and
+# "finished" over an unsubmitted record is exactly the shape that let a
+# 2026-08-26 builder's narrowed substitute read as the ask delivered. State
+# `review` passes; so does a record a hand with authority closed while the
+# build ran, because the ask is answered either way.
+RECORD_UNREVIEWED=""
+if [ "$STATE" = finished ] && [ -n "$RECORD" ]; then
+    REC_STATE="$(DESKCRAB_ENG_DIR="$ENG_DIR" python3 "$LIB_DIR/eng" field "$RECORD" state 2>/dev/null)"
+    if [ "$REC_STATE" = open ]; then
+        STATE=failed
+        RC=1
+        RECORD_UNREVIEWED=1
+        echo "job-runner: the build ran clean and touched engineering record '$RECORD', but never SUBMITTED it for review — the record is still open. A builder's completion claim (or its honest inability) goes through crab eng review $RECORD '<claim>', never through settle, and the runner refuses to call unsubmitted work finished (jobs.md rule 29a). Marked failed; the work above may still be real, so read the log and the record before repeating it." >> "$LOG"
+    fi
+fi
+SUMMARY="$(tail -c 600 "$LOG" | tr '\n\t' '  ' | sed 's/  */ /g')"
+# A build that never began is its own outcome. Reported as "failed" it reads as
+# a builder that tried and got it wrong, which sends the next wake to read a log
+# holding nothing but a refusal — and leaves the standing dispatch policy free
+# to send the next builder into the same wall.
+BLOCKED=""
+if [ "$RC" -ne 0 ]; then
+    # The same event-level judgement as the retry decision above, on the same
+    # slice: blocked means the CLI's own words refused and no model output
+    # exists. A build that ran and failed has model output, so it can never
+    # land here (specs/jobs.md rule 15). Each engine is judged by its own
+    # detector (specs/model-backends.md rule 14), and a codex build that
+    # never booted carries its reason in hand — no stream holds it.
+    if [ "${TRY_BACKEND:-$JOB_BACKEND}" = "codex" ]; then
+        if [ -n "$CODEX_PRE_BLOCKED" ]; then
+            BLOCKED="$CODEX_PRE_BLOCKED"
+        else
+            BLOCKED="$(codex_stream_refusal "$STREAMLOG" "$ATT_OFF")" || BLOCKED=""
+        fi
+    else
+        BLOCKED="$(claude_stream_refusal "$STREAMLOG" "$ATT_OFF")" || BLOCKED=""
+    fi
+    if [ -n "$BLOCKED" ]; then
+        STATE=blocked
+        # The marker carries every family the walk was refused at (jobs.md
+        # rule 16), so the hold scopes to the families proved dry and a
+        # dispatch of any other passes.
+        job_block_record "$BLOCKED" \
+            "${FAMILIES_REFUSED:-$(job_model_key "$JOB_MODEL_USED")}"
+    fi
+fi
+"$LIB_DIR/job-status" set "$STATUS" state="$STATE" exit="$RC" finished=now summary="$SUMMARY"
+
+# Collection (jobs.md rules 38-40): locate the work — branch, commits since
+# dispatch, dirty files, the report's test tally — and judge the report's
+# closing words. A finished job whose report ends on an intention to WAIT is
+# failed here, never finished (rule 39: a promise made by a process that
+# stops existing is a task that did not happen — two builders died exactly
+# that way, one over an empty diff); every other finished job moves to
+# collected. Its verdict line lands in the log via stderr; a collector that
+# cannot run costs the collection line, never the outcome — the state in
+# hand stands.
+COLLECTION=""
+if [ "$STATE" = finished ] || [ "$STATE" = failed ]; then
+    COLLECTED="$("$LIB_DIR/job-collect" run "$JOBS_DIR" "$ID" 2>>"$LOG")"
+    case "$COLLECTED" in
+        finished|collected|failed|stopped|died|blocked) STATE="$COLLECTED" ;;
+    esac
+    COLLECTION="$("$LIB_DIR/job-status" get "$STATUS" collection 2>/dev/null)"
+fi
+
+# The durable day record: the task in full, the report in full. A job is a
+# turn of the day like any other — it just had nobody waiting on it.
+day_journal_append job "$START" "$(( $(date +%s) - START ))" "$$" \
+    "$TASK" "$(cat "$LOG" 2>/dev/null)" "$STATE (exit $RC)"
+
+# Tell her it landed — via an event wake, not a voice: whether anything gets
+# said out loud is the wake's own decision, made by the usual busy/quiet rules.
+REVIEW_WAKE=""
+if [ "$STATE" = blocked ]; then
+    # Nothing ran, so there is nothing to read and nothing to verify. Say that
+    # plainly instead of sending the next wake to audit an empty log.
+    WAKE_REASON="Detached job $ID never began: ${BLOCKED:-the CLI refused to run}. NO WORK WAS ATTEMPTED and the log holds only the refusals — do not read it looking for results. Every family in the walk was refused (${FAMILIES_REFUSED:-$(job_model_key "$JOB_MODEL_USED")}). Task still undone: $(printf '%.200s' "$TASK"). Dispatches at those families are held for $(( JOB_BLOCK_RETRY / 60 )) min; do the work by hand if it is small, or leave it for later."
+elif [ -n "$RECORD_UNTOUCHED" ]; then
+    # The build ran clean and the obligation did not: the record it was
+    # dispatched against was never touched (jobs.md rule 28). Name the record
+    # in the one channel that reaches her, so the next reader knows what is
+    # owed before deciding whether the work itself needs repeating.
+    WAKE_REASON="Detached job $ID FAILED because engineering record '$RECORD' was never updated: the build ran, but its last_touched is older than the dispatch. Read $LOG, and if the work is real, write the outcome yourself with crab eng touch $RECORD — the thread must carry what happened to it. Task was: $(printf '%.200s' "$TASK")"
+elif [ -n "$RECORD_UNREVIEWED" ]; then
+    # Rule 29a's channel: the build ran clean, wrote to its record, and never
+    # submitted a claim — so nothing exists for the review to judge, and a
+    # "finished" here is how a narrowed substitute once read as delivery.
+    WAKE_REASON="Detached job $ID FAILED because its work was never SUBMITTED for review: engineering record '$RECORD' is still open — the builder touched the thread but no completion claim entered review, and a builder cannot settle its own ask. Read $LOG and crab eng show $RECORD; if the work is real, submit it yourself with crab eng review $RECORD '<claim>' and then judge it against the original ask. Task was: $(printf '%.200s' "$TASK")"
+elif [ "$STATE" = failed ] && case "$COLLECTION" in "died waiting"*) true ;; *) false ;; esac; then
+    # Rule 39's one channel to her: the run exited clean and is still a
+    # failure, because its report ends on an intention. Say exactly that, or
+    # the morning reads "failed" and goes hunting for a build error that
+    # does not exist.
+    WAKE_REASON="Detached job $ID FAILED by dying on a wait: its report ends on an intention, not an outcome, and a promise made by a process that stops existing is a task that did not happen. $COLLECTION Task was: $(printf '%.200s' "$TASK") — read $LOG and crab job show $ID before repeating any of it."
+else
+    # The completion review (jobs.md rule 29b): a record job that ran clean
+    # ended with its record SUBMITTED, and this wake — the job's one channel
+    # back — is the review. The reason is the review brief: recover the
+    # original ask, inspect the artefact itself, then accept or reject.
+    # Booked with the JOB_REVIEW_EFFORT override below, so the review runs
+    # with real hands whatever the wake path's default effort.
+    REVIEW_WAKE=""
+    if [ -n "$RECORD" ] && { [ "$STATE" = collected ] || [ "$STATE" = finished ]; } \
+        && [ "$(DESKCRAB_ENG_DIR="$ENG_DIR" python3 "$LIB_DIR/eng" field "$RECORD" state 2>/dev/null)" = review ]; then
+        REVIEW_WAKE=1
+        WAKE_REASON="Detached job $ID finished ($STATE, exit $RC${COLLECTION:+; $COLLECTION}) and SUBMITTED engineering record '$RECORD' for review — the record is NOT settled, a builder cannot settle it, and THIS WAKE IS THE REVIEW. Recover the ORIGINAL ask and its acceptance criteria from the record's own opening entry (crab eng show $RECORD), then inspect the actual artefact or the visible behaviour yourself — run the thing, open the page, read the diff; never take the builder's report or its claim as the inspection — and decide whether the FULL ask and the full design were delivered. Delivered whole: crab eng accept $RECORD '<what you verified>'. Anything missing, narrowed, or substituted (adjacent work standing in for the ask is the named failure): crab eng reject $RECORD '<the missing requirements>' — reject preserves them on the record and redispatches the remaining work itself. Task was: $(printf '%.200s' "$TASK") — builder's report in $LOG."
+    else
+        WAKE_REASON="Detached job $ID finished ($STATE, exit $RC${COLLECTION:+; $COLLECTION}). Task was: $(printf '%.200s' "$TASK") — full output in $LOG. Read it and verify its claims yourself before repeating them."
+    fi
+fi
+# The errands owed at completion (jobs.md rule 7k), RE-READ after the final
+# state write above: the attach door refuses any state past running under
+# the same lock, so this list is complete — whatever was attached mid-run
+# included — and every completion wake, whatever its outcome, carries each
+# one verbatim as an OWED action. Nothing here decides whether an errand
+# still makes sense over this outcome; the waking session does, and says
+# so either way. A job with no errand books the reason it always did.
+mapfile -t ERRANDS < <("$LIB_DIR/job-status" list "$STATUS" on_done 2>/dev/null)
+if [ "${#ERRANDS[@]}" -gt 0 ]; then
+    ERRAND_NOTE=" OWED ERRAND"
+    [ "${#ERRANDS[@]}" -gt 1 ] && ERRAND_NOTE="${ERRAND_NOTE}S (${#ERRANDS[@]})"
+    ERRAND_NOTE="$ERRAND_NOTE — attached to this job by the hand that dispatched it, to be done when the job exits:"
+    _n=0
+    for _e in "${ERRANDS[@]}"; do
+        _n=$(( _n + 1 ))
+        ERRAND_NOTE="$ERRAND_NOTE $_n) «$_e»"
+    done
+    ERRAND_NOTE="$ERRAND_NOTE — Do it NOW, in this wake. If the outcome above makes it wrong or impossible, say plainly in your reply that it was NOT done and why. Never silently skip it: the errand lives nowhere but here, and it is owed whatever the build did (jobs.md rule 7k)."
+    WAKE_REASON="$WAKE_REASON$ERRAND_NOTE"
+    echo "job-runner: the completion wake carries ${#ERRANDS[@]} owed errand(s) as OWED actions" >> "$LOG"
+    unset _n _e
+fi
+# The review effort override (jobs.md rule 29b): a level the booking side
+# would refuse must fall back rather than cost the job its only channel back.
+case "${JOB_REVIEW_EFFORT:-medium}" in
+    low|medium|high) ;;
+    *) JOB_REVIEW_EFFORT=medium ;;
+esac
+# The review model pin (jobs.md rule 29b, wake-queue.md rule 13b): the review
+# was specified as a Sol review at medium, so the booking carries the model —
+# inheriting whichever ordinary wake model happens to be configured is not
+# that review. A name the record could not carry (empty, or bytes outside the
+# booking side's token) falls back to sol the same way a bad effort falls
+# back to medium, never to a refused booking.
+case "${JOB_REVIEW_MODEL:-sol}" in
+    *[!A-Za-z0-9._:-]*|'') JOB_REVIEW_MODEL=sol ;;
+esac
+# ...but not when this runner is a test. A scratch run gets its own JOBS_DIR so
+# it cannot dirty the live jobs directory — and on 2026-08-07 one still woke me
+# for real, about a job called "testid" whose task was "do a thing", leaving no
+# log and no sidecar anywhere for me to find. Isolating what a test may TOUCH
+# and what it may SPEND says nothing about who it may INTERRUPT. A run that is
+# not the live jobs directory does not get to reach the live me.
+LIVE_JOBS_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab/jobs"
+SCRATCH_RUN=""
+if [ -n "${DESKCRAB_NO_DISPATCH:-}" ] || [ "$JOBS_DIR" != "$LIVE_JOBS_DIR" ]; then
+    SCRATCH_RUN=1
+fi
+
+# A blocked job's brief must not wait on her happening to notice (jobs.md rules
+# 18a-18f). The wake above ANNOUNCES that the task is still undone, but until
+# now nothing re-dispatched it: the block marker expired on its own and the
+# brief sat in the sidecar until a hand found it. So: one transient timer, for
+# the retry window plus a margin — past the marker's own expiry, so the fired
+# dispatch is the retry probe and not another refusal at the preflight. The
+# fire side (lib/job-block-retry) re-reads the sidecar and does every check
+# there, where the facts will be current, not here, where they are guesses
+# about the future. Never armed for a job that is itself a retry: a brief gets
+# exactly one automatic shot, or two dry accounts would volley it forever.
+if [ "$STATE" = blocked ]; then
+    ORIGIN_OF="$("$LIB_DIR/job-status" get "$STATUS" retry_of 2>/dev/null)"
+    if [ -n "$SCRATCH_RUN" ]; then
+        echo "job-runner: scratch run ($JOBS_DIR) — block retry not armed" >> "$LOG"
+    elif [ -n "$ORIGIN_OF" ]; then
+        echo "job-runner: this job was itself the one automatic retry (of $ORIGIN_OF) — not arming another; the task stays undone for a hand to notice" >> "$LOG"
+    else
+        RETRY_IN=$(( JOB_BLOCK_RETRY + 60 ))
+        # CLAUDE_CONFIG_DIR is deliberately NOT forwarded into the timer's
+        # unit: the fired dispatch must ask claude_child_login at fire
+        # time, so the brief goes out on whatever account the selection has
+        # since moved to — never pinned to the one that just refused.
+        if systemd-run --user --collect --quiet --unit="deskcrab-job-retry-$ID" \
+            --on-active="${RETRY_IN}s" \
+            --setenv=PATH="$HOME/.local/bin:$PATH" \
+            --setenv=DESKCRAB_CONF="$CONF_FILE" \
+            --setenv=DESKCRAB_STATE_PREFIX="$STATE_PREFIX" \
+            --setenv=JOBS_DIR="$JOBS_DIR" \
+            --setenv=CLAUDE_BIN="${CLAUDE_BIN:-}" \
+            --setenv=JOB_MODEL="$JOB_MODEL" \
+            --setenv=JOB_EFFORT="$JOB_EFFORT" \
+            "$LIB_DIR/job-block-retry" "$ID" 2>/dev/null; then
+            echo "job-runner: the brief re-dispatches itself once, in $(( RETRY_IN / 60 )) min (unit deskcrab-job-retry-$ID)" >> "$LOG"
+        else
+            # No user manager: the same shape job_start falls back to.
+            ( setsid bash -c 'sleep "$1"; exec "$2" "$3"' _ "$RETRY_IN" \
+                "$LIB_DIR/job-block-retry" "$ID" >/dev/null 2>&1 </dev/null & )
+            echo "job-runner: the brief re-dispatches itself once, in $(( RETRY_IN / 60 )) min (setsid — no user manager)" >> "$LOG"
+        fi
+    fi
+fi
+
+if [ -n "$SCRATCH_RUN" ]; then
+    echo "job-runner: scratch run ($JOBS_DIR) — event wake suppressed: $WAKE_REASON" >> "$LOG"
+elif [ -n "$WANTS_FILE" ]; then
+    # A review wake carries the effort override AND the model pin
+    # (wake-queue.md rules 13a-13b, jobs.md rule 29b) — the review is a Sol
+    # review at medium by brief, not whatever the ordinary wake path runs;
+    # every other completion wake books as it always has.
+    "$SCRIPT_DIR/crab" wake-at --by job-runner \
+        ${REVIEW_WAKE:+--effort "${JOB_REVIEW_EFFORT:-medium}"} \
+        ${REVIEW_WAKE:+--model "${JOB_REVIEW_MODEL:-sol}"} \
+        5s event "$WAKE_REASON" >/dev/null 2>&1
+elif [ "${#ERRANDS[@]}" -gt 0 ]; then
+    # No wants file, no completion wake (rule 7) — and therefore nothing to
+    # carry the errand. Said in the one place that outlives this process.
+    echo "job-runner: no WANTS_FILE on this instance, so no completion wake is booked and the owed errand(s) cannot be carried — do them by hand: ${ERRANDS[*]}" >> "$LOG"
+fi
+
+exit "$RC"

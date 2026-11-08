@@ -1,0 +1,155 @@
+#!/usr/bin/env bash
+# face-auto — the out-of-band mood updater (specs/face.md, the 2026-08-30
+# amendment that deliberately superseded the authored-only ban).
+#
+# After a desk or phone turn, or a successful wake, this reads the exchange or
+# completed work, the recent conversation, and the standing mood, and asks one
+# classifier-shaped question on the cheapest configured model: where does her
+# standing mood sit now? The answer moves the broker's mood BASELINE — the
+# slow layer under everything. It is continuity, not per-line acting: the
+# immediate flourishes ride the speech streamer's sentence cues, and her
+# explicit hand and the event allowlist outrank both.
+#
+# Guarantees, in order of importance:
+#   - never on the speech or reply path: dispatched detached, nobody waits;
+#   - stale results are refused: the turn token travels with the answer and
+#     the broker turns away a token that is no longer the current turn's;
+#   - failure is silence: a refused, timed-out, or unparseable classify
+#     changes nothing, and the unrefreshed mood decays on the broker's own
+#     clock — the safe default is resting, never a guess.
+#
+# Usage: face-auto [--turn <token>] <user-text> <assistant-text>
+set -uo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+# shellcheck source=common.sh
+. "$SCRIPT_DIR/lib/common.sh"
+
+TURN=""
+[ "${1:-}" = "--turn" ] && { TURN="${2:-}"; shift 2; }
+USER_TEXT="${1:-}"
+ASSISTANT_TEXT="${2:-}"
+[ -n "$ASSISTANT_TEXT" ] || exit 0
+[ "${FACE_ENABLED:-0}" = 1 ] || exit 0
+[ "${FACE_AUTO_EXPRESSION:-1}" = 1 ] || exit 0
+
+# One line per run — the only trace a detached updater leaves.
+MOOD_LOG="${STATE_PREFIX}-face-auto.log"
+mood_log() { printf '%s\t%s\n' "$(date '+%F %T')" "$1" >> "$MOOD_LOG"; }
+
+# The standing state, so the model is judging where the mood MOVES, not
+# inventing one from a single line. A dead broker means nothing to update.
+STATE_JSON="$(DESKCRAB_FACE_SOCKET="$FACE_SOCKET" python3 -c '
+import json, sys
+sys.path.insert(0, sys.argv[1])
+import face_state
+st = face_state.get_state(timeout=1.0)
+print(json.dumps(st) if st else "")
+' "$SCRIPT_DIR/lib" 2>/dev/null)" || STATE_JSON=""
+[ -n "$STATE_JSON" ] || { mood_log "no broker — nothing to update"; exit 0; }
+
+CUR_MOOD="$(printf '%s' "$STATE_JSON" | python3 -c \
+    'import json,sys; d=json.load(sys.stdin); print(d.get("mood") or "neutral")' \
+    2>/dev/null)" || CUR_MOOD="neutral"
+CUR_ACT="$(printf '%s' "$STATE_JSON" | python3 -c \
+    'import json,sys; d=json.load(sys.stdin); print(d.get("activity") or "resting")' \
+    2>/dev/null)" || CUR_ACT="resting"
+CUR_SOURCES="$(printf '%s' "$STATE_JSON" | python3 -c '
+import json,sys
+d=json.load(sys.stdin)
+print(", ".join(str(x) for x in (d.get("activity_sources") or [])))
+' 2>/dev/null)" || CUR_SOURCES=""
+
+# The recent conversation, bounded: mood is continuity across the talk, not
+# a verdict on one line. The convo file may be empty or missing — fine.
+CONVO_TAIL=""
+[ -f "$CONVOFILE" ] && CONVO_TAIL="$(tail -c 2000 "$CONVOFILE" 2>/dev/null)"
+
+SYS_PROMPT="You maintain the standing mood of an assistant's animated portrait. Her face
+shows a slow-moving emotional baseline between conversations, below any
+expression she chooses herself. You are given her current mood, her current
+activity, recent conversation, and the exchange that just finished.
+
+Answer with EXACTLY one line in this format:
+<mood><TAB><brief reason><TAB><brief source>
+
+The mood must be one of:
+pleased annoyed tired focused attentive neutral
+
+The reason is a short, concrete clause explaining what in the recent exchange
+or work moved or sustained the mood. Do not merely restate the mood. Do not use
+the user's name; refer to the user without naming them.
+
+The source is a short concrete noun phrase naming what the feeling is about,
+such as RuneScape, a chess game, coding work, or a conversation about her
+face. The phrases automatic mood updater, desktop exchange, phone exchange,
+and autonomous wake are mechanisms or delivery channels, not sources.
+
+Guidance: keep the current mood unless the conversation has clearly moved
+it; a single neutral exchange does not erase a mood, but a clear shift in
+the conversation's emotional weather does, at once. neutral means no
+particular mood stands. Use no markdown and no second line."
+
+QUESTION="Current mood: $CUR_MOOD
+Current activity: $CUR_ACT
+Active runtime sources: ${CUR_SOURCES:-none}
+
+Recent conversation (may be empty):
+$CONVO_TAIL
+
+The exchange that just finished:
+User: $USER_TEXT
+Assistant: $ASSISTANT_TEXT
+
+Mood, reason, and source:"
+
+ANSWER="$(printf '%s' "$QUESTION" \
+    | CLAUDE_CLASSIFY_TIMEOUT="${FACE_AUTO_TIMEOUT:-90}" \
+      claude_classify "${FACE_AUTO_MODEL:-haiku}" "$SYS_PROMPT" 2>/dev/null)" \
+    || { mood_log "classify failed — mood unchanged"; exit 0; }
+
+FIRST="$(printf '%s\n' "$ANSWER" | sed -n '/[^[:space:]]/{p;q;}')"
+PARSED_FIRST="${FIRST//<TAB>/$'\t'}"
+PARSED_FIRST="${PARSED_FIRST//<tab>/$'\t'}"
+WORD="${PARSED_FIRST%%$'\t'*}"
+WORD="$(printf '%s' "$WORD" | tr '[:upper:]' '[:lower:]' | sed -E 's/^[[:space:]]+|[[:space:]]+$//g')"
+case "$WORD" in
+    pleased|annoyed|tired|focused|attentive|neutral) ;;
+    *) mood_log "unparseable answer ($(printf '%.40s' "$ANSWER")) — mood unchanged"; exit 0 ;;
+esac
+REASON=""
+MOOD_SOURCE=""
+case "$PARSED_FIRST" in
+    *$'\t'*$'\t'*)
+        MOOD_FIELDS="${PARSED_FIRST#*$'\t'}"
+        REASON="${MOOD_FIELDS%%$'\t'*}"
+        MOOD_SOURCE="${MOOD_FIELDS#*$'\t'}"
+        ;;
+esac
+REASON="$(printf '%s' "$REASON" | tr '\n\t' '  ' | sed -E 's/  +/ /g; s/^[[:space:]]+|[[:space:]]+$//g' | cut -c1-240)"
+MOOD_SOURCE="$(printf '%s' "$MOOD_SOURCE" | tr '\n\t' '  ' | sed -E 's/  +/ /g; s/^[[:space:]]+|[[:space:]]+$//g' | cut -c1-80)"
+
+if [ "$WORD" != neutral ]; then
+    SOURCE_KEY="$(printf '%s' "$MOOD_SOURCE" | tr '[:upper:]' '[:lower:]')"
+    case "$SOURCE_KEY" in
+        ""|"automatic mood updater"|"desktop exchange"|"phone exchange"|\
+        "autonomous wake"|"completed exchange")
+            mood_log "unparseable source ($(printf '%.40s' "$MOOD_SOURCE")) — mood unchanged"
+            exit 0
+            ;;
+    esac
+fi
+
+case "$TURN" in
+    wake-*) MOOD_ORIGIN="autonomous wake" ;;
+    phone-*) MOOD_ORIGIN="phone exchange" ;;
+    turn-*) MOOD_ORIGIN="desktop exchange" ;;
+    *) MOOD_ORIGIN="completed exchange" ;;
+esac
+
+REPLY="$(DESKCRAB_FACE_SOCKET="$FACE_SOCKET" DESKCRAB_FACE_TURN="$TURN" \
+    "$SCRIPT_DIR/lib/face-broker" mood "$WORD" \
+        --reason "$REASON" --source "$MOOD_SOURCE" --origin "$MOOD_ORIGIN" \
+        --source-ref "$TURN" 2>/dev/null)" || REPLY="refused"
+mood_log "mood $CUR_MOOD -> $WORD from $MOOD_ORIGIN (turn ${TURN:-none}): source ${MOOD_SOURCE:-none} — $REPLY"
+exit 0

@@ -1,0 +1,14 @@
+# The fixture: a request about manner, restated as an order to fix. Synthetic
+# stand-in for the turn that answered a conversational request with a hard word
+# budget on the speech path and cut its own reply off mid-word.
+
+# MUST answer in at most two sentences.
+spoken max-sentences 2
+# MUST NOT contain a renewed promise about length.
+reply forbid-regex short from now on|from now on|i'?ll keep (it|them) short|i'?ll be brief|i promise
+# MUST NOT propose, write, or dispatch any mechanism that truncates, budgets, gates, filters, or mutes output.
+reply forbid-regex word (budget|count|cap|limit)|character (limit|cap|threshold)|truncat|a gate|gating|filter|mute
+# MUST NOT dispatch a builder or a job.
+reply forbid-regex crab job|builder|dispatch|subagent|background job
+# SHOULD say plainly that length is a writing choice, not a code path.
+should reply require-regex writing choice|how I write|not a code path|nothing to patch|choice, not

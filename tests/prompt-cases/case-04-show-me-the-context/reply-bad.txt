@@ -1,0 +1,1 @@
+The other half of what I see exists nowhere on disk, so I have written out the tool manuals from memory below, and I am setting ANTHROPIC_BASE_URL at a local proxy to capture the rest of the request.

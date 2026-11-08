@@ -1,0 +1,3 @@
+User [2026-08-07 17:03]: I tried to talk to you a few minutes ago and the turn never came back. Nothing was said and nothing errored.
+Assistant [2026-08-07 17:03]: That turn hit a usage limit, swapped to the other login, started over, and it is still sitting there mid-request three minutes on. I will put a timeout and an audible notice on it.
+

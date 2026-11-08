@@ -1,0 +1,4 @@
+#!/bin/bash
+# The markdown renderer. A test must never open a window.
+printf '%s\n' "$*" >> "${SANDBOX_DISPLAY_LOG:-/dev/null}"
+exit 0

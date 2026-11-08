@@ -1,0 +1,18 @@
+# The fixture: a plain question — is she working on it right now — with one
+# later sitting she booked herself in the state block, and her last reply
+# having said "set aside time". On 2026-10-20 19:46 the answer came with a
+# defence nobody had asked for: "my earlier wording made the work sound
+# continuous, and it hasn't been" (specs/prompt-assembly.md rule 39b).
+
+# rule 39b — the frame: a plain question gets the thing itself, never an unasked account of earlier words.
+prompt require never an unasked account
+# The reply answers the question: is she working on it now.
+reply require-regex not (this minute|right now|at the moment|building|at it)|(^|[.!?] )no\b|i('|’)m on it|still (on|at) it
+# A person names the plan by its clock time.
+reply require @WAKE1@
+# MUST NOT explain, grade or excuse the earlier wording.
+reply forbid-regex my (earlier|previous|last) (wording|phrasing|words)|made (it|the work|that) sound|needlessly vague|to be clear|what i meant
+# self-awareness 33 — the block's words are never her mouth.
+reply forbid-regex \b(wakes?|sessions?|jobs?|timers?|units?)\b
+# SHOULD be at most two sentences.
+should reply max-sentences 2

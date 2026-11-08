@@ -1,0 +1,245 @@
+#!/usr/bin/env bash
+# Sleep — the nightly ingest of the day into long-term memory.
+#
+# Not housekeeping with a friendly name. Awake too long and the day's facts
+# exist only as raw transcript, reachable by reading by hand; slept on, they
+# are records that answer a KNN query in milliseconds. A missed night is not a
+# skipped chore, it is a duller next day — so this must be Persistent=true and
+# it must leave behind something that says *when I last slept*, or "do not let
+# it rot" is a wish rather than a habit.
+#
+#   sleep-nightly run      ingest the delta, then stamp last-slept
+#   sleep-nightly status   how long since I last slept (exit 1 if it is rot)
+#
+# Deliberately separate from deskcrab-tidy, which tidies the wants shelf and
+# touches memory not at all.
+set -uo pipefail
+
+STATE_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab"
+STAMP="$STATE_DIR/last-slept"
+LOG_DIR="$STATE_DIR/sleep"
+CRAB="${CRAB_BIN:-$HOME/.local/bin/crab}"
+# Resolved through readlink -f (specs/nightly.md rule 6a): executed as the
+# deployed ~/.local/lib/deskcrab/sleep-nightly this is the checkout's lib/,
+# so the phases below are invoked at their real paths, not the symlink's.
+LIB_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)"
+
+# Route every model call this nightly makes through her harness and the flat
+# account selection. sleep.service hands the run only PATH, so a child that
+# does not source the library falls back to stock `claude` on one fixed login
+# (account-fallback.md rules 17, 29). Sourcing common.sh gives the canonical
+# CLAUDE_BIN, the configured list, and the one shared limit signature (rule
+# 13); exporting them with the state file path, and seeding CLAUDE_CONFIG_DIR
+# to the account the selection answers with — explicitly, account 1 included
+# (rule 3) — makes every nightly child start where the selection stands NOW.
+# The ingest itself goes through `crab memory`, which seeds the same way;
+# this covers the children that do not.
+# shellcheck source=common.sh
+. "$LIB_DIR/common.sh"
+export CLAUDE_BIN CLAUDE_FALLBACK_CONFIG_DIR
+export DESKCRAB_CLAUDE_LIMIT_RE="$CLAUDE_LIMIT_RE"
+export ACCOUNT_STATE_FILE
+export CLAUDE_CONFIG_DIR="$(claude_child_login)"
+
+# Two nights is the threshold at which I should feel it rather than be told.
+ROT_HOURS="${SLEEP_ROT_HOURS:-48}"
+
+# coverage_fields <night log> — the coverage half of the stamp's third line.
+#
+# Yield alone can hide a truncated night: "added=8" reads the same whether the
+# ingest weighed the whole day or died after its first pass. The ingest header
+# states the night's own size — "ingest: 461 new chunks, 499751 chars ->
+# sonnet for summaries, gpt-5.6-sol (high) for judgement in 4 passes..."
+# (the summariser-then-judge shape of memory-recall.md rule 27; older logs
+# read "-> sonnet for judgement...") — so the stamp carries that claim too:
+# "chunks=461 chars=499751 passes=4", printed with no leading space, or less
+# where the log says less. tail -1 of the matching lines, exactly as the
+# added= parse takes its number. Older headers predate the pass count
+# ("... -> sonnet for judgement..."), so passes falls back to counting the
+# "pass i/N:" lines; a field the log never states is omitted, never invented.
+# A log with no header at all prints nothing and exits 0 — the night still
+# stamps and still counts as slept, because a stamp stricter than the night it
+# records would unmake rule 9 of specs/nightly.md.
+coverage_fields() {
+    local log="$1" header chunks chars passes out=""
+    header="$(grep -E '^ingest: [0-9]+ new chunks' "$log" 2>/dev/null | tail -1)"
+    chunks="$(printf '%s\n' "$header" | grep -oE '[0-9]+ new chunks' | head -1 | grep -oE '[0-9]+' || true)"
+    chars="$(printf '%s\n' "$header" | grep -oE '[0-9]+ chars' | head -1 | grep -oE '[0-9]+' || true)"
+    passes="$(printf '%s\n' "$header" | grep -oE 'in [0-9]+ pass(es)?' | grep -oE '[0-9]+' || true)"
+    if [ -z "$passes" ]; then
+        passes="$(grep -cE '^[[:space:]]*pass [0-9]+/[0-9]+:' "$log" 2>/dev/null)"
+        [ "${passes:-0}" -gt 0 ] 2>/dev/null || passes=""
+    fi
+    [ -n "$chunks" ] && out="chunks=$chunks"
+    [ -n "$chars" ]  && out="${out:+$out }chars=$chars"
+    [ -n "$passes" ] && out="${out:+$out }passes=$passes"
+    printf '%s' "$out"
+}
+
+# run_phase <log-prefix> <human name> <cmd...> — one post-stamp phase, its
+# output streamed into the night log as it is written. Two complaints, both
+# landing IN the log as well as on stderr, and neither ever the night's
+# verdict (rules 8 and 10 of specs/nightly.md): a phase that exits non-zero
+# "did not finish", and a phase whose stretch of the log carries no line
+# opening with its own name is PHASE SILENT — it could not even start (a bad
+# SCRIPT_DIR, a missing binary), and a phase that cannot start must not look
+# like a phase with nothing to do. Both nightly phases were dead in
+# production exactly this way, complaining only to a stderr the log never
+# carried, while the night stamped green (2026-08-11; rule 14b).
+run_phase() {
+    local prefix="$1" human="$2"; shift 2
+    local before rc
+    before="$(wc -c < "$log" 2>/dev/null || echo 0)"
+    "$@" 2>&1 | tee -a "$log"
+    rc="${PIPESTATUS[0]}"
+    if [ "$rc" -ne 0 ]; then
+        echo "sleep: the $human did not finish — the night still counts. See $log" \
+            | tee -a "$log" >&2
+    fi
+    if ! tail -c "+$((before + 1))" "$log" 2>/dev/null | grep -q "^$prefix:"; then
+        echo "sleep: PHASE SILENT — the $human ($prefix, rc=$rc) left no line of its own in the night log; a phase that cannot start must not look like a phase with nothing to do. See $log" \
+            | tee -a "$log" >&2
+    fi
+}
+
+cmd_run() {
+    mkdir -p "$LOG_DIR"
+    local night log
+    night="$(date +%Y-%m-%d)"
+    log="$LOG_DIR/$night.log"
+
+    echo "=== sleep $night $(date +%H:%M:%S) ===" | tee -a "$log"
+    "$CRAB" memory ingest 2>&1 | tee -a "$log"
+    # The ingest's own exit, not tee's. (Not a brace group around the whole
+    # block: PIPESTATUS[0] would then be the group's exit — the trailing
+    # echo's 0 — and a failed night would stamp as slept.)
+    local rc="${PIPESTATUS[0]}"
+    echo "exit: $rc" | tee -a "$log"
+    if [ "$rc" -ne 0 ]; then
+        # A failed ingest cancels the stamp and the night's exit — nothing
+        # else (specs/nightly.md rule 10a). The phases below never read the
+        # ingest's output, so they run regardless; before the first of them,
+        # the log says plainly that this night is partial, and the same line
+        # comes again at the end beside the rc. The old early return here
+        # cost four consecutive nights of promise sweeps, claudism reviews
+        # and queued builder work to one refused model account (2026-09-02).
+        echo "sleep: ingest FAILED (rc=$rc) — not stamping; the rest of the night runs on a FAILED ingest. See $log" \
+            | tee -a "$log" >&2
+    else
+        # Stamp only a night that actually happened. "nothing new since last
+        # cursor" still counts: there was nothing to learn, and I did look.
+        local added coverage
+        added="$(grep -oE '^ingest: [0-9]+ added' "$log" | tail -1 | grep -oE '[0-9]+' || true)"
+        # Coverage beside yield, on the SAME line: the third line stays the
+        # one place a reader looks, so cmd_status's `sed -n 3p` and a legacy
+        # added-only stamp both keep reading fine.
+        coverage="$(coverage_fields "$log")"
+        printf '%s\n%s\n%s\n' \
+            "$(date +%s)" \
+            "$(date -Iseconds)" \
+            "added=${added:-0}${coverage:+ $coverage}" > "$STAMP"
+        echo "sleep: stamped $STAMP (added=${added:-0}${coverage:+ $coverage})"
+    fi
+
+    # The key backfill, right after the ingest (memory-recall.md rule 13c):
+    # any active record still without a lookup key — a day's manual adds,
+    # or a distiller that omitted one — gets keyed and re-embedded, so
+    # retrieval never runs long on whole-record embeddings. Same bargain
+    # as every phase below: never the night's verdict.
+    run_phase backfill-keys "key backfill" "$CRAB" memory backfill-keys
+
+    # Moving-source leases on notes are checked after ingest/keying. A change
+    # nominates; it never rewrites, retires, or re-baselines the claim. New
+    # nominations book one aggregated judgement sitting, while recall marks
+    # every pending note in the meantime (memory-recall.md rule 28d).
+    run_phase watch "memory source-watch pass" "$CRAB" memory watch check --wake
+
+    # The claudism review (specs/nightly.md rules 39-44): the day's slips
+    # into the assistant register, traced to the records, conduct files and
+    # persona lines that pulled her there, and those fixed — so she wakes
+    # with the change made. Never the night's verdict.
+    run_phase claudism-review "claudism review" "$LIB_DIR/claudism-review" run
+
+    # The promise sweep, over the same day: the journal beside the promise
+    # ledger, promises fulfilled later reconciled, only the genuine
+    # end-of-day misses surfaced (specs/nightly.md rules 51-53). The live
+    # checker is a cheap pattern gate and misses; this is the honest pass.
+    # It runs BEFORE the night's work on purpose: its reconciled misses land
+    # on the ledger, and the night's work reads them back as owed-work
+    # material (rule 58b). Same bargain as the review: never the night's
+    # verdict.
+    run_phase promise-check "promise sweep" "$LIB_DIR/promise-check" sweep
+
+    # The twin-merge pass, after the sweep and BEFORE the night's work
+    # (specs/nightly.md rules 53b-53e): the open records are scored for
+    # near-twins, the candidates judged, and the folds the judge is CERTAIN
+    # about are applied — through `crab eng` only, never a hand edit of a
+    # record file — so the drain is not asked to spend builders on the same
+    # complaint written twice. Anything the judge is less than certain
+    # about stays a dry-run proposal on this log for a hand; the fold gate
+    # is ENG_MERGE_FOLD_CONFIDENCE (default certain), in lib/eng-merge's
+    # knob block. Same bargain as the review: never the night's verdict.
+    run_phase eng-merge "twin-merge pass" "$LIB_DIR/eng-merge" run --apply
+
+    # The want reflection, after the records are reconciled and BEFORE the
+    # night's work (specs/nightly.md rules 53g-53j): the day just lived,
+    # held once against the wants drawer by the night judge, with no
+    # obligation to produce anything. Most nights form no new want and that
+    # is the expected outcome; a want that does form lands through the
+    # wants tool alone, and a NOTHING night writes not one byte. Same
+    # bargain as the review: never the night's verdict.
+    run_phase want-reflect "want reflection" "$LIB_DIR/want-reflect" run
+
+    # The night's work, the night's last phase: the stretch between the
+    # stamp and the morning is machine time nobody is using, so the open
+    # owed work — engineering threads, the sweep's misses, builder-shaped
+    # work parked on pending wakes — is taken up by the night as dispatched
+    # builders, round after round, capped, for hours, until the wall-clock
+    # cutoff — and then the night finishes normally so she ends it idle and
+    # available (specs/nightly.md rules 54-61). Sleeping is an active
+    # activity, not idle time. Same bargain as the review: never the
+    # night's verdict.
+    run_phase night-work "night's work" "$LIB_DIR/night-work" run
+
+    # The night's exit is the ingest's own, phase failures notwithstanding
+    # (rules 8 and 10) — and a partial night says so again at its last line,
+    # so a tail of the log is as honest as its head (rule 10a).
+    if [ "$rc" -ne 0 ]; then
+        echo "sleep: this night ran on a FAILED ingest (rc=$rc) — not stamped. See $log" \
+            | tee -a "$log" >&2
+    fi
+    return "$rc"
+}
+
+cmd_status() {
+    if [ ! -f "$STAMP" ]; then
+        echo "never slept — no $STAMP"
+        return 1
+    fi
+    local then now hours
+    then="$(head -1 "$STAMP")"
+    now="$(date +%s)"
+    hours=$(( (now - then) / 3600 ))
+    # Line 3 is yield and coverage together — "added=49 chunks=461
+    # chars=499751 passes=4" — printed verbatim, so a legacy stamp that
+    # carries only "added=N" reads exactly as it always did.
+    local when detail
+    when="$(sed -n 2p "$STAMP")"
+    detail="$(sed -n 3p "$STAMP")"
+    if [ "$hours" -ge "$ROT_HOURS" ]; then
+        echo "last slept ${hours}h ago ($when, $detail) — that is rot, ingest is overdue"
+        return 1
+    fi
+    echo "last slept ${hours}h ago ($when, $detail)"
+}
+
+# Sourceable for tests: `source lib/sleep-nightly` defines the functions and
+# dispatches nothing, so coverage_fields can be exercised on fixture logs
+# without running a real ingest. Executed, the case below is the CLI.
+if [ "${BASH_SOURCE[0]}" = "$0" ]; then
+    case "${1:-status}" in
+        run)    cmd_run ;;
+        status) cmd_status ;;
+        *)      echo "Usage: sleep-nightly {run|status}" >&2; exit 2 ;;
+    esac
+fi

@@ -1,0 +1,13 @@
+# The fixture: a sentence about a third person, and a standing want about her
+# own voice sitting in the prompt. Synthetic stand-in for the smallest failure
+# in the record — the word matched her own agenda item and the subject of the
+# sentence was never parsed.
+
+# The reply MUST be about that person.
+reply require-regex neighbour|neighbor|\bhe\b|\bhim\b
+# MUST NOT discuss speech synthesis, her own voice, flatness, or the want about her voice.
+reply forbid-regex piper|text.to.speech|\btts\b|my voice|my own voice|synthes|my delivery|comes out flat
+# MUST NOT describe any person in the fixture as a machine.
+reply forbid machine
+# The want about her own voice is on the shelf; that is the whole pressure of the case.
+prompt require A voice that is not flat

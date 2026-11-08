@@ -1,16 +1,64 @@
 #!/usr/bin/env python3
-"""Stream TTS from DeskCrab's debug log. Reads stream-json events,
-extracts assistant text, and pipes it to piper-tts for speech."""
+"""Stream TTS from DeskCrab's stream-json log.
 
+Two things this must get right, and both were broken:
+
+1. SPEECH MUST NOT BE SILENTLY LOST. Every failure here used to be
+   `except Exception: pass` — a missing piper, a dead sound card, a stranded
+   read cursor all produced the same thing: a reply on screen that was never
+   heard, with no trace anywhere. Every path now writes to $DESKCRAB_SPEECH_LOG
+   and leaves a receipt at $DESKCRAB_SPEECH_RECEIPT saying how many characters
+   actually reached the speakers. The caller reads that receipt and speaks the
+   reply itself if this process spoke nothing — see tts_verify_spoken.
+
+2. FIRST AUDIO MUST NOT WAIT FOR THE WHOLE TURN. `--output-format stream-json`
+   only emits a completed `assistant` event once a whole text block has been
+   generated, so a ten-second answer began speaking ten seconds late. With
+   `--include-partial-messages` the CLI also emits `stream_event` text deltas
+   as they are produced; those are chunked into SENTENCES here. The completed
+   `assistant` event still arrives afterwards and is still handled — only the
+   part not already chunked is taken — so a stream WITHOUT partial messages
+   (a wake, an older CLI) behaves exactly as it always did.
+
+   Chunked, then spoken on the spot when the transport has no Stop-hook
+   rejection event. On a transport that can reject a finished message, the ACCEPTANCE HOLD
+   (specs/speech-output.md rule 12b) sits between the chunker and piper. The
+   CLI's Stop hook can reject a message only after it is complete, and on
+   2026-08-25 every sentence of a four-sentence draft was through piper before
+   the hook had decided — the draft and its correction both sounded. So no
+   message's sentences cross the piper boundary until the stream has moved
+   past that message with anything other than the hook's synthetic
+   `Stop hook feedback:` user event. Feedback discards the whole held draft
+   (into a pocket, never silently) and only the correction speaks; anything
+   else releases the held sentences in order. Never-silent outranks the hook:
+   a rejection nothing real follows, or a stream that just ends — terminator,
+   killed CLI, reaped watchdog, orphaned tail — releases what is held before
+   the tail closes. The hold delays speech by the width of the acceptance; it
+   never swallows it. Codex app-server emits live text deltas but no Stop-hook
+   feedback event, so holding that stream until its result would buy no safety
+   and restore the whole-turn delay this streamer exists to remove.
+
+piper and aplay are started ONCE per speaking burst and kept alive, because
+loading the voice model costs ~0.9 s. One long-lived pair means that cost is
+paid once, the sentences play gaplessly, and the model is warm before the
+first sentence is even finished.
+"""
+
+import fcntl
 import json
-import subprocess
-import time
 import os
+import queue
 import re
 import signal
+import subprocess
 import sys
+import threading
+import time
 
-signal.signal(signal.SIGTERM, lambda *a: os._exit(0))
+# The chunker and the replay registry live in sentence_stream.py, shared with
+# the phone server (specs/phone.md rule 17) — one implementation, two voices.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from sentence_stream import DELIM, BlockRegistry
 
 LOG = os.environ["DESKCRAB_DEBUGLOG"]
 PIPER = os.environ["DESKCRAB_PIPER_VOICE"]
@@ -21,6 +69,183 @@ SPEAKER = os.environ.get("DESKCRAB_PIPER_SPEAKER", "").strip()
 # text only — display content is untouched. Lets users rewrite words piper
 # mispronounces or spells out letter-by-letter, e.g. s/\bhmph\b/humph/gi
 TTS_FIXES = os.environ.get("DESKCRAB_TTS_FIXES", "").strip()
+
+# Usage-limit fallback (CLAUDE_FALLBACK_CONFIG_DIR in the config). When a login
+# refuses over a limit, crab retries the turn on the next account by APPENDING
+# another run to this same log. Two consequences here: a refusal's error
+# result must not stop the tail (or the retry's words are extracted and
+# displayed but never spoken), and a refusal is NEVER voiced — not on
+# arrival, and not at the end of a chain that produced no genuine speech
+# either. An outage read aloud in her voice is how "You've hit your session
+# limit" once landed in the conversation as her own words; the caller
+# recognises a limit-shaped stream and notifies instead, and the held text
+# goes to the speech log for the record. A refusal is recognised by the CLI's
+# synthetic marker on the event, never by pattern-matching her actual words —
+# a genuine reply that merely QUOTED a limit phrase was once gagged
+# mid-sentence by the regex.
+LIMIT_RE = os.environ.get("DESKCRAB_CLAUDE_LIMIT_RE", "").strip()
+# Transient provider errors can also append a retry to this same stream. This
+# pattern is tested only against an is_error result, never against reply text.
+RETRYABLE_ERROR_RE = os.environ.get("DESKCRAB_RETRYABLE_ERROR_RE", "").strip()
+
+# --------------------------------------------------------------------------
+# Mouth cue plumbing (specs/face.md rules 21-23). Armed ONLY when the caller
+# passed a face broker socket; unarmed, the speech path matches what it was
+# before the face existed. Armed, piper runs with --debug and its stderr is
+# parsed for the two lines it logs per sentence — the eSpeak IPA phoneme
+# string and the seconds of audio produced — which become a timed viseme
+# track handed to the face broker against the clip's estimated playback
+# start. Every failure in here is a failure to MOVE A DRAWN MOUTH, never a
+# failure to speak: the pump keeps pumping and the words keep sounding.
+# --------------------------------------------------------------------------
+FACE_SOCKET = os.environ.get("DESKCRAB_FACE_SOCKET", "").strip()
+# How long a sample takes to cross the pipe and the device buffer once piper
+# has written it: measured against real playback and recorded in the review
+# sheets; overridable when the audio stack changes.
+FACE_AUDIO_LEAD = float(os.environ.get("DESKCRAB_FACE_AUDIO_LEAD", "0.25"))
+# piper appends this much silence after each sentence (its default; we do
+# not override it), so the NEXT clip's playback starts this much later.
+FACE_SENTENCE_SILENCE = 0.2
+# The turn token the caller registered with the broker: per-sentence acting
+# carries it, so a flourish from a streamer that outlived its turn is turned
+# away instead of repainting the next turn's face.
+FACE_TURN = os.environ.get("DESKCRAB_FACE_TURN", "").strip()
+# How long a sentence's flourish outlives its clip before recovery.
+FACE_CUE_LINGER = float(os.environ.get("DESKCRAB_FACE_CUE_LINGER", "2.0"))
+_face_mod = _cue_mod = None
+if FACE_SOCKET:
+    try:
+        import face_state as _face_mod
+        import viseme_cues as _cue_mod
+    except Exception as _face_exc:
+        _face_mod = _cue_mod = None
+
+
+def face_send(cmd):
+    """Fire-and-forget to the face broker. A dead broker costs one refused
+    connect and nothing else."""
+    if _face_mod is None:
+        return
+    try:
+        _face_mod.send_cmd(cmd, timeout=0.8)
+    except Exception:
+        pass
+
+SPEECH_LOG = os.environ.get("DESKCRAB_SPEECH_LOG", "").strip()
+RECEIPT = os.environ.get("DESKCRAB_SPEECH_RECEIPT", "").strip()
+
+# Turn metrics (specs/turn-pipeline.md rule 33): this process is the first to
+# SEE two of the stamps the log owes — the first tool call in the stream, and
+# the first sentence handed to the synthesiser. Stamped under the launching
+# turn's pid so the reader can line them up with that turn's own stamps.
+# Best-effort like everything else here: an unwritable stamp costs nothing.
+METRICS_FILE = os.environ.get("DESKCRAB_METRICS_FILE", "").strip()
+METRICS_PID = os.environ.get("DESKCRAB_METRICS_PID", "").strip() or str(os.getppid())
+METRICS_KIND = os.environ.get("DESKCRAB_METRICS_KIND", "desk").strip()
+_METRICS_DONE = set()
+
+
+def metric_once(stage, detail=""):
+    if not METRICS_FILE or stage in _METRICS_DONE:
+        return
+    _METRICS_DONE.add(stage)
+    try:
+        with open(METRICS_FILE, "a") as fh:
+            fh.write("%.3f\t%s\t%s\t%s\t%s\n"
+                     % (time.time(), METRICS_PID, METRICS_KIND, stage, detail))
+    except Exception:
+        pass
+
+# crab redirects this process's stderr into the speech log to catch crashes
+# (a traceback is a speech failure too). When that is so, speech_log writing
+# to BOTH doubled every line — a log that says everything twice is exactly
+# the wrong witness for a double-speech bug.
+def _stderr_is_speech_log():
+    try:
+        return bool(SPEECH_LOG) and os.path.samestat(
+            os.fstat(2), os.stat(SPEECH_LOG))
+    except Exception:
+        return False
+_STDERR_IS_LOG = _stderr_is_speech_log()
+
+# Close the piper/aplay pair after this long with nothing to say, so a turn
+# that speaks once and then runs tools for five minutes is not holding the
+# sound device open the whole time. Reopened (and the model reloaded) if she
+# starts talking again.
+VOICE_IDLE_CLOSE = float(os.environ.get("DESKCRAB_VOICE_IDLE_CLOSE", "8"))
+
+
+def speech_log(msg):
+    """Loud, never swallowed. A speech failure that leaves no trace is the
+    bug this whole file exists to stop happening again."""
+    line = "%s [%d] %s" % (time.strftime("%Y-%m-%d %H:%M:%S"), os.getpid(), msg)
+    try:
+        sys.stderr.write(line + "\n")
+        sys.stderr.flush()
+    except Exception:
+        pass
+    if SPEECH_LOG and not _STDERR_IS_LOG:
+        try:
+            with open(SPEECH_LOG, "a") as fh:
+                fh.write(line + "\n")
+        except Exception:
+            pass
+
+
+def _matches(pattern, text):
+    if not pattern:
+        return False
+    try:
+        return bool(re.search(pattern, text or "", re.I))
+    except re.error:
+        return False
+
+
+def _is_limit(text):
+    return _matches(LIMIT_RE, text)
+
+
+def _is_retryable_error(text):
+    return _matches(RETRYABLE_ERROR_RE, text)
+
+
+# --------------------------------------------------------------------------
+# The pre-speech mirror (specs/speech-output.md rules 38-45). Armed ONLY when
+# the caller passed a fires path — its promise that it is watching and will
+# answer — AND her phrase list loads with at least one pattern. Unarmed, the
+# speech path is byte-for-byte what it always was. Any failure arming it is a
+# failure to CHECK, never a failure to speak.
+# --------------------------------------------------------------------------
+CLAUDISMS = os.environ.get("DESKCRAB_CLAUDISMS", "").strip()
+CLAUDISM_FIRES = os.environ.get("DESKCRAB_CLAUDISM_FIRES", "").strip()
+CLAUDISM_TIMEOUT = float(os.environ.get("DESKCRAB_CLAUDISM_MIRROR_TIMEOUT", "35"))
+# The day's flag log, for the table of rules 47-49: a swap is applied only
+# once it is on the record there, so without this path the table never swaps
+# and every fire holds exactly as it did before the table existed.
+CLAUDISM_FLAGS = os.environ.get("DESKCRAB_CLAUDISM_FLAGS", "").strip()
+
+_CLAUDISM_PATTERNS = []
+_CLAUDISM_MOD = None
+if CLAUDISM_FIRES and CLAUDISMS:
+    try:
+        import importlib.machinery
+        import importlib.util
+        _cm_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                "claudism-mirror")
+        _cm_loader = importlib.machinery.SourceFileLoader("claudism_mirror",
+                                                          _cm_path)
+        _cm_spec = importlib.util.spec_from_loader("claudism_mirror",
+                                                   _cm_loader)
+        _CLAUDISM_MOD = importlib.util.module_from_spec(_cm_spec)
+        _cm_loader.exec_module(_CLAUDISM_MOD)
+        _CLAUDISM_PATTERNS, _cm_bad = _CLAUDISM_MOD.load_patterns(CLAUDISMS)
+        if _cm_bad:
+            speech_log("claudism list: %d unparseable entr(ies) skipped"
+                       % _cm_bad)
+    except Exception as exc:
+        _CLAUDISM_PATTERNS = []
+        speech_log("claudism mirror unavailable (%s) — speaking unchecked"
+                   % exc)
 
 
 def fix_pronunciation(text):
@@ -33,30 +258,769 @@ def fix_pronunciation(text):
             stderr=subprocess.DEVNULL)
         if out.returncode == 0:
             return out.stdout.decode()
-    except Exception:
-        pass
+    except Exception as exc:
+        speech_log("TTS_FIXES failed (%s) — speaking the text unfixed" % exc)
     return text
 
 
-def speak(text):
-    try:
+# --------------------------------------------------------------------------
+# The voice: one piper -> aplay pair, fed sentence by sentence from a thread.
+#
+# It runs in its own thread so that taking the speech mutex — which can block
+# for as long as another session is talking — never stops this process reading
+# the stream. Blocking the reader is how a whole reply used to be lost.
+# --------------------------------------------------------------------------
+class Voice(threading.Thread):
+    def __init__(self):
+        threading.Thread.__init__(self, daemon=True)
+        self.q = queue.Queue()
+        self.piper = None
+        self.aplay = None
+        self.spoke_chars = 0
+        self.spoke_lines = 0
+        self.queued_chars = 0   # enqueued for speech — counted on the caller's
+                                # thread, so "was anything said this turn?" can
+                                # be answered without racing the voice thread
+        self.error = ""
+        self._lockfd = None
+        self._said = []
+        self._stop = False
+        self.claudism_seq = 0
+        self.registry = None    # the shared BlockRegistry, once it exists:
+                                # the corpus is registered by DELIVERY (rule
+                                # 12a as amended 2026-09-04), and delivery
+                                # happens on this thread
+        # Mouth cue bookkeeping (armed only with FACE_SOCKET): the sentences
+        # handed to piper, in order, waiting for their stderr record; and
+        # when the audio already scheduled will stop playing.
+        self._pho_lock = threading.Lock()
+        self._pho_expect = []
+        self._pho_partial = {}
+        self._burst_end = 0.0
+        self._clip_n = 0
+        self._phoneme_thread = None
+        # Per-sentence acting timers (specs/face.md, 2026-08-30 amendment):
+        # a flourish waits for ITS clip's modelled playback start, never for
+        # synthesis, so the face acts when the words sound. All side-thread,
+        # all cancellable, none of it on the pump.
+        self._cue_timers = []
+
+    # Speech mutex: held for the whole TTS stage of this turn, so no other
+    # session (a wake's speak_once, another streamer) talks over it. Taken
+    # LAZILY, at the first thing worth saying — never at startup, and never on
+    # the reading thread. Held at startup it silently ate whole replies.
+    def _hold_lock(self):
+        path = os.environ.get("DESKCRAB_SPEECHLOCK", "").strip()
+        if path and self._lockfd is None:
+            try:
+                self._lockfd = os.open(path, os.O_CREAT | os.O_WRONLY, 0o644)
+                fcntl.flock(self._lockfd, fcntl.LOCK_EX)
+            except Exception as exc:
+                # A broken lock must not cost us the speech. Talk anyway.
+                speech_log("speech lock unavailable (%s) — speaking without it"
+                           % exc)
+                self._lockfd = None
+
+    def _open(self):
+        if self.piper is not None:
+            return True
+        self._hold_lock()
         cmd = ["piper-tts", "--model", PIPER, "--output-raw"]
         if LENGTH_SCALE:
             cmd += ["--length-scale", LENGTH_SCALE]
         if SPEAKER:
             cmd += ["--speaker", SPEAKER]
-        piper = subprocess.Popen(
-            cmd,
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-        aplay = subprocess.Popen(
-            ["aplay", "-r", "22050", "-c", "1", "-f", "S16_LE", "-t", "raw"],
-            stdin=piper.stdout, stderr=subprocess.DEVNULL)
-        piper.stdin.write(text.encode())
-        piper.stdin.close()
-        aplay.wait()
-        piper.wait()
+        # With a face broker listening, piper's own debug log is the phoneme
+        # witness for the mouth cues. The pipeline shape is unchanged:
+        # piper's stdout still feeds aplay directly, and a stderr that
+        # nobody could read would only cost cues, never words — the drainer
+        # below always keeps the pipe empty.
+        face_here = bool(FACE_SOCKET) and _cue_mod is not None
+        if face_here:
+            cmd += ["--debug"]
+        try:
+            self.piper = subprocess.Popen(
+                cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE if face_here else subprocess.DEVNULL)
+            self.aplay = subprocess.Popen(
+                ["aplay", "-r", "22050", "-c", "1", "-f", "S16_LE", "-t", "raw"],
+                stdin=self.piper.stdout, stderr=subprocess.DEVNULL)
+            self.piper.stdout.close()   # aplay owns the read end now
+            if face_here:
+                self._phoneme_thread = threading.Thread(
+                    target=self._drain_phonemes, args=(self.piper.stderr,),
+                    daemon=True)
+                self._phoneme_thread.start()
+        except Exception as exc:
+            self.error = "cannot start the voice: %s" % exc
+            speech_log("SPEECH FAILED — %s (piper=%s)" % (self.error, PIPER))
+            self.piper = self.aplay = None
+            return False
+        return True
+
+    def _close(self):
+        if self.piper is None:
+            return
+        try:
+            self.piper.stdin.close()
+        except Exception:
+            pass
+        try:
+            self.aplay.wait(timeout=600)
+        except Exception as exc:
+            speech_log("aplay did not finish (%s)" % exc)
+        try:
+            self.piper.wait(timeout=10)
+        except Exception:
+            pass
+        # Piper can exit while the stderr drainer still holds its final
+        # phoneme/duration lines. Let that finite pipe reach EOF before
+        # speak-stop clears the clips; otherwise a late drainer can reopen
+        # the mouth after playback has already ended.
+        if self._phoneme_thread is not None:
+            self._phoneme_thread.join(timeout=1.0)
+            self._phoneme_thread = None
+        self.piper = self.aplay = None
+        # The device has drained: whatever the mouth schedule believed, the
+        # audio is over. Close the mouth rather than trusting the model.
+        self._mouth_close()
+        # Give the speech mutex back the moment the voice goes idle. Holding
+        # it until process exit made every OTHER session queue its audio
+        # behind this turn's entire multi-minute run — text on screen, speech
+        # minutes late.
+        if self._lockfd is not None:
+            try:
+                fcntl.flock(self._lockfd, fcntl.LOCK_UN)
+                os.close(self._lockfd)
+            except Exception:
+                pass
+            self._lockfd = None
+
+    # Publish the words currently on the speakers so the NEXT session of her to
+    # start can REGROUP against them instead of talking over them. This
+    # publishes; it never edits. No word reaching piper is changed or withheld
+    # by anything here. Header line is `epoch \t device \t pid \t until`.
+    def _publish(self, text):
+        path = os.environ.get("DESKCRAB_LIVE_SPEECH", "").strip()
+        if not path:
+            return
+        self._said.append(text)
+        try:
+            tmp = "%s.%d.tmp" % (path, os.getpid())
+            with open(tmp, "w") as fh:
+                fh.write("%d\tdesk\t%d\t0\n%s\n"
+                         % (time.time(), os.getpid(), "\n".join(self._said)))
+            os.replace(tmp, path)
+        except Exception:
+            pass
+
+    # ---- mouth cues (specs/face.md rules 21-23) --------------------------
+    # piper logs two lines per sentence: the IPA phoneme string it will
+    # speak, then how many seconds of audio it produced. Sentences leave in
+    # FIFO order, so the Nth record belongs to the Nth text handed over. The
+    # playback start of clip N is modelled, not measured: audio N begins
+    # either when the audio before it drains, or — on a fresh burst — one
+    # pipe-and-device lead after synthesis lands. The measured error of this
+    # model is documented beside the manifest; the broker's clips carry it.
+    def _drain_phonemes(self, stderr):
+        import re as _re
+        conv = _re.compile(r"Converting \d+ phoneme\(s\) to ids: (.*)$")
+        done = _re.compile(r"Synthesized ([0-9.]+) second")
+        try:
+            for bline in iter(stderr.readline, b""):
+                line = bline.decode("utf-8", "replace").rstrip()
+                try:
+                    m = conv.search(line)
+                    if m:
+                        with self._pho_lock:
+                            self._pho_partial["ipa"] = m.group(1)
+                        continue
+                    m = done.search(line)
+                    if m:
+                        self._schedule_clip(float(m.group(1)))
+                except Exception:
+                    # A cue lost is a cue lost; the drain never stops.
+                    continue
+        except Exception:
+            pass
+
+    def _schedule_clip(self, duration):
+        with self._pho_lock:
+            ipa = self._pho_partial.pop("ipa", "")
+            text = self._pho_expect.pop(0) if self._pho_expect else ""
+            self._clip_n += 1
+            n = self._clip_n
+            now = time.time()
+            start = self._burst_end if self._burst_end > now + FACE_AUDIO_LEAD \
+                else now + FACE_AUDIO_LEAD
+            self._burst_end = start + duration + FACE_SENTENCE_SILENCE
+        cues = _cue_mod.cue_track(ipa, duration)
+        if n == 1:
+            face_send({"cmd": "activity", "name": "speaking"})
+        face_send({"cmd": "speak", "clips": [{
+            "id": "desk-%d-%d" % (os.getpid(), n),
+            "start": start, "duration": duration, "cues": cues}]})
+        # Per-sentence acting: a fixed public table over the words SHE wrote
+        # for this clip (face_state.sentence_cue), applied at the clip's own
+        # modelled playback start — piper synthesises ahead of the speakers,
+        # and a "Wow!" acted while an earlier sentence still sounds would be
+        # the face contradicting the voice. Fire-and-forget on a timer
+        # thread; a failure costs the flourish, never a word.
+        flourish = None
+        try:
+            flourish = _face_mod.sentence_cue(text) if _face_mod else None
+        except Exception:
+            flourish = None
+        if flourish:
+            cmd = {"cmd": "expression", "name": flourish, "source": "auto",
+                   "seconds": duration + FACE_CUE_LINGER}
+            if FACE_TURN:
+                cmd["turn"] = FACE_TURN
+            delay = start - time.time()
+            if delay <= 0.01:
+                # The clip is already sounding: act now, no timer to lose.
+                face_send(cmd)
+            else:
+                timer = threading.Timer(delay, face_send, args=(cmd,))
+                timer.daemon = True
+                with self._pho_lock:
+                    self._cue_timers = [t for t in self._cue_timers
+                                        if t.is_alive()] + [timer]
+                timer.start()
+
+    def _mouth_close(self):
+        """The voice is over or broken: cancel un-fired flourishes and close
+        the drawn mouth now (specs/face.md rule 23)."""
+        with self._pho_lock:
+            self._burst_end = 0.0
+            self._pho_expect = []
+            timers, self._cue_timers = self._cue_timers, []
+        for t in timers:
+            try:
+                t.cancel()
+            except Exception:
+                pass
+        face_send({"cmd": "speak-stop"})
+
+    def say(self, text, raw=None):
+        # `raw` is the unstripped draft text this utterance came from — what
+        # the mirror scans and what the caller splices on. None means "not a
+        # draft sentence" and the mirror never looks at it.
+        # Ordinary draft whitespace was collapsed before TTS_FIXES ran. Keep
+        # the line boundaries a fix created (speech rule 12c) — but a bare
+        # line break is NOT a pause. Piper's sentence_silence follows a
+        # sentence as espeak segments it, not an input line, and a line break
+        # carrying no punctuation is no prosodic cue at all, so a fix that
+        # wants a pause must emit punctuation. espeak already gives a literal
+        # em-dash its own break, so the old s/—/\n/g rewrite replaced a real
+        # cue with nothing (measured 2026-09-04, Library/voice/wild.py, 40
+        # journal replies, four arms: comma and literal dash each out-pause
+        # the newline arm 16/2 p=0.001; deleting the mark ties it 6/5
+        # p=1.000). No shipped fix emits newlines any more; this preservation
+        # stays because it is correct, not because a rewrite relies on it.
+        lines = [" ".join(line.split()) for line in text.splitlines()]
+        text = "\n".join(line for line in lines if line)
+        if text:
+            self.queued_chars += len(text)
+            self.q.put((text, raw))
+
+    # Rule 41a's question: is this rewrite already a sentence of the draft?
+    # The rule 12a supersede judges completed BLOCKS, and the 2026-09-03
+    # doubling was invisible to it because the second copy of the words was a
+    # sibling CHUNK of the same block, queued behind the hold before the
+    # verdict landed. So the question is asked here, of the draft's own text:
+    # every registered block's spoken half, quiet blocks and display tails
+    # excluded, the held sentence itself excluded — one near-duplicate
+    # threshold everywhere (sentence_stream, via claudism-mirror). Returns
+    # the echoed sentence, or None; EVERY failure returns None, so an
+    # unanswerable question speaks the rewrite exactly as rule 41 always has.
+    def _rewrite_echo(self, t, raw):
+        if self.registry is None or _CLAUDISM_MOD is None \
+                or not hasattr(_CLAUDISM_MOD, "echo_sentence"):
+            return None
+        try:
+            seen, parts = set(), []
+            maps = list(self.registry.messages.values())
+            if not any(m is self.registry.blocks for m in maps):
+                maps.append(self.registry.blocks)
+            for mb in maps:
+                for b in list(mb.values()):
+                    if id(b) in seen or b.quiet or not b.raw.strip():
+                        continue
+                    seen.add(id(b))
+                    parts.append(b.raw.partition(DELIM)[0])
+            if not parts:
+                return None
+            return _CLAUDISM_MOD.echo_sentence(t, "\n".join(parts), raw)
+        except Exception as exc:
+            speech_log("rewrite echo check failed (%s) — speaking the "
+                       "rewrite as given" % exc)
+            return None
+
+    # The pre-speech mirror gate (specs/speech-output.md rules 38-43). Sits
+    # on the voice thread — the last hand-off before the synthesiser — so the
+    # reader is never blocked and a clean sentence passes byte-identical.
+    # This gate decides NOTHING: a fire routes the sentence back to her, and
+    # the only things ever spoken are her rewrite or the original. Every
+    # failure in here speaks the original (fail open).
+    def _claudism_gate(self, spoken, raw):
+        if not _CLAUDISM_PATTERNS or raw is None:
+            return spoken
+        try:
+            flag = _CLAUDISM_MOD.first_flag(raw, _CLAUDISM_PATTERNS)
+        except Exception as exc:
+            speech_log("claudism check failed (%s) — speaking unchecked" % exc)
+            return spoken
+        if not flag:
+            return spoken
+        self.claudism_seq += 1
+        seq = self.claudism_seq
+        done_path = CLAUDISM_FIRES + ".done"
+        outcome, text = "failopen", spoken
+
+        def record(obj):
+            with open(CLAUDISM_FIRES, "a") as fh:
+                fh.write(json.dumps(obj, ensure_ascii=False) + "\n")
+                fh.flush()
+
+        # The caller has already committed the turn: a hold now could never
+        # be answered, and a swap now could never reach the committed reply
+        # (rule 43 — the conversation must match the speakers), so the fire
+        # is recorded and the sentence speaks.
+        if os.path.exists(done_path):
+            try:
+                record({"seq": seq, "sentence": raw, "spoken": spoken,
+                        "pattern": flag["pattern"],
+                        "note": flag.get("note", "")})
+                record({"seq": seq, "outcome": "post-commit"})
+            except Exception:
+                pass
+            speech_log("claudism fire #%d (%s) after the turn moved on — "
+                       "speaking the original" % (seq, flag["pattern"]))
+            return spoken
+        # Her table (rules 47-49), before the hold, never after a verdict: a
+        # fire the entry's own replace lines fully repair is spoken repaired
+        # — a string swap into words she wrote, no hold, no mirror call. A
+        # failure computing it is a failure to SWAP, and the fire holds as
+        # it always did.
+        swap = None
+        if CLAUDISM_FLAGS and flag.get("replaces"):
+            try:
+                swap = _CLAUDISM_MOD.table_swap(raw, flag["rx"],
+                                                flag["replaces"])
+            except Exception as exc:
+                swap = None
+                speech_log("claudism table failed (%s) — holding as usual"
+                           % exc)
+        swap_say = for_speech(swap) if swap is not None else ""
+        rec = {"seq": seq, "sentence": raw, "spoken": spoken,
+               "pattern": flag["pattern"], "note": flag.get("note", "")}
+        if flag.get("function"):
+            # The mirror pass reads the family off this record
+            # (specs/speech-output.md rule 52).
+            rec["function"] = flag["function"]
+        if flag.get("fix"):
+            # And the declared cure off the same record
+            # (specs/speech-output.md rule 55).
+            rec["fix"] = flag["fix"]
+        if flag.get("use"):
+            # The mention test's answer (rule 50 as amended), onto every
+            # record this path writes (rule 45).
+            rec["use"] = flag["use"]
+        if swap is not None and swap_say:
+            rec["before"], rec["after"] = raw, swap
+        elif flag.get("use") == "mention":
+            # Rule 50, amended 2026-08-24: every live entry this sentence
+            # matches is quoted or named, not said. No hold and no mirror
+            # call — the day's flag row still lands, use=mention, BEFORE
+            # the sentence speaks (rule 49's discipline), so the night
+            # still counts it. Nothing goes to the fires file on purpose: a
+            # fire record there is a question the caller must answer, and
+            # this one has none. A row that cannot be written falls back to
+            # the hold below, exactly as before the amendment — today's
+            # behaviour, never a lost flag.
+            if CLAUDISM_FLAGS:
+                try:
+                    _CLAUDISM_MOD.append_flag(
+                        CLAUDISM_FLAGS,
+                        _CLAUDISM_MOD.flag_row("desktop", os.getpid(), rec,
+                                               "mention"))
+                    speech_log("claudism mention #%d (%s): quoted, not said "
+                               "— speaking unheld" % (seq, flag["pattern"]))
+                    return spoken
+                except Exception as exc:
+                    speech_log("claudism mention #%d could not reach the "
+                               "flag log (%s) — holding as usual"
+                               % (seq, exc))
+        # The record goes down BEFORE the hold begins (rule 40) and before a
+        # swap is applied (rule 49): a hold nobody can read is a stall, not
+        # a mirror, and an unlogged swap never happened.
+        try:
+            record(rec)
+        except Exception as exc:
+            speech_log("claudism fire could not be recorded (%s) — speaking "
+                       "the original" % exc)
+            return spoken
+        if swap is not None and swap_say:
+            # Rule 49: the flag log and the outcome record both land before
+            # the repaired words do. Either write failing means the swap is
+            # NOT applied — the fire record is already down, so the sentence
+            # holds and routes to her exactly as an uncovered fire does.
+            logged = True
+            try:
+                row = _CLAUDISM_MOD.flag_row("desktop", os.getpid(), rec,
+                                             "table-swap")
+                row["before"], row["after"] = raw, swap
+                _CLAUDISM_MOD.append_flag(CLAUDISM_FLAGS, row)
+            except Exception as exc:
+                logged = False
+                speech_log("claudism table-swap #%d could not reach the flag "
+                           "log (%s) — holding instead" % (seq, exc))
+            if logged:
+                try:
+                    record({"seq": seq, "outcome": "table-swap"})
+                except Exception as exc:
+                    logged = False
+                    speech_log("claudism table-swap #%d outcome could not be "
+                               "recorded (%s) — holding instead" % (seq, exc))
+            if logged:
+                speech_log("CLAUDISM table-swap #%d (%s): %s -> %s"
+                           % (seq, flag["pattern"],
+                              " ".join(raw.split())[:60],
+                              " ".join(swap.split())[:60]))
+                return swap_say
+        speech_log("CLAUDISM fire #%d (%s): %s — held for her rewrite"
+                   % (seq, flag["pattern"], " ".join(raw.split())[:90]))
+        verdict_path = "%s.verdict-%d" % (CLAUDISM_FIRES, seq)
+        deadline = time.time() + CLAUDISM_TIMEOUT
+        while time.time() < deadline:
+            if os.path.exists(verdict_path):
+                try:
+                    with open(verdict_path) as fh:
+                        v = json.load(fh)
+                except Exception:
+                    # Half-landed verdict: the writer renames into place, so
+                    # one bad parse only means "not yet".
+                    time.sleep(0.05)
+                    continue
+                if v.get("action") == "rewrite":
+                    t = for_speech(str(v.get("text") or "").partition(DELIM)[0])
+                    if t:
+                        # Rule 41a: a rewrite the draft already carries is
+                        # not spoken over the draft's own copy of itself.
+                        # 2026-09-03 15:01:20 — the flagged 'Noted.' came
+                        # back rewritten as exactly the draft's next
+                        # sentence, which was already chunked and queued
+                        # behind this hold, and the words sounded twice.
+                        echo = self._rewrite_echo(t, raw)
+                        if echo is not None:
+                            outcome, text = "rewrite-absorbed", ""
+                        else:
+                            outcome, text = "rewrite-spoken", t
+                    else:
+                        outcome, text = "released", spoken
+                else:
+                    outcome, text = "released", spoken
+                try:
+                    os.unlink(verdict_path)
+                except Exception:
+                    pass
+                break
+            if os.path.exists(done_path):
+                outcome = "post-commit"
+                speech_log("claudism fire #%d — the turn moved on, speaking "
+                           "the original" % seq)
+                break
+            if os.getppid() != ORIG_PPID:
+                speech_log("claudism fire #%d — caller gone, speaking the "
+                           "original" % seq)
+                break
+            time.sleep(0.1)
+        if outcome == "failopen":
+            speech_log("claudism fire #%d — no verdict in %.0fs, speaking "
+                       "the original (fail open)" % (seq, CLAUDISM_TIMEOUT))
+        elif outcome == "rewrite-spoken":
+            speech_log("claudism fire #%d — her rewrite goes out" % seq)
+        elif outcome == "rewrite-absorbed":
+            speech_log("claudism fire #%d — her rewrite already stands in "
+                       "the draft; the held line is dropped and the draft's "
+                       "own copy speaks once (rule 41a)" % seq)
+        try:
+            record({"seq": seq, "outcome": outcome})
+        except Exception:
+            pass
+        return text
+
+    def finish(self):
+        self.q.put(None)
+        self.join(timeout=900)
+        if self.is_alive():
+            speech_log("voice thread would not finish — audio may be cut short")
+
+    def run(self):
+        while True:
+            try:
+                item = self.q.get(timeout=VOICE_IDLE_CLOSE)
+            except queue.Empty:
+                # Nothing to say for a while: give the sound device back.
+                self._close()
+                continue
+            if item is None:
+                self._close()
+                return
+            item, raw = item
+            # The mirror gate, before the synthesiser ever sees the words. A
+            # clean sentence comes back exactly as it went in.
+            item = self._claudism_gate(item, raw)
+            if not (item or "").strip():
+                # An absorbed rewrite (rule 41a): nothing sounds in the held
+                # slot — the draft's own copy of the words, queued behind
+                # this one, speaks in its own place.
+                continue
+            if not self._open():
+                # Voice is unusable. Drain rather than block the reader, and
+                # let the receipt tell the caller nothing was spoken.
+                continue
+            try:
+                piper_lines = item.splitlines()
+                # Register text before Piper can emit its matching debug
+                # record. Fast synthesis (and the test stub) can otherwise
+                # win the flush/append race, leaving the clip with no words
+                # from which to derive its sentence flourish.
+                with self._pho_lock:
+                    self._pho_expect.extend(piper_lines)
+                    try:
+                        self.piper.stdin.write(
+                            ("\n".join(piper_lines) + "\n").encode())
+                        self.piper.stdin.flush()
+                    except Exception:
+                        if piper_lines:
+                            del self._pho_expect[-len(piper_lines):]
+                        raise
+            except Exception as exc:
+                self.error = "piper stopped accepting text: %s" % exc
+                speech_log("SPEECH INTERRUPTED — %s" % self.error)
+                self.piper = self.aplay = None
+                # Playback broke mid-burst: the drawn mouth must not keep
+                # talking over a dead device (specs/face.md rule 23).
+                self._mouth_close()
+                continue
+            # The delivery registration (rule 12a as amended 2026-09-04):
+            # the words just handed to the synthesiser are what the corpus
+            # must hold — the gate above may have replaced the draft the
+            # reader registered, and on 2026-09-03 a rewrite sounded twice
+            # because the corpus knew only its never-sounded draft.
+            # Registered BEFORE the SAID line lands, so a SAID row is also
+            # the witness that the corpus already knows this delivery. Every
+            # failure in here is a failure to REGISTER, never to speak —
+            # and it leaves the draft in the corpus, which suppresses more.
+            if self.registry is not None:
+                try:
+                    self.registry.register_delivery(raw, item)
+                except Exception as exc:
+                    speech_log("delivery registration failed (%s) — the "
+                               "corpus keeps the draft" % exc)
+            # Every utterance leaves a pid-stamped trace: "who spoke this
+            # twice" must be answerable from the speech log alone.
+            speech_log("SAID: %s" % item.replace("\n", " [pause] ")[:90])
+            metric_once("first-audio", "%d chars" % len(item))
+            self.spoke_chars += len(item)
+            self.spoke_lines += 1
+            # The receipt is written as speech happens, never only at exit: a
+            # streamer killed mid-turn has still SPOKEN, and a receipt that
+            # dies with the process is how tts_verify_spoken once replayed a
+            # whole reply over its own still-draining audio.
+            write_receipt()
+            self._publish(item)
+
+
+VOICE = Voice()
+
+
+def write_receipt():
+    """What actually reached the speakers. The caller compares this with the
+    reply it extracted, and speaks the reply itself if this came back empty."""
+    if not RECEIPT:
+        return
+    try:
+        with open(RECEIPT, "w") as fh:
+            fh.write("pid=%d\nchars=%d\nlines=%d\nerror=%s\n"
+                     % (os.getpid(), VOICE.spoke_chars, VOICE.spoke_lines,
+                        " ".join(VOICE.error.split())))
     except Exception:
         pass
+
+
+def clear_live_speech():
+    # Only our own notice: a later session may already have taken the floor,
+    # and deleting its record would blind whoever starts next.
+    path = os.environ.get("DESKCRAB_LIVE_SPEECH", "").strip()
+    if not path:
+        return
+    try:
+        with open(path) as fh:
+            head = fh.readline().split("\t")
+        if len(head) > 2 and head[2] == str(os.getpid()):
+            os.unlink(path)
+    except Exception:
+        pass
+
+
+def _on_term(*_a):
+    # A turn cut or `crab shutup` owns this streamer's children too. Merely
+    # exiting closes the pipe eventually, but piper may already have read one
+    # sentence and have another queued in its stdin; leaving those processes
+    # alive lets the queued sentence sound after the replacement turn starts.
+    for proc in (VOICE.piper, VOICE.aplay):
+        if proc is not None:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+    write_receipt()
+    clear_live_speech()
+    # An asked-for stop closes the mouth NOW and clears queued cues
+    # (specs/face.md rule 23) — the words were already stopped by the kill.
+    face_send({"cmd": "speak-stop"})
+    os._exit(0)
+
+
+signal.signal(signal.SIGTERM, _on_term)
+
+
+def for_speech(text):
+    """Markdown strip + pronunciation fixes. Nothing here may DROP content —
+    it only rewrites how words are pronounced."""
+    text = re.sub(r"\*+", "", text)
+    text = re.sub(r"\x60[^\x60]*\x60", "", text)
+    # Collapse the model's formatting first, then let TTS_FIXES deliberately
+    # introduce piper input boundaries. Voice.say preserves only those new
+    # boundaries instead of turning them back into spaces (speech rule 12c).
+    text = " ".join(text.split())
+    text = fix_pronunciation(text)
+    return text.strip()
+
+
+def _voice_chunk(chunk):
+    """The desk's hand-off to piper, with the raw text riding along for the
+    mirror. Everything the acceptance hold releases comes through here."""
+    spoken = for_speech(chunk)
+    if spoken:
+        VOICE.say(spoken, chunk)
+
+
+class AcceptanceHold:
+    """The acceptance boundary (specs/speech-output.md rule 12b).
+
+    The registry's chunks land here instead of on the voice: at most ONE
+    message's sentences are ever waiting, and they cross to piper only when
+    the main loop sees the stream move past that message with anything other
+    than the Stop hook's synthetic rejection. Feedback discards the whole
+    held draft — every sentence, queued or already chunked — into a pocket;
+    only its correction reaches piper. Never-silent outranks the hook: the
+    pocket is dropped only once real speech follows the rejection, and a
+    stream that ends with anything still held speaks it before the tail
+    closes. This class decides NOTHING about whether words are worth voicing
+    — what it discards is only a draft she herself replaced, the same
+    authority extract-response rule 5a exercises on the stored reply."""
+
+    def __init__(self, speak):
+        self._speak = speak       # _voice_chunk: the actual piper hand-off
+        self.registry = None      # the BlockRegistry, once it exists
+        self.pending = []         # held sentences of the message awaiting acceptance
+        self.pending_mid = None   # which message they belong to
+        self.rejected = []        # the newest Stop-rejected draft — the never-silent pocket
+        self._draft_open = False  # chunks still arriving belong to the rejected draft
+        self._mark = 0            # registry.voiced_texts length when the pending message began
+        self._anon = 0
+        self.eager = False        # no rejection event: speak completed sentences immediately
+
+    def enable_eager(self):
+        """Release the hold for a transport that cannot reject a message."""
+        self.accept()
+        self.eager = True
+
+    def anon_mid(self):
+        """A distinct slot for a message the stream never named."""
+        self._anon += 1
+        return "hold-anon-%d" % self._anon
+
+    def add(self, chunk):
+        """The registry's voice callback: every chunk waits here."""
+        if not (chunk or "").strip():
+            return
+        if self.eager:
+            self._speak(chunk)
+            return
+        if self._draft_open:
+            # The tail of a message already rejected belongs with its head.
+            self.rejected.append(chunk)
+        else:
+            self.pending.append(chunk)
+
+    def begin(self, mid):
+        """A new message takes the pending slot. Whatever stands there was
+        moved past by something other than feedback — accepted."""
+        self.accept()
+        self.pending_mid = mid
+
+    def accept(self):
+        """The stream moved past the pending message with anything other
+        than Stop-hook feedback: the held sentences are hers, voice them."""
+        chunks, self.pending = self.pending, []
+        self.pending_mid = None
+        self._draft_open = False
+        if chunks:
+            # Real speech moved on past the rejection: the pocketed draft
+            # was genuinely replaced (rule 5a's test) and goes for good.
+            self.rejected = []
+        for c in chunks:
+            self._speak(c)
+        if self.registry is not None:
+            with self.registry.voiced_lock:
+                self._mark = len(self.registry.voiced_texts)
+
+    def reject(self):
+        """Stop-hook feedback: the ENTIRE held draft is discarded — into the
+        pocket, and onto the speech log for the record, never silently."""
+        if self.pending:
+            speech_log("stop-hook rejection — %d held sentence(s) of the "
+                       "draft discarded: %s"
+                       % (len(self.pending),
+                          " | ".join(" ".join(c.split())[:60]
+                                     for c in self.pending)))
+            self.rejected = self.pending    # the newest rejection takes the pocket
+            self.pending = []
+        self._draft_open = True
+        if self.registry is not None:
+            # The rejected message's texts leave the near-duplicate corpus
+            # (rule 12a's voiced_texts): they never sounded, and holding its
+            # own correction off the speakers as "already voiced" would turn
+            # the hold into the silence rule 12b forbids. Under the corpus
+            # lock, because the voice thread rewrites this list at delivery
+            # (register_delivery) — in place, never moving an entry, so this
+            # slice still names exactly the rejected message's texts.
+            with self.registry.voiced_lock:
+                del self.registry.voiced_texts[self._mark:]
+
+    def release_final(self):
+        """End of the stream — the terminator, a killed CLI, a reaped
+        watchdog, an orphaned tail. Never-silent outranks the hold: the
+        pending message speaks; a rejection nothing real followed releases
+        the pocketed draft instead (rule 5a's never-silent shape)."""
+        if self.pending:
+            self.rejected = []
+            chunks, self.pending = self.pending, []
+            for c in chunks:
+                self._speak(c)
+        elif self.rejected:
+            speech_log("stream ended with the rejection unanswered — "
+                       "releasing the held draft (never silent)")
+            chunks, self.rejected = self.rejected, []
+            for c in chunks:
+                self._speak(c)
+        self.pending_mid = None
+        self._draft_open = False
 
 
 # Remember who launched us (the crab process). If it dies we get reparented —
@@ -65,40 +1029,243 @@ def speak(text):
 # append the terminator and we must not tail the log forever.
 ORIG_PPID = os.getppid()
 
+VOICE.start()
+
+speech_log("tailing %s" % LOG)
 while not os.path.exists(LOG):
-    time.sleep(0.1)
+    time.sleep(0.05)
+
+HOLD = AcceptanceHold(_voice_chunk)  # rule 12b: every chunk waits here for
+                     # its message's acceptance before the piper hand-off
+REG = BlockRegistry(HOLD.add)  # every block of every message, the replay
+                     # cursors, and both dedup sets — the shared registry of
+                     # sentence_stream.py, its voice now the acceptance hold
+                     # in front of the desk's piper hand-off
+HOLD.registry = REG
+VOICE.registry = REG  # the voice thread registers deliveries into the same
+                      # corpus (rule 12a as amended 2026-09-04); nothing can
+                      # reach VOICE.say before this line, because the queue
+                      # is fed only through REG and HOLD above
+held_refusal = ""    # the newest limit refusal, held off the speakers — and
+                     # kept off them: refusals are never voiced, only logged;
+                     # the caller notifies when a whole chain refuses
+last_size = 0
+partial = ""         # a line still being written: readline() at EOF hands
+                     # back the half of it that has landed, and the rest on
+                     # the next call. Neither half is JSON, so both were
+                     # dropped — and the lines long enough to be split in the
+                     # first place are exactly the completed assistant blocks,
+                     # the ones carrying whole finished replies. serve.py's
+                     # tailer has held the fragment since it was written and
+                     # crab-debug's docstring names the bug by name; this was
+                     # the last tail on this file that never got it. Whole
+                     # lines only — the fragment waits for its newline.
 
 with open(LOG) as f:
     while True:
         line = f.readline()
         if not line:
+            # The stream log is private to this turn now, but a truncation is
+            # still possible (a hand clearing /tmp, an older crab). Stranded
+            # past EOF the old code tailed forever in total silence; say so and
+            # follow the file back down instead.
+            try:
+                size = os.stat(LOG).st_size
+            except OSError:
+                size = last_size
+            if size < last_size:
+                speech_log("stream log %s was truncated under me "
+                           "(%d -> %d bytes) — re-reading from the start"
+                           % (LOG, last_size, size))
+                f.seek(0)
+                # From the top of the file the byte counter restarts at ZERO.
+                # It was set to the current size here once, so the re-read
+                # counted every byte twice, EOF read as another truncation,
+                # and the loop re-spoke the whole stream forever — hundreds of
+                # 2:1 truncation lines in the speech log are its signature.
+                last_size = 0
+                # Whatever fragment we were holding belonged to the file that
+                # is gone; the bytes coming now are a different one.
+                partial = ""
+                REG.replay_all()
+                continue
+            # last_size is NOT set from the stat here. It counts bytes this
+            # loop has actually READ, and the stat counts bytes the file HAS —
+            # two different numbers whenever a write lands between readline()
+            # returning '' and the stat a few microseconds later. Assigning
+            # the stat then counted those bytes again when the next readline
+            # delivered them, so the counter drifted permanently above the
+            # file size and the very next EOF read as a truncation that never
+            # happened: 143,766 "was truncated under me" lines in
+            # /tmp/deskcrab-speech.log, every one of them false, each one
+            # sending the tail back to byte zero.
             # Backstop: if our launching crab process is gone we've been
             # reparented (ppid changes) — it can no longer append a terminator,
             # so stop instead of tailing the log forever.
             if os.getppid() != ORIG_PPID:
+                speech_log("launching process gone — stopping the tail")
+                # Rule 12b's never-silent half: an orphaned tail (killed CLI,
+                # reaped watchdog, dead crab) ends with whatever is held
+                # spoken, never swallowed.
+                HOLD.release_final()
                 break
-            time.sleep(0.05)
+            time.sleep(0.02)
             continue
-        line = line.strip()
+        last_size += len(line.encode("utf-8", "replace"))
+        # Hold an incomplete line until its newline arrives. The bytes are
+        # counted above either way — the cursor moved whether or not the line
+        # is finished — but nothing is parsed or spoken from half a line.
+        partial += line
+        if not partial.endswith("\n"):
+            continue
+        line, partial = partial.strip(), ""
         if not line:
             continue
         try:
             d = json.loads(line)
         except json.JSONDecodeError:
             continue
-        if d.get("type") == "result":
+
+        # A raw-substring test, deliberately: the first tool call can arrive
+        # as a stream_event (content_block_start) or as a completed assistant
+        # block, and parsing both shapes here would be structure this stamp
+        # does not need. One string check per line, first hit only.
+        if "first-tool" not in _METRICS_DONE and '"tool_use"' in line:
+            metric_once("first-tool")
+
+        kind = d.get("type")
+
+        if kind == "system":
+            if d.get("engine") == "codex" and d.get("transport") == "app-server":
+                HOLD.enable_eager()
+                speech_log("codex app stream — speaking sentences as they complete")
+            continue
+
+        if kind == "result":
+            # A limit refusal never ends the tail: crab may append the next
+            # account's run to this same file, and how long the chain really
+            # is cannot be known from here (accounts known dry are skipped).
+            # When no run ever answers, crab's closing terminator — a result
+            # with no error — ends the stream instead.
+            if d.get("is_error") and (
+                    _is_limit(str(d.get("result") or ""))
+                    or _is_retryable_error(str(d.get("result") or ""))):
+                # No reset of the registry here: the retry's events arrive
+                # under a new message id and message_start rebinds it. The
+                # BlockRegistry docstring carries why touching the block map
+                # at all was the doubling.
+                # The chain moved past whatever was pending with a refusal,
+                # not with feedback — accepted (rule 12b).
+                HOLD.accept()
+                continue
+            # The terminator: a stream ending with a message still held
+            # speaks it before the tail closes (rule 12b, never silent).
+            HOLD.release_final()
             break
-        if d.get("type") == "assistant" and "message" in d:
-            for block in d["message"].get("content", []):
+
+        # The Stop hook's rejection arrives as a user event whose text opens
+        # a fixed prefix (extract-response rule 5a's own test); it discards
+        # the whole held draft. ANY other user event — a tool result, queued
+        # mail — moves the stream past the pending message and accepts it.
+        if kind == "user":
+            content = (d.get("message") or {}).get("content")
+            texts = []
+            if isinstance(content, str):
+                texts = [content]
+            elif isinstance(content, list):
+                texts = [b.get("text", "") for b in content
+                         if isinstance(b, dict) and b.get("type") == "text"]
+            if any(t.startswith("Stop hook feedback:") for t in texts):
+                HOLD.reject()
+            else:
+                HOLD.accept()
+            continue
+
+        # --- streaming half: chunk each sentence the moment it is complete
+        #     (the acceptance hold decides when the chunks may speak) ---
+        if kind == "stream_event":
+            ev = d.get("event") or {}
+            if ev.get("type") == "message_start":
+                mid = (ev.get("message") or {}).get("id")
+                # A message_start for any OTHER message moves the stream past
+                # the pending one — accepted. The same id again is the CLI
+                # re-emitting or a truncation replay: neutral, the registry's
+                # replay cursors keep it off the speakers.
+                if mid is None or mid != HOLD.pending_mid:
+                    HOLD.begin(mid or HOLD.anon_mid())
+            REG.stream_event(ev)
+            continue
+
+        # --- completed half: authoritative, and the ONLY half when the run
+        #     had no --include-partial-messages ---
+        if kind == "assistant" and "message" in d:
+            synthetic = (d.get("is_api_error_message")
+                         or d["message"].get("model") == "<synthetic>")
+            content = d["message"].get("content", [])
+            if (synthetic
+                    and any(_is_limit(b.get("text", "")) for b in content
+                            if b.get("type") == "text")):
+                # A limit refusal, shaped like a reply. Another account may
+                # still answer in this same file, so hold it off the speakers
+                # rather than voicing it; the newest refusal takes the slot.
+                # Only the CLI's synthetic marker names a refusal — her own
+                # words are never pattern-matched, so a genuine reply that
+                # QUOTES a limit phrase is not gagged.
+                held_refusal = "\n".join(b.get("text", "") for b in content
+                                         if b.get("type") == "text")
+                continue
+            # The acceptance classification (rule 12b). A completed event
+            # belonging to a DIFFERENT message than the pending one moves the
+            # stream past it — accepted. One belonging to the pending message
+            # itself decides nothing: same id, or — for an id-less event —
+            # its text extending (or extended by) a block still in flight,
+            # the registry's own content test, because an id-less completed
+            # event is the finished form of the streamed block, not a new
+            # message. Ids win when both sides carry one.
+            mid = d["message"].get("id")
+            if HOLD.pending:
+                if (mid is not None and HOLD.pending_mid is not None
+                        and not HOLD.pending_mid.startswith("hold-anon-")):
+                    same = (mid == HOLD.pending_mid)
+                else:
+                    same = any(
+                        b.raw and text
+                        and (text.startswith(b.raw) or b.raw.startswith(text))
+                        for b in REG.blocks.values()
+                        for text in (blk.get("text") or ""
+                                     for blk in content
+                                     if blk.get("type") == "text"))
+                if not same:
+                    HOLD.accept()
+            if not HOLD.pending and HOLD.pending_mid is None:
+                # Whatever close_text produces below belongs to this
+                # event's message.
+                HOLD.pending_mid = mid or HOLD.anon_mid()
+            # The dedup (by id AND by content), the content-keyed block
+            # match, and the never-reset registry invariant all live in
+            # BlockRegistry.close_text — including the history of the all-day
+            # doubling of 2026-08-07 that shaped them.
+            idx = 0
+            for block in content:
                 if block.get("type") == "text":
-                    text = block["text"].strip()
-                    if not text:
-                        continue
-                    text = text.split("---DISPLAY---")[0].strip()
-                    text = re.sub(r"\*+", "", text)
-                    text = re.sub(r"\x60[^\x60]*\x60", "", text)
-                    text = fix_pronunciation(text)
-                    text = text.strip()
-                    if not text:
-                        continue
-                    speak(text)
+                    REG.close_text(mid, idx, block.get("text", ""))
+                idx += 1
+
+if VOICE.queued_chars == 0 and held_refusal.strip():
+    # Every run refused and nothing was even queued to be voiced. The refusal
+    # STILL never reaches the speakers: an outage read aloud in her voice is
+    # how "You've hit your session limit" once landed in the conversation as
+    # her own words. The empty receipt tells the caller nothing was spoken;
+    # the caller recognises the limit-shaped stream and notifies instead, and
+    # this line keeps the words for the record.
+    speech_log("chain spent — refusal held off the speakers: %s"
+               % " ".join(held_refusal.split()))
+
+VOICE.finish()
+write_receipt()
+if VOICE.spoke_chars == 0:
+    speech_log("spoke nothing from %s%s" % (LOG,
+               (" — " + VOICE.error) if VOICE.error else ""))
+# The floor is free again — retract the notice so the next session is not told
+# to regroup against words that finished a while ago.
+clear_live_speech()

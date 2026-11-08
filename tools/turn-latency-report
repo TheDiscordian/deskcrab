@@ -1,0 +1,111 @@
+#!/usr/bin/env python3
+"""Render the turn-metrics log as one line per turn.
+
+Reads the dated stage stamps written under the metrics directory
+(specs/turn-pipeline.md rule 33) and prints, per turn pid, the seconds each
+stage took relative to the turn's first stamp — queue wait, prompt build,
+generation, first tool, first audio, synthesis. The stamps written by the
+phone server (pid of the server, kind "phone-serve") are folded into whichever
+turn was in flight around them, matched on time.
+
+Usage: tools/turn-latency-report [YYYY-MM-DD]   (default: today)
+Env:   DESKCRAB_METRICS_DIR overrides the directory, same as the writer.
+"""
+import os
+import sys
+import time
+from collections import defaultdict
+
+day = sys.argv[1] if len(sys.argv) > 1 else time.strftime("%Y-%m-%d")
+mdir = os.environ.get(
+    "DESKCRAB_METRICS_DIR",
+    os.path.join(os.environ.get("XDG_DATA_HOME",
+                                os.path.expanduser("~/.local/share")),
+                 "deskcrab", "metrics"))
+path = os.path.join(mdir, day + ".log")
+if not os.path.exists(path):
+    sys.exit("no metrics for %s (%s)" % (day, path))
+
+turns = defaultdict(list)   # pid -> [(ts, kind, stage, detail)]
+serve = []                  # the server's own stamps, matched on time below
+chess = defaultdict(list)   # (game, ply) -> [(ts, stage, detail)]
+for line in open(path):
+    parts = line.rstrip("\n").split("\t")
+    if len(parts) < 4:
+        continue
+    ts, pid, kind, stage = float(parts[0]), parts[1], parts[2], parts[3]
+    detail = parts[4] if len(parts) > 4 else ""
+    if kind == "phone-serve":
+        serve.append((ts, stage, detail))
+    elif kind == "chess":
+        # A move's stamps span processes (bridge, CLI), so the pid grouping
+        # above would tear them apart; the detail's `<game> ply <n>` opener
+        # is the correlator (specs/chessweb.md rule 17). A move-start opens a
+        # fresh instance — an undo, or a same-named game in another store,
+        # can land one key at the same ply twice in a day.
+        d = detail.split()
+        if len(d) >= 3 and d[1] == "ply":
+            groups = chess[(d[0], int(d[2]))]
+            if stage == "move-start" or not groups:
+                groups.append([])
+            groups[-1].append((ts, stage, detail))
+    else:
+        turns[pid].append((ts, kind, stage, detail))
+
+ORDER = ["capture-release", "capture-transcribed", "queue-enqueued",
+         "turn-start", "prompt-built", "gen-start", "first-tool",
+         "first-audio", "gen-end", "synth-start", "synth-end"]
+
+print("%-7s %-8s %-13s %s" % ("pid", "start", "kind", "stage offsets (s)"))
+for pid, stamps in sorted(turns.items(), key=lambda kv: kv[1][0][0]):
+    stamps.sort()
+    t0 = stamps[0][0]
+    tend = stamps[-1][0]
+    kind = next((k for _, k, _, _ in stamps if k not in ("pre", "")), "?")
+    got = {s: ts for ts, _, s, _ in stamps}
+    # Fold in the server's stamps that landed inside this turn's window.
+    for ts, stage, _ in serve:
+        if t0 - 1 <= ts <= tend + 120 and stage not in got:
+            got[stage] = ts
+    offs = "  ".join("%s+%.1f" % (s.replace("capture-", "").replace("-", ""),
+                                  got[s] - t0)
+                     for s in ORDER if s in got)
+    print("%-7s %-8s %-13s %s"
+          % (pid, time.strftime("%H:%M:%S", time.localtime(t0)),
+             kind.replace(" turn", ""), offs))
+
+if chess:
+    print()
+    print("%-16s %-4s %-8s %s"
+          % ("chess move", "ply", "start", "stage offsets (s)"))
+    moves = [(game, ply, stamps)
+             for (game, ply), groups in chess.items() for stamps in groups]
+    RANK = {"move-start": 0, "reflex-hit": 1, "reflex-miss": 1,
+            "wake-booked": 2, "move-played": 3}
+    for game, ply, stamps in sorted(moves, key=lambda m: m[2][0][0]):
+        stamps.sort(key=lambda s: (s[0], RANK.get(s[1], 9)))
+        t0 = stamps[0][0]
+        offs = []
+        for ts, stage, detail in stamps:
+            tail = detail.split()[3:]  # after `<game> ply <n>`
+            note = "(%s)" % tail[-1] if stage == "move-played" and tail else ""
+            offs.append("%s+%.1f%s" % (stage, ts - t0, note))
+        # A booked wake means a reasoning turn played the move; fold in that
+        # turn's own stamps, matched on time like the server's above.
+        got = {s: ts for ts, s, _ in stamps}
+        if "wake-booked" in got and "move-played" in got:
+            for pid, tstamps in turns.items():
+                k = next((kk for _, kk, _, _ in tstamps
+                          if kk not in ("pre", "")), "?")
+                if k in ("phone turn", "desktop turn"):
+                    continue
+                gs = {s: ts for ts, _, s, _ in tstamps}
+                if ("gen-start" in gs and got["wake-booked"] - 1
+                        <= gs["gen-start"] <= got["move-played"]):
+                    offs.extend("wake-%s+%.1f" % (s, gs[s] - t0)
+                                for s in ("turn-start", "gen-start", "gen-end")
+                                if s in gs)
+                    break
+        print("%-16s %-4d %-8s %s"
+              % (game, ply, time.strftime("%H:%M:%S", time.localtime(t0)),
+                 "  ".join(offs)))

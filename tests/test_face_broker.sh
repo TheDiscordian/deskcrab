@@ -1,0 +1,800 @@
+#!/bin/bash
+# Tests for the living portrait's moving parts (specs/face.md, including the
+# 2026-08-30 automatic-tier amendment): the cue-track function, the broker's
+# layered state and full precedence ladder, turn-token staleness, the
+# streamer's cue scheduling and per-sentence acting against a stub
+# synthesiser, and the detached mood updater against a stub classifier. The
+# web routes ride in test_chessweb.sh and test_openrsc_web.sh beside their
+# servers.
+. "$(dirname "$(readlink -f "$0")")/lib/sandbox.sh"
+set -u
+
+REPO_DIR="$SANDBOX_REPO"
+T="$SANDBOX"
+export DESKCRAB_FACE_SOCKET="$T/face.sock"
+export DESKCRAB_FACE_STATE="$T/face-state.json"
+export DESKCRAB_MOOD_JOURNAL="$T/mood-journal.jsonl"
+# This suite exercises the pre-presence layers in isolation. Its broker has no
+# observer process; retain the fresh neutral aggregate while those cases run.
+export DESKCRAB_FACE_AMBIENT_ACTIVITY_STALE=3600
+
+FB() { python3 "$REPO_DIR/lib/face-broker" "$@"; }
+
+echo "the cue track — a pure function of the synthesiser's own record (rule 20):"
+
+OUT="$(python3 "$REPO_DIR/lib/viseme_cues.py" 'həlˈoʊ wˈɜːld' 1.4)"
+check "a track begins at zero and ends at rest" \
+    bash -c 'python3 -c "
+import json,sys
+c=json.loads(sys.argv[1])
+assert c[0][0]==0.0, c
+assert c[-1][1]==\"rest\", c
+assert any(v==\"round\" for _,v in c), c   # the oʊ and the w
+" "$1"' _ "$OUT"
+check_eq "the same inputs give the same track" \
+    "$OUT" "$(python3 "$REPO_DIR/lib/viseme_cues.py" 'həlˈoʊ wˈɜːld' 1.4)"
+check_eq "no audio means no lip movement (rule 21)" \
+    "$(python3 "$REPO_DIR/lib/viseme_cues.py" 'həlˈoʊ' 0)" '[[0.0, "rest"]]'
+check "the wake debug drain keeps consuming after its 64-track broker bound" \
+    python3 - "$REPO_DIR/lib" "$T/drain-count" <<'PY'
+import sys
+import types
+
+sys.path.insert(0, sys.argv[1])
+import viseme_cues
+
+calls = []
+sys.modules["face_state"] = types.SimpleNamespace(
+    send_cmd=lambda cmd, timeout: calls.append(cmd) or {"ok": True})
+
+class CountingLines:
+    def __init__(self, lines):
+        self.lines = lines
+        self.seen = 0
+    def __iter__(self):
+        for line in self.lines:
+            self.seen += 1
+            yield line
+
+lines = CountingLines([
+    part
+    for _ in range(65)
+    for part in (
+        "Converting 2 phoneme(s) to ids: ˈɑː\n",
+        "Synthesized 0.280 second(s)\n",
+    )
+])
+count = viseme_cues.stream_debug_to_broker(
+    lines, "bounded", lead=0, count_path=sys.argv[2])
+assert count == 64, count
+assert len(calls) == 64, len(calls)
+assert lines.seen == 130, lines.seen
+assert open(sys.argv[2]).read().strip() == "64"
+PY
+
+echo
+echo "the sentence-cue table — fixed, public, and only over her own words (rule 40):"
+check "surprise and irritation match; plain sentences never do" \
+    python3 -c "
+import sys
+sys.path.insert(0, '$REPO_DIR/lib')
+import face_state
+assert face_state.sentence_cue('Wow, that actually worked!') == 'startled'
+assert face_state.sentence_cue('You did what?!') == 'startled'
+assert face_state.sentence_cue('Ugh, the cache again.') == 'annoyed'
+assert face_state.sentence_cue('The tests are green now.') is None
+assert face_state.sentence_cue('') is None
+"
+check "the table has an off switch (DESKCRAB_FACE_SENTENCE_CUES=0)" \
+    bash -c 'DESKCRAB_FACE_SENTENCE_CUES=0 python3 -c "
+import sys
+sys.path.insert(0, \"$0/lib\")
+import face_state
+assert face_state.sentence_cue(\"Wow!\") is None
+"' "$REPO_DIR"
+
+echo
+echo "the broker — the precedence ladder of rule 43, her hand on top:"
+
+check "an explicit expression is accepted and reported" \
+    bash -c 'python3 "$0/lib/face-broker" caught | grep -q "caught accepted"' "$REPO_DIR"
+check "the state answers with the expression standing" \
+    bash -c 'python3 "$0/lib/face-broker" | grep -q "expression=caught"' "$REPO_DIR"
+check "activity never erases an authored expression (rule 18)" \
+    bash -c 'python3 "$0/lib/face-broker" activity considering >/dev/null
+        python3 "$0/lib/face-broker" | grep -q "expression=caught"' "$REPO_DIR"
+check "an allowlisted event cannot displace her explicit choice (rule 16)" \
+    bash -c 'python3 "$0/lib/face-broker" event failed-action >/dev/null
+        python3 "$0/lib/face-broker" | grep -q "expression=caught"' "$REPO_DIR"
+check "an automatic flourish cannot displace her explicit choice (rule 16)" \
+    bash -c 'python3 "$0/lib/face-broker" auto startled | grep -q "stands"
+        python3 "$0/lib/face-broker" | grep -q "expression=caught"' "$REPO_DIR"
+check "a mood lands underneath without unseating her hand (rules 41, 43)" \
+    bash -c 'python3 "$0/lib/face-broker" mood pleased >/dev/null
+        python3 "$0/lib/face-broker" | grep -q "expression=caught" \
+        && python3 "$0/lib/face-broker" | grep -q "mood=pleased"' "$REPO_DIR"
+check "explicit rest clears the record AND the mood (rule 18)" \
+    bash -c 'python3 "$0/lib/face-broker" rest >/dev/null
+        ! python3 "$0/lib/face-broker" | grep -q "mood="' "$REPO_DIR"
+check "with nothing above it, considering shows the activity default (rule 39)" \
+    bash -c 'python3 "$0/lib/face-broker" \
+        | grep -q "expression=focused \[activity\]"' "$REPO_DIR"
+check "activity resting shows resting — never a guessed mood (rule 4)" \
+    bash -c 'python3 "$0/lib/face-broker" activity resting >/dev/null
+        python3 "$0/lib/face-broker" | grep -q "expression=resting"' "$REPO_DIR"
+check "with composure at rest the event mapping stands (rule 17)" \
+    bash -c 'python3 "$0/lib/face-broker" event failed-action >/dev/null
+        python3 "$0/lib/face-broker" | grep -q "expression=annoyed \[event\]"' "$REPO_DIR"
+check "a routine failed action recovers far sooner than a meaningful event (rule 17)" \
+    bash -c 'python3 "$0/lib/face-broker" status | python3 -c "
+import json,sys
+s=json.load(sys.stdin)
+assert s[\"event_lifetimes\"][\"failed-action\"] == 8.0, s
+assert s[\"event_lifetimes\"][\"failed-action\"] < s[\"event_lifetimes\"][\"game-win\"], s
+"' "$REPO_DIR"
+check "an automatic flourish cannot displace an event (rule 16)" \
+    bash -c 'python3 "$0/lib/face-broker" auto pleased | grep -q "stands"' "$REPO_DIR"
+check "a newer explicit choice supersedes the event (rule 16)" \
+    bash -c 'python3 "$0/lib/face-broker" focused >/dev/null
+        python3 "$0/lib/face-broker" | grep -q "expression=focused \[explicit\]"' "$REPO_DIR"
+check "an unknown expression is refused, not guessed at (rule 13)" \
+    bash -c '! python3 "$0/lib/face-broker" cheerful >/dev/null 2>&1' "$REPO_DIR"
+check "an unknown mood is refused too" \
+    bash -c '! python3 "$0/lib/face-broker" mood gleeful >/dev/null 2>&1' "$REPO_DIR"
+FB rest >/dev/null
+check "a mood alone shows when nothing outranks it (rule 43)" \
+    bash -c 'python3 "$0/lib/face-broker" mood tired >/dev/null
+        python3 "$0/lib/face-broker" | grep -q "expression=tired \[mood\]"' "$REPO_DIR"
+FB rest >/dev/null
+check "a mood record keeps its reason, source, and originating turn (rules 41, 42a)" \
+    bash -c 'DESKCRAB_FACE_TURN=turn-cause python3 "$0/lib/face-broker" \
+        mood pleased --reason "finishing the repair cleanly felt satisfying" \
+        --source "RuneScape" --origin "desktop exchange" \
+        --source-ref turn-cause >/dev/null
+        python3 "$0/lib/face-broker" status | python3 -c "
+import json,sys
+s=json.load(sys.stdin)
+assert s[\"mood_reason\"] == \"finishing the repair cleanly felt satisfying\", s
+assert s[\"mood_source\"] == \"RuneScape\", s
+assert s[\"mood_origin\"] == \"desktop exchange\", s
+assert s[\"mood_source_ref\"] == \"turn-cause\", s
+assert s[\"mood_record\"][\"reason\"] == s[\"mood_reason\"], s
+"' "$REPO_DIR"
+FB rest >/dev/null
+check "an automatic flourish recovers by its own lifetime (rules 18, 40)" \
+    bash -c 'python3 "$0/lib/face-broker" auto startled --for 1 >/dev/null
+        python3 "$0/lib/face-broker" | grep -q "expression=startled \[auto\]" || exit 1
+        sleep 1.3
+        python3 "$0/lib/face-broker" | grep -q "expression=resting"' "$REPO_DIR"
+check "a lifetime chosen at set time recovers on its own (rule 18)" \
+    bash -c 'python3 "$0/lib/face-broker" pleased --for 1 >/dev/null
+        sleep 1.3
+        python3 "$0/lib/face-broker" | grep -q "expression=resting"' "$REPO_DIR"
+EX_SOCK="$T/face-explicit.sock"
+check "a bare manual choice is bounded instead of masking automation all day (rule 16)" \
+    bash -c 'export DESKCRAB_FACE_SOCKET="$1" DESKCRAB_FACE_STATE="$2" \
+        DESKCRAB_FACE_EXPLICIT_SECONDS=1
+        python3 "$0/lib/face-broker" mood tired >/dev/null
+        python3 "$0/lib/face-broker" attentive \
+            | grep -q "attentive accepted for 1s" || exit 1
+        sleep 1.3
+        python3 "$0/lib/face-broker" | grep -q "expression=tired \[mood\]"' \
+    "$REPO_DIR" "$EX_SOCK" "$T/face-explicit-state.json"
+check "an intentional hold persists, and release reveals mood without erasing it" \
+    bash -c 'export DESKCRAB_FACE_SOCKET="$1" DESKCRAB_FACE_STATE="$2" \
+        DESKCRAB_FACE_EXPLICIT_SECONDS=1
+        python3 "$0/lib/face-broker" focused --hold \
+            | grep -q "until released" || exit 1
+        sleep 1.3
+        python3 "$0/lib/face-broker" | grep -q "expression=focused \[explicit\]" \
+            || exit 1
+        python3 "$0/lib/face-broker" release >/dev/null
+        python3 "$0/lib/face-broker" | grep -q "expression=tired \[mood\]"' \
+    "$REPO_DIR" "$EX_SOCK" "$T/face-explicit-state.json"
+check "the diagnostics name the allowlist, the tier, and the surfaces (rule 19)" \
+    bash -c 'python3 "$0/lib/face-broker" status | grep -q "event_map" \
+        && python3 "$0/lib/face-broker" status | grep -q "watchers" \
+        && python3 "$0/lib/face-broker" status | grep -q "sentence_cues" \
+        && python3 "$0/lib/face-broker" status | grep -q "activity_expressions" \
+        && python3 "$0/lib/face-broker" status | grep -q "mood_seconds" \
+        && python3 "$0/lib/face-broker" status | grep -q "explicit_seconds"' "$REPO_DIR"
+
+echo
+echo "OpenRSC reactions — confirmed bridge changes, no history replay (rule 56):"
+GAME_STATE="$T/openrsc-state.json"
+GAME_CURSOR="$T/openrsc-cursor.json"
+cat >"$GAME_STATE" <<'EOF'
+{"logged_in":true,"in_combat":false,"messages":[{"id":10,"channel":"game","incoming":false,"text":"old"}],"skills":[{"id":0,"level":4}],"quests":[{"id":1,"status":"started"}]}
+EOF
+check_eq "the first observation only seeds its cursor" \
+    "$(DESKCRAB_GAME_STATE="$GAME_STATE" DESKCRAB_FACE_OPENRSC_CURSOR="$GAME_CURSOR" \
+        "$REPO_DIR/lib/face-openrsc" --once)" ""
+cat >"$GAME_STATE" <<'EOF'
+{"logged_in":true,"in_combat":false,"messages":[{"id":10,"channel":"game","incoming":false,"text":"old"},{"id":11,"channel":"private","incoming":true,"sender":"Ryan","text":"hello"}],"skills":[{"id":0,"level":4}],"quests":[{"id":1,"status":"started"}]}
+EOF
+check_eq "a new incoming player message reaches the broker" \
+    "$(DESKCRAB_GAME_STATE="$GAME_STATE" DESKCRAB_FACE_OPENRSC_CURSOR="$GAME_CURSOR" \
+        "$REPO_DIR/lib/face-openrsc" --once)" "player-message"
+check "the message visibly resolves as attentive" \
+    bash -c 'python3 "$0/lib/face-broker" | grep -q "expression=attentive \[event\]"' "$REPO_DIR"
+cat >"$GAME_STATE" <<'EOF'
+{"logged_in":true,"in_combat":false,"messages":[{"id":12,"channel":"game","incoming":false,"text":"You cannot reach that"}],"skills":[{"id":0,"level":5}],"quests":[{"id":1,"status":"completed"}]}
+EOF
+check_eq "a completion outranks simultaneous refusal noise" \
+    "$(DESKCRAB_GAME_STATE="$GAME_STATE" DESKCRAB_FACE_OPENRSC_CURSOR="$GAME_CURSOR" \
+        "$REPO_DIR/lib/face-openrsc" --once)" "game-win"
+check "the completion visibly resolves as pleased" \
+    bash -c 'python3 "$0/lib/face-broker" | grep -q "expression=pleased \[event\]"' "$REPO_DIR"
+
+echo
+echo "quest-channel classification — the dialogue form, not the channel (rule 56):"
+cat >"$GAME_STATE" <<'EOF'
+{"logged_in":true,"in_combat":false,"messages":[{"id":13,"channel":"quest","incoming":false,"sender":"","text":"Welcome to Runescape!"},{"id":14,"channel":"quest","incoming":false,"sender":"","text":"You bury the bones"}],"skills":[{"id":0,"level":5}],"quests":[{"id":1,"status":"completed"}]}
+EOF
+check_eq "ordinary system text on the quest channel is not an event" \
+    "$(DESKCRAB_GAME_STATE="$GAME_STATE" DESKCRAB_FACE_OPENRSC_CURSOR="$GAME_CURSOR" \
+        "$REPO_DIR/lib/face-openrsc" --once)" ""
+check "the completion's pleased still stands over that traffic" \
+    bash -c 'python3 "$0/lib/face-broker" | grep -q "expression=pleased \[event\]"' "$REPO_DIR"
+cat >"$GAME_STATE" <<'EOF'
+{"logged_in":true,"in_combat":false,"messages":[{"id":15,"channel":"quest","incoming":false,"sender":"","text":"Global$Someone: selling lobsters"}],"skills":[{"id":0,"level":5}],"quests":[{"id":1,"status":"completed"}]}
+EOF
+check_eq "a global broadcast sharing the channel is not quest narrative" \
+    "$(DESKCRAB_GAME_STATE="$GAME_STATE" DESKCRAB_FACE_OPENRSC_CURSOR="$GAME_CURSOR" \
+        "$REPO_DIR/lib/face-openrsc" --once)" ""
+cat >"$GAME_STATE" <<'EOF'
+{"logged_in":true,"in_combat":false,"messages":[{"id":16,"channel":"quest","incoming":false,"sender":"","text":"Banker: Good day, how may I help you?"}],"skills":[{"id":0,"level":5}],"quests":[{"id":1,"status":"completed"}]}
+EOF
+check_eq "a genuine NPC line still lands as quest-message" \
+    "$(DESKCRAB_GAME_STATE="$GAME_STATE" DESKCRAB_FACE_OPENRSC_CURSOR="$GAME_CURSOR" \
+        "$REPO_DIR/lib/face-openrsc" --once)" "quest-message"
+check "and visibly resolves as attentive" \
+    bash -c 'python3 "$0/lib/face-broker" | grep -q "expression=attentive \[event\]"' "$REPO_DIR"
+cat >"$GAME_STATE" <<'EOF'
+{"logged_in":true,"in_combat":false,"messages":[{"id":17,"channel":"quest","incoming":false,"sender":"Player","text":"I'd like to access my bank account please"}],"skills":[{"id":0,"level":5}],"quests":[{"id":1,"status":"completed"}]}
+EOF
+check_eq "her own dialogue reply carries her name and is not an arrival" \
+    "$(DESKCRAB_GAME_STATE="$GAME_STATE" DESKCRAB_FACE_OPENRSC_CURSOR="$GAME_CURSOR" \
+        "$REPO_DIR/lib/face-openrsc" --once)" ""
+cat >"$GAME_STATE" <<'EOF'
+{"logged_in":true,"in_combat":false,"messages":[{"id":18,"channel":"quest","incoming":false,"sender":"","text":"Banker: Good day, how may I help you?"}],"skills":[{"id":0,"level":5}],"quests":[{"id":1,"status":"completed"}]}
+EOF
+check_eq "the same quest line inside its window is a loop, not news" \
+    "$(DESKCRAB_GAME_STATE="$GAME_STATE" DESKCRAB_FACE_OPENRSC_CURSOR="$GAME_CURSOR" \
+        "$REPO_DIR/lib/face-openrsc" --once)" ""
+cat >"$GAME_STATE" <<'EOF'
+{"logged_in":true,"in_combat":false,"messages":[{"id":19,"channel":"quest","incoming":false,"sender":"","text":"Banker: Certainly Miss"}],"skills":[{"id":0,"level":5}],"quests":[{"id":1,"status":"completed"}]}
+EOF
+check_eq "a different quest line is still news" \
+    "$(DESKCRAB_GAME_STATE="$GAME_STATE" DESKCRAB_FACE_OPENRSC_CURSOR="$GAME_CURSOR" \
+        "$REPO_DIR/lib/face-openrsc" --once)" "quest-message"
+python3 - "$GAME_CURSOR" <<'PY'
+import json, sys
+path = sys.argv[1]
+with open(path) as fh:
+    cur = json.load(fh)
+cur["quest_seen"] = {t: ts - 120 for t, ts in (cur.get("quest_seen") or {}).items()}
+with open(path, "w") as fh:
+    json.dump(cur, fh)
+PY
+cat >"$GAME_STATE" <<'EOF'
+{"logged_in":true,"in_combat":false,"messages":[{"id":20,"channel":"quest","incoming":false,"sender":"","text":"Banker: Good day, how may I help you?"}],"skills":[{"id":0,"level":5}],"quests":[{"id":1,"status":"completed"}]}
+EOF
+check_eq "once its window lapses the same line may land again" \
+    "$(DESKCRAB_GAME_STATE="$GAME_STATE" DESKCRAB_FACE_OPENRSC_CURSOR="$GAME_CURSOR" \
+        "$REPO_DIR/lib/face-openrsc" --once)" "quest-message"
+cat >"$GAME_STATE" <<'EOF'
+{"logged_in":true,"in_combat":true,"messages":[{"id":21,"channel":"quest","incoming":false,"sender":"","text":"You bury the bones"}],"skills":[{"id":0,"level":5}],"quests":[{"id":1,"status":"completed"}]}
+EOF
+check_eq "combat start stays visible beside ordinary channel traffic" \
+    "$(DESKCRAB_GAME_STATE="$GAME_STATE" DESKCRAB_FACE_OPENRSC_CURSOR="$GAME_CURSOR" \
+        "$REPO_DIR/lib/face-openrsc" --once)" "combat-start"
+check "and visibly resolves as focused" \
+    bash -c 'python3 "$0/lib/face-broker" | grep -q "expression=focused \[event\]"' "$REPO_DIR"
+cat >"$GAME_STATE" <<'EOF'
+{"logged_in":true,"in_combat":true,"messages":[{"id":22,"channel":"quest","incoming":false,"sender":"","text":"Guide: Ah, welcome adventurer"}],"skills":[{"id":0,"level":6}],"quests":[{"id":1,"status":"completed"}]}
+EOF
+check_eq "a completion still outranks a simultaneous fresh quest line" \
+    "$(DESKCRAB_GAME_STATE="$GAME_STATE" DESKCRAB_FACE_OPENRSC_CURSOR="$GAME_CURSOR" \
+        "$REPO_DIR/lib/face-openrsc" --once)" "game-win"
+check "and visibly resolves as pleased" \
+    bash -c 'python3 "$0/lib/face-broker" | grep -q "expression=pleased \[event\]"' "$REPO_DIR"
+FB rest >/dev/null; FB activity resting >/dev/null
+
+echo
+echo "turn tokens — a result computed for a finished turn never lands (rule 38):"
+check "the turn machinery registers its token through activity" \
+    bash -c 'DESKCRAB_FACE_TURN=turn-live python3 "$0/lib/face-broker" \
+        activity considering >/dev/null
+        python3 "$0/lib/face-broker" status | grep -q "turn-live"' "$REPO_DIR"
+check "a stale automatic flourish is turned away, state untouched" \
+    bash -c 'DESKCRAB_FACE_TURN=turn-old python3 "$0/lib/face-broker" \
+        auto pleased | grep -q "stale" \
+        && python3 "$0/lib/face-broker" | grep -q "expression=focused \[activity\]"' "$REPO_DIR"
+check "a stale mood is turned away the same" \
+    bash -c 'DESKCRAB_FACE_TURN=turn-old python3 "$0/lib/face-broker" \
+        mood annoyed | grep -q "stale" \
+        && ! python3 "$0/lib/face-broker" | grep -q "mood="' "$REPO_DIR"
+check "the current turn's own result lands" \
+    bash -c 'DESKCRAB_FACE_TURN=turn-live python3 "$0/lib/face-broker" \
+        mood pleased >/dev/null
+        python3 "$0/lib/face-broker" | grep -q "mood=pleased"' "$REPO_DIR"
+check "every mood decision is in the durable journal, discarded ones included (rule 42b)" \
+    python3 - "$T/mood-journal.jsonl" <<'PY'
+import json, sys
+rows = [json.loads(line) for line in open(sys.argv[1])]
+sets = [r for r in rows if r["event"] == "set"]
+stale = [r for r in sets if not r["applied"]]
+assert any(r["mood"] == "pleased" and r["applied"] for r in sets), rows
+assert any(r["mood"] == "annoyed" and "stale" in r["note"] for r in stale), rows
+assert any(r["event"] in ("cleared", "rest-cleared") for r in rows), rows
+flicks = [r for r in rows if r["event"] == "expression"]
+assert any(r["cause"] in ("game-win", "failed-action", "player-message")
+           for r in flicks), rows
+PY
+FB rest >/dev/null; FB activity resting >/dev/null
+check "her rest lands in the journal too (rule 42b)" \
+    bash -c 'grep -q "\"event\":\"rest-cleared\"" "$1"' _ "$T/mood-journal.jsonl"
+
+echo
+echo "the mood baseline's own clock — a late mood lands, order and lifetime hold (rule 38a):"
+# A dedicated broker: these cases steer the monotonic marker and the journal,
+# and must not pollute the main section's state. The helper and its cases run
+# in this shell, so the section's variables stay visible without exporting.
+MA_SOCK="$T/face-mood38a.sock"
+MA_STATE="$T/face-mood38a-state.json"
+MA_JRNL="$T/mood38a-journal.jsonl"
+NOW_NS=$(date +%s%N)
+LIVE_TOKEN="turn-9999-$NOW_NS"
+OLD_TOKEN="turn-9998-$(( NOW_NS - 120 * 1000000000 ))"      # finished 2 min ago
+OLDER_TOKEN="turn-9997-$(( NOW_NS - 300 * 1000000000 ))"    # finished 5 min ago
+ANCIENT_TOKEN="turn-9996-$(( NOW_NS - 1000 * 1000000000 ))" # past the 900 s lifetime
+NEWER_TOKEN="turn-9995-$(( NOW_NS - 60 * 1000000000 ))"     # finished 1 min ago
+ma() {  # <turn-token or -> <verb...> — one call against the 38a broker
+    local turn="$1"; shift
+    [ "$turn" = - ] && turn=
+    DESKCRAB_FACE_TURN="$turn" DESKCRAB_FACE_SOCKET="$MA_SOCK" \
+    DESKCRAB_FACE_STATE="$MA_STATE" DESKCRAB_MOOD_JOURNAL="$MA_JRNL" \
+        python3 "$REPO_DIR/lib/face-broker" "$@"
+}
+ma_live_registers() {
+    ma "$LIVE_TOKEN" activity considering >/dev/null \
+        && ma - status | grep -q "$LIVE_TOKEN"
+}
+ma_past_lifetime_refused() {
+    ma "$ANCIENT_TOKEN" mood tired | grep -q "past mood lifetime" \
+        && ! ma - state | grep -q "mood="
+}
+ma_late_mood_lands() {
+    ma "$OLD_TOKEN" mood focused --reason "the work needed attention" \
+        --source "coding work" --origin "desktop exchange" >/dev/null \
+        && ma - state | grep -q "mood=focused" \
+        && ma - status | grep -q "\"mood_turn\": \"$OLD_TOKEN\""
+}
+ma_out_of_order_refused() {
+    ma "$OLDER_TOKEN" mood annoyed | grep -q "out of order" \
+        && ma - state | grep -q "mood=focused"
+}
+ma_unsuffixed_strict() {
+    ma turn-finished mood pleased | grep -q "stale turn" \
+        && ma - state | grep -q "mood=focused"
+}
+ma_seconds_scale_strict() {
+    ma "turn-42-$(date +%s)" mood pleased | grep -q "stale turn" \
+        && ma - state | grep -q "mood=focused"
+}
+ma_tokenless_unchanged() {
+    ma - mood pleased >/dev/null \
+        && ma - state | grep -q "mood=pleased"
+}
+ma_auto_expression_still_refused() {
+    ma "$OLD_TOKEN" auto startled | grep -q "stale" \
+        && ma - state | grep -q "expression=pleased \[mood\]"
+}
+ma_late_clear_lands() {
+    ma "$NEWER_TOKEN" mood neutral >/dev/null \
+        && ! ma - state | grep -q "mood="
+}
+check "the live turn registers with an epoch-ns token" ma_live_registers
+check "a mood past its own lifetime is refused, the lifetime named (38a b)" \
+    ma_past_lifetime_refused
+check "a mood from a finished turn lands inside the lifetime (38a)" \
+    ma_late_mood_lands
+ma - status > "$T/ma-status-late.json"
+check "a late mood's decay clock is anchored to its turn start, not arrival (38a b, 41)" \
+    python3 - "$T/ma-status-late.json" "$OLD_TOKEN" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1]))
+start = int(sys.argv[2].rsplit("-", 1)[-1]) / 1e9
+exp, set_at = s["mood_expires_at"], s["mood_set_at"]
+assert abs(exp - (start + 900)) < 0.001, (exp, start)
+# And NOT the arrival anchor: the write landed ~120 s after its turn began.
+assert exp < set_at + 900 - 60, (exp, set_at)
+PY
+check "an out-of-order mood is refused — a later mood already applied (38a a)" \
+    ma_out_of_order_refused
+check "an unsuffixed token falls back to the strict rule 38 refusal" \
+    ma_unsuffixed_strict
+check "a seconds-scale suffix is not misread as an ordering — strict refusal" \
+    ma_seconds_scale_strict
+ma - status > "$T/ma-status-after-strict.json"
+check "strict-refused writes leave the standing mood's expiry untouched" \
+    python3 - "$T/ma-status-late.json" "$T/ma-status-after-strict.json" <<'PY'
+import json, sys
+before = json.load(open(sys.argv[1]))
+after = json.load(open(sys.argv[2]))
+assert after["mood_expires_at"] == before["mood_expires_at"], (before, after)
+PY
+check "a tokenless mood write keeps rule 38's standing on its own" \
+    ma_tokenless_unchanged
+ma - status > "$T/ma-status-tokenless.json"
+check "a tokenless mood keeps its arrival-anchored expiry (rule 41)" \
+    python3 - "$T/ma-status-tokenless.json" <<'PY'
+import json, sys
+s = json.load(open(sys.argv[1]))
+exp, set_at = s["mood_expires_at"], s["mood_set_at"]
+assert abs(exp - (set_at + 900)) < 0.001, (exp, set_at)
+PY
+check "an auto EXPRESSION from a finished turn is still refused (rule 38 stands)" \
+    ma_auto_expression_still_refused
+check "a late clear from a newer finished turn lands too (38a)" \
+    ma_late_clear_lands
+check "the three refusal kinds are distinguishable in the journal (rule 42b)" \
+    python3 - "$MA_JRNL" "$OLD_TOKEN" "$NEWER_TOKEN" <<'PY'
+import json, sys
+rows = [json.loads(line) for line in open(sys.argv[1])]
+sets = [r for r in rows if r["event"] == "set"]
+refused = [r for r in sets if not r["applied"]]
+notes = [r["note"] for r in refused]
+assert sum("past mood lifetime" in n for n in notes) == 1, notes
+assert sum("out of order" in n for n in notes) == 1, notes
+assert sum("stale turn" in n for n in notes) == 2, notes   # unsuffixed + seconds-scale
+assert any(r["mood"] == "focused" and r["applied"]
+           and r["turn"] == sys.argv[2] for r in sets), sets
+assert any(r["event"] == "cleared" and r["applied"]
+           and r["turn"] == sys.argv[3] for r in rows), rows
+PY
+
+# Admission and expiry are the same predicate (38a b): a record that would
+# be born already expired is refused at the door, never stored as a
+# live-looking entry. A 5-second lifetime against a turn started 10 s ago
+# forces the arithmetic without racing the clock — and the token is the
+# LIVE registered turn, so no staleness door hides the storage path.
+BD_SOCK="$T/face-borndead.sock"
+BD_STATE="$T/face-borndead-state.json"
+BD_JRNL="$T/borndead-journal.jsonl"
+BD_TOKEN="turn-9994-$(( NOW_NS - 10 * 1000000000 ))"
+bd() {  # <turn-token or -> <verb...> — one call against the 5 s broker
+    local turn="$1"; shift
+    [ "$turn" = - ] && turn=
+    DESKCRAB_FACE_TURN="$turn" DESKCRAB_FACE_SOCKET="$BD_SOCK" \
+    DESKCRAB_FACE_STATE="$BD_STATE" DESKCRAB_MOOD_JOURNAL="$BD_JRNL" \
+    DESKCRAB_FACE_MOOD_SECONDS=5 \
+        python3 "$REPO_DIR/lib/face-broker" "$@"
+}
+bd_born_dead_refused() {
+    bd "$BD_TOKEN" activity considering >/dev/null \
+        && bd "$BD_TOKEN" mood tired | grep -q "past mood lifetime" \
+        && ! bd - state | grep -q "mood="
+}
+check "a write whose anchored expiry is already past is refused, not stored (38a b)" \
+    bd_born_dead_refused
+check "the born-dead refusal is journalled refused, never applied (42b)" \
+    python3 - "$BD_JRNL" <<'PY'
+import json, sys
+rows = [json.loads(line) for line in open(sys.argv[1])]
+sets = [r for r in rows if r["event"] == "set"]
+assert len(sets) == 1, rows
+assert not sets[0]["applied"], rows
+assert "past mood lifetime" in sets[0]["note"], rows
+PY
+
+echo
+echo "decay and disable switches — nothing automatic is permanent (rules 39, 41):"
+DK_SOCK="$T/face-decay.sock"
+check "an unrefreshed mood decays on the broker's own clock" \
+    bash -c 'export DESKCRAB_FACE_SOCKET="$1" DESKCRAB_FACE_STATE="$2" \
+        DESKCRAB_FACE_MOOD_SECONDS=1
+        python3 "$0/lib/face-broker" mood annoyed >/dev/null
+        sleep 1.3
+        python3 "$0/lib/face-broker" | grep -q "expression=resting"' \
+    "$REPO_DIR" "$DK_SOCK" "$T/face-decay-state.json"
+AM_SOCK="$T/face-actmap.sock"
+check "an emptied activity map moves nothing (rule 39)" \
+    bash -c 'export DESKCRAB_FACE_SOCKET="$1" DESKCRAB_FACE_STATE="$2" \
+        DESKCRAB_FACE_ACTIVITY_EXPRESSIONS=
+        python3 "$0/lib/face-broker" activity considering >/dev/null
+        python3 "$0/lib/face-broker" | grep -q "expression=resting"' \
+    "$REPO_DIR" "$AM_SOCK" "$T/face-actmap-state.json"
+
+echo
+echo "the disabled allowlist — mappings are hers to turn off (rule 17):"
+DIS_SOCK="$T/face-dis.sock"
+check "a disabled event moves nothing" \
+    bash -c 'export DESKCRAB_FACE_SOCKET="$1" DESKCRAB_FACE_STATE="$2" \
+        DESKCRAB_FACE_EVENTS=""
+        python3 "$0/lib/face-broker" event failed-action | grep -q "disabled" \
+        && python3 "$0/lib/face-broker" | grep -q "expression=resting"' \
+    "$REPO_DIR" "$DIS_SOCK" "$T/face-dis-state.json"
+
+echo
+echo "speech clips — scheduled with cues, cleared on stop (rules 21-23):"
+python3 - "$REPO_DIR" <<'PY'
+import json, subprocess, sys, time
+sys.path.insert(0, sys.argv[1] + "/lib")
+import face_state
+r = face_state.send_cmd({"cmd": "speak", "clips": [
+    {"id": "t1", "start": time.time(), "duration": 3.0,
+     "cues": [[0, "slight"], [0.4, "open"], [2.8, "rest"]]}]})
+assert r and r["ok"] and r["state"]["speaking"], r
+assert r["state"]["clips"][0]["cues"][1] == [0.4, "open"], r
+bad = face_state.send_cmd({"cmd": "speak", "clips": [
+    {"id": "t2", "start": time.time(), "duration": 1.0,
+     "cues": [[0, "grin"]]}]})
+assert bad["ok"] and bad["state"]["clips"][-1]["cues"] == [], bad
+r = face_state.send_cmd({"cmd": "speak-stop"})
+assert r["ok"] and not r["state"]["speaking"] and r["state"]["clips"] == [], r
+print("clip lifecycle holds")
+PY
+[ $? -eq 0 ] && ok "clips carry cues, unknown shapes are dropped, stop clears now" \
+    || fail "clip lifecycle" "see above"
+
+echo
+echo "the streamer's cue plumbing — armed only by the socket (rules 29-30, 40):"
+
+# A stub synthesiser that speaks the real one's debug dialect on stderr
+# (verified 2026-08-30 against piper's actual --debug output).
+sandbox_stub piper-tts <<'EOF'
+#!/usr/bin/env bash
+DEBUG=0
+for a in "$@"; do [ "$a" = "--debug" ] && DEBUG=1; done
+while IFS= read -r line || [ -n "$line" ]; do
+    printf '%s\tSAY\t%s\n' "$(date +%s.%N)" "$line" >> "$TRACE"
+    if [ "$DEBUG" = 1 ]; then
+        printf '[piper] [debug] Converting 5 phoneme(s) to ids: h@l"oU\n' >&2
+        printf '[piper] [debug] Synthesized 1.500 second(s) of audio in 0.1 second(s)\n' >&2
+    fi
+    head -c 2048 /dev/zero
+done
+EOF
+
+run_streamer() {  # <name> <spoken sentence> <extra-env...>
+    LOG="$T/$1.log"; TRACE="$T/$1.trace"
+    : > "$LOG"; : > "$TRACE"
+    python3 - "$LOG" "$2" <<'PY'
+import json, sys
+lines = [
+    {"type": "assistant", "message": {"model": "m", "content":
+        [{"type": "text", "text": sys.argv[2]}]}},
+    {"type": "result", "result": "x"},
+]
+with open(sys.argv[1], "w") as fh:
+    for d in lines:
+        fh.write(json.dumps(d) + "\n")
+PY
+    shift 2
+    TRACE="$TRACE" DESKCRAB_DEBUGLOG="$LOG" DESKCRAB_PIPER_VOICE=/dev/null \
+        DESKCRAB_SPEECHLOCK="$T/face-stream.speechlock" \
+        DESKCRAB_SPEECH_LOG="$T/face-stream.speechlog" \
+        DESKCRAB_SPEECH_RECEIPT="$T/face-stream.receipt" \
+        DESKCRAB_VOICE_IDLE_CLOSE=2 \
+        env "$@" bash -c '"$0/lib/tts-streamer" & wait' "$REPO_DIR" 2>/dev/null
+}
+
+run_streamer unarmed "Hello." DESKCRAB_FACE_SOCKET=
+check "unarmed, the words still sound and no clips exist" \
+    bash -c 'grep -q "SAY	Hello." "$1"' _ "$T/unarmed.trace"
+
+run_streamer armed "Hello." DESKCRAB_FACE_SOCKET="$DESKCRAB_FACE_SOCKET"
+check "armed, the words still sound identically (rule 30)" \
+    bash -c 'grep -q "SAY	Hello." "$1"' _ "$T/armed.trace"
+STATE_NOW="$(FB status)"
+check "the drained burst closed the mouth (rule 23)" \
+    bash -c 'printf %s "$1" | grep -q "\"speaking\": false"' _ "$STATE_NOW"
+check "the broker heard the speaking presence (rule 15)" \
+    bash -c 'printf %s "$1" | grep -q "\"activity\": \"speaking\""' _ "$STATE_NOW"
+check "a plain sentence raised no flourish (rule 40)" \
+    bash -c 'python3 "$0/lib/face-broker" | grep -q "expression=resting"' "$REPO_DIR"
+
+# Per-sentence acting: the flourish rides the clip's own playback start
+# (lead pinned to 0 so the stub's instant "audio" and the model agree), is
+# sourced auto, and is bounded by clip length plus the linger.
+run_streamer wow "Wow, that is a surprise!" \
+    DESKCRAB_FACE_SOCKET="$DESKCRAB_FACE_SOCKET" \
+    DESKCRAB_FACE_AUDIO_LEAD=0
+check "her own exclamation acts on her face as the clip sounds (rule 40)" \
+    bash -c 'python3 "$0/lib/face-broker" \
+        | grep -q "expression=startled \[auto\]"' "$REPO_DIR"
+check "…and the drain still closed the mouth underneath it (rule 23)" \
+    bash -c 'python3 "$0/lib/face-broker" status \
+        | grep -q "\"speaking\": false"' "$REPO_DIR"
+FB rest >/dev/null
+
+echo
+echo "one-shot wake speech — the same Piper phonemes drive its live mouth:"
+sandbox_stub piper-tts <<'EOF'
+#!/usr/bin/env bash
+DEBUG=0
+for a in "$@"; do [ "$a" = "--debug" ] && DEBUG=1; done
+while IFS= read -r line || [ -n "$line" ]; do
+    printf '%s\n' "$line" >> "$WAKE_PHONEME_TEXT"
+    if [ "$DEBUG" = 1 ]; then
+        printf '[piper] [debug] Converting 5 phoneme(s) to ids: həlˈoʊ\n' >&2
+        printf '[piper] [debug] Synthesized 0.800 second(s) of audio in 0.1 second(s)\n' >&2
+    fi
+    head -c 44100 /dev/zero
+done
+EOF
+sandbox_stub aplay <<EOF
+#!/usr/bin/env bash
+sleep 0.15
+DESKCRAB_FACE_SOCKET="$DESKCRAB_FACE_SOCKET" \
+    python3 "$REPO_DIR/lib/face-broker" status > "$T/wake-playing.json"
+cat >/dev/null
+EOF
+: > "$T/wake-phoneme-text"
+python3 - "$REPO_DIR" <<'PY'
+import sys
+import time
+sys.path.insert(0, sys.argv[1] + "/lib")
+import face_state
+reply = face_state.send_cmd({"cmd": "speak", "clips": [{
+    "id": "other-voice", "start": time.time(), "duration": 10.0,
+    "cues": [[0.0, "slight"], [9.5, "rest"]],
+}]})
+assert reply and reply["ok"], reply
+PY
+sandbox_bash 'FACE_ENABLED=1
+    TTS_FIXES="s/—/\\n/g"
+    DESKCRAB_FACE_AUDIO_LEAD=0
+    export WAKE_PHONEME_TEXT="'$T'/wake-phoneme-text"
+    speak_once "Ah—eight of fifteen."' >/dev/null 2>&1
+check "the one-shot wake fed both fix-created lines to Piper" \
+    bash -c '[ "$(wc -l < "$1")" -eq 2 ]' _ "$T/wake-phoneme-text"
+check "the one-shot wake was visibly speaking while its audio played" \
+    python3 - "$T/wake-playing.json" <<'PY'
+import json
+import sys
+with open(sys.argv[1]) as fh:
+    state = json.load(fh)
+assert state["speaking"], state
+assert state["clips"], state
+assert any(clip["id"] == "other-voice" for clip in state["clips"]), state
+assert any(clip["id"].startswith("wake-desk-") and
+           any(cue[1] != "rest" for cue in clip["cues"])
+           for clip in state["clips"]), state
+PY
+check "the one-shot wake closes only its own finished mouth track" \
+    python3 - "$REPO_DIR" <<'PY'
+import json
+import subprocess
+import sys
+state = json.loads(subprocess.check_output(
+    [sys.executable, sys.argv[1] + "/lib/face-broker", "status"]))
+assert [clip["id"] for clip in state["clips"]] == ["other-voice"], state
+PY
+python3 - "$REPO_DIR" <<'PY'
+import sys
+sys.path.insert(0, sys.argv[1] + "/lib")
+import face_state
+face_state.send_cmd({"cmd": "speak-end", "id": "other-voice"})
+PY
+
+# A streamer that outlived its turn: its flourish carries the dead turn's
+# token and must bounce off the broker (rule 38).
+DESKCRAB_FACE_TURN=turn-current FB activity considering >/dev/null
+run_streamer stale "Wow, that is a surprise!" \
+    DESKCRAB_FACE_SOCKET="$DESKCRAB_FACE_SOCKET" \
+    DESKCRAB_FACE_AUDIO_LEAD=0 \
+    DESKCRAB_FACE_TURN=turn-finished
+check "a stale streamer's flourish is turned away (rule 38)" \
+    bash -c '! python3 "$0/lib/face-broker" | grep -q "startled" \
+        && python3 "$0/lib/face-broker" | grep -q "expression=resting"' "$REPO_DIR"
+FB rest >/dev/null; FB activity resting >/dev/null
+
+echo
+echo "the mood updater — detached, continuous, stale-proof, silent on failure (rule 42):"
+
+# The classifier is the sandbox's own claude stub, taught to answer one word.
+sandbox_stub claude <<'EOF'
+#!/usr/bin/env bash
+cat >/dev/null
+sleep "${CLAUDE_STUB_SLEEP:-0}"
+[ -n "${CLAUDE_STUB_RC:-}" ] && exit "$CLAUDE_STUB_RC"
+echo "${CLAUDE_STUB_ANSWER:-neutral}"
+EOF
+
+FACE_AUTO_ENV=(FACE_ENABLED=1 FACE_AUTO_EXPRESSION=1
+    DESKCRAB_FACE_SOCKET="$DESKCRAB_FACE_SOCKET")
+check "a delivered exchange moves the standing mood" \
+    bash -c 'env "$@" CLAUDE_STUB_ANSWER="$(printf "pleased\tfinishing the exchange well felt satisfying\tRuneScape rescue")" \
+        "$0/lib/face-auto" --turn "" "hi" "That went beautifully." >/dev/null 2>&1
+        python3 "$0/lib/face-broker" status | python3 -c "
+import json,sys
+s=json.load(sys.stdin)
+assert s[\"mood\"] == \"pleased\", s
+assert s[\"mood_reason\"] == \"finishing the exchange well felt satisfying\", s
+assert s[\"mood_source\"] == \"RuneScape rescue\", s
+assert s[\"mood_origin\"] == \"completed exchange\", s
+"' \
+    "$REPO_DIR" "${FACE_AUTO_ENV[@]}"
+MOOD_SELF="$(sandbox_bash 'FACE_ENABLED=1; face_mood_report')"
+contains "$MOOD_SELF" "How you feel: pleased" \
+    && contains "$MOOD_SELF" "finishing the exchange well felt satisfying" \
+    && contains "$MOOD_SELF" "source: RuneScape rescue" \
+    && contains "$MOOD_SELF" "origin: completed exchange" \
+    && ok "the self-state prompt carries the mood, why, and source (rule 42a)" \
+    || fail "mood self-knowledge is missing from the state block" "$MOOD_SELF"
+check "phone mood provenance names the phone origin, not the updater" \
+    bash -c 'DESKCRAB_FACE_TURN=phone-cause python3 "$0/lib/face-broker" \
+        activity considering >/dev/null
+        env "$@" CLAUDE_STUB_ANSWER="focused<TAB>the call needed attention<TAB>phone conversation" \
+        "$0/lib/face-auto" --turn phone-cause "hello" "I am listening." >/dev/null 2>&1
+        python3 "$0/lib/face-broker" status | python3 -c "
+import json,sys
+s=json.load(sys.stdin)
+assert s[\"mood_source\"] == \"phone conversation\", s
+assert s[\"mood_origin\"] == \"phone exchange\", s
+"' "$REPO_DIR" "${FACE_AUTO_ENV[@]}"
+check "wake mood provenance names the wake origin, not the updater" \
+    bash -c 'DESKCRAB_FACE_TURN=wake-cause python3 "$0/lib/face-broker" \
+        activity considering >/dev/null
+        env "$@" CLAUDE_STUB_ANSWER="attentive<TAB>the task needed care<TAB>scheduled work" \
+        "$0/lib/face-auto" --turn wake-cause "check the task" "completed it" >/dev/null 2>&1
+        python3 "$0/lib/face-broker" status | python3 -c "
+import json,sys
+s=json.load(sys.stdin)
+assert s[\"mood_source\"] == \"scheduled work\", s
+assert s[\"mood_origin\"] == \"autonomous wake\", s
+"' "$REPO_DIR" "${FACE_AUTO_ENV[@]}"
+check "neutral clears the mood rather than guessing one" \
+    bash -c 'env "$@" CLAUDE_STUB_ANSWER=neutral \
+        "$0/lib/face-auto" --turn "" "hi" "Noted." >/dev/null 2>&1
+        ! python3 "$0/lib/face-broker" | grep -q "mood="' \
+    "$REPO_DIR" "${FACE_AUTO_ENV[@]}"
+check "an unparseable answer changes nothing (fail to resting, rule 42)" \
+    bash -c 'env "$@" CLAUDE_STUB_ANSWER="pleased<TAB>the rescue succeeded<TAB>RuneScape" \
+        "$0/lib/face-auto" --turn "" "hi" "Good." >/dev/null 2>&1
+        env "$@" CLAUDE_STUB_ANSWER="who can say" \
+        "$0/lib/face-auto" --turn "" "hi" "Hmm." >/dev/null 2>&1
+        python3 "$0/lib/face-broker" | grep -q "mood=pleased"' \
+    "$REPO_DIR" "${FACE_AUTO_ENV[@]}"
+check "a failed classify changes nothing either" \
+    bash -c 'env "$@" CLAUDE_STUB_RC=1 \
+        "$0/lib/face-auto" --turn "" "hi" "Hmm." >/dev/null 2>&1
+        python3 "$0/lib/face-broker" | grep -q "mood=pleased"' \
+    "$REPO_DIR" "${FACE_AUTO_ENV[@]}"
+check "a result for a finished turn is turned away (rule 38)" \
+    bash -c 'DESKCRAB_FACE_TURN=turn-now python3 "$0/lib/face-broker" \
+        activity considering >/dev/null
+        env "$@" CLAUDE_STUB_ANSWER="$(printf "annoyed\tthe action failed\tcoding work")" \
+        "$0/lib/face-auto" --turn turn-done "hi" "Ugh." >/dev/null 2>&1
+        python3 "$0/lib/face-broker" | grep -q "mood=pleased"' \
+    "$REPO_DIR" "${FACE_AUTO_ENV[@]}"
+
+# The hook itself never waits: with the classifier held asleep, dispatch
+# returns at once and the mood lands later, from the background (rule 37).
+sandbox_systemd_rc 1   # force the setsid fallback so the child really runs
+START_NS=$(date +%s%N)
+sandbox_bash 'FACE_ENABLED=1 FACE_AUTO_EXPRESSION=1 \
+    CLAUDE_STUB_SLEEP=3 CLAUDE_STUB_ANSWER="tired<TAB>the work was draining<TAB>coding work" \
+    DESKCRAB_FACE_TURN= fire_face_mood "hi" "So tired tonight."' \
+    >/dev/null 2>&1
+ELAPSED_MS=$(( ($(date +%s%N) - START_NS) / 1000000 ))
+[ "$ELAPSED_MS" -lt 2000 ] \
+    && ok "fire_face_mood returns in ${ELAPSED_MS}ms while the classifier sleeps 3s (rule 37)" \
+    || fail "fire_face_mood blocked" "${ELAPSED_MS}ms"
+LANDED=0
+for _ in $(seq 1 40); do
+    FB 2>/dev/null | grep -q "mood=tired" && { LANDED=1; break; }
+    sleep 0.3
+done
+[ "$LANDED" = 1 ] \
+    && ok "…and the sleeping classifier's answer still lands afterwards" \
+    || fail "background mood never landed" "$(FB status 2>/dev/null | head -40)"
+
+for pidfile in "$DESKCRAB_FACE_SOCKET.pid" "$DIS_SOCK.pid" \
+        "$DK_SOCK.pid" "$AM_SOCK.pid" "$EX_SOCK.pid" "$MA_SOCK.pid"; do
+    [ -f "$pidfile" ] && kill "$(cat "$pidfile")" 2>/dev/null
+done
+true

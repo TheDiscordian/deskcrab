@@ -1,0 +1,1139 @@
+# chessweb — the browser board onto a betty-chess game
+
+## PURPOSE
+
+betty-chess holds a correspondence game on disk, and she plays it by running `betty-chess move`.
+This module gives the *other* player a real board: a browser page where the user drags pieces,
+while she keeps playing exactly as before. The bridge is a SpeedyChess-protocol server
+(`lib/chessweb.py`, run through `lib/betty-chessweb`): it serves the stock SpeedyChess web client
+over HTTP and speaks its wire protocol over WebSocket upgrades on the same port. It owns no game
+state of its own — the betty-chess game file is the one record. The user's moves are validated and
+appended there; moves appended there by any other hand (hers, via `betty-chess move`) are mirrored
+into the browser; and every recorded user move is answered by the bridge's resident mover
+(`lib/chess_mover.py`, rule 16): reflex memory first, one minimal model call otherwise, her reply
+on the board in seconds. Her move never rides the wake queue — somebody is sitting at the board
+waiting for it, and the queue serialises behind whatever conversation is running.
+
+The page it serves is the shipped client (`lib/chessweb_client/` — see THE SHIPPED CLIENT), a
+plain HTML/CSS/JS board that speaks the stock wire byte for byte. The stock SpeedyChess build (a
+Go/WASM page) still plays unmodified: point `--client` or `$DESKCRAB_CHESSWEB_CLIENT` at its
+checkout and the protocol is the same one. Whichever directory serves, the bridge never writes a
+file under it; the one server-side liberty it takes is rewriting the server-address box in
+`index.html`, in memory, to the Host the page was fetched from, so connecting is one click.
+
+## THE WIRE, AS THE STOCK CLIENT SPEAKS IT
+
+Learned from the SpeedyChess sources; the bridge must keep to this exactly, because the client
+cannot be changed.
+
+- One WebSocket, binary messages, treated as a byte stream. Each protocol message is a type byte
+  — the message's index in `chesspb.proto`: Ping 0, Join 1, NewGame 2, Move 3, Error 4, Team 5,
+  Player 6, OpponentLeft 7, OpponentJoined 8, Promote 9, GameComplete 10 — then a length, then
+  that many bytes of protobuf. Client→server lengths are one byte; server→client lengths are
+  uvarint. A Ping is the bare type byte with no length in either direction.
+- The board is `[y][x]` with y 0 at black's back rank: file = x (a is 0), rank = 8 − y.
+- A Move carries from/to coordinates and a type. For type 1 (en passant) the "to" square is the
+  *captured pawn's* square, not the capturing pawn's destination. Type 2 castles toward the
+  a-file (queenside), type 3 toward the h-file (kingside); only the king's from-square is
+  trustworthy — one stock client sends no destination at all for castles.
+- Promotion is two-phase: the mover's Move puts the pawn on the last rank, the server prompts
+  with Promote{x,y} (to = 0), the mover answers Promote{x,y,to} where `to` is the piece's
+  Unicode rune codepoint, and the server broadcasts that Promote to everyone.
+- The client applies every broadcast Move to its own board without validating it and toggles
+  whose turn it is on each one. That property is what makes resume work: a stored game replayed
+  as broadcasts rebuilds the client's board and turn state exactly.
+- GameComplete knows three results: Stalemate 0, BlackWin 1, WhiteWin 2.
+
+## CONTRACT
+
+1. `betty-chessweb serve` listens on one port (`--port`, else `$DESKCRAB_CHESSWEB_PORT`, else
+   8181) and answers both plain HTTP GETs — static files from the client directory — and
+   WebSocket upgrades — the game protocol. The client directory is `--client`, else
+   `$DESKCRAB_CHESSWEB_CLIENT`, else the shipped client at `lib/chessweb_client/` in the
+   checkout, else `~/.local/share/deskcrab/chessweb/client`; if none exists the serve refuses to
+   start and says what to symlink where. Explicit choices win over the shipped default, so a
+   stock-client fan loses nothing. `--port 0` picks a free port and prints it.
+2. `index.html` is served with the server-address box rewritten to the request's Host. No file
+   under the client directory is ever written.
+3. One user seat. The first connection to send Join(player) is seated and immediately told
+   Player{one} and OpponentJoined — her seat needs no joining, she is always present — and then,
+   when the store holds an active game, the same Team-and-replay sync an observer gets, so a
+   rejoin lands on the live position with the right side to move, no NewGame click needed.
+   Joining loads; it never creates or resets a game. Further Join(player)s get an Error while
+   the seat is held; a seat whose socket has died is freed for the next joiner. Join(spectator)
+   connections observe: they get Team and the replay at once, and every later broadcast, but
+   their Moves are refused.
+4. NewGame from the seat syncs the browser to the stored game: Team with the user's colour, then
+   the stored move list replayed as broadcasts (a promotion replays as its Move then its
+   Promote). If no game is active, one is created in the betty-chess store first — opponent from
+   `--opponent`, her side from the complement of `--human-side`, which defaults to `random`.
+   `random` alternates: the user gets the colour they did not have in the most recent game
+   against this opponent, whatever its state, so the colours swap game after game; only the
+   first game against an opponent is a coin flip. Either way the choice is made per new game,
+   not once per process, so a long-lived server does not hand out one colour forever. A
+   standing call of hers (rule 26) outranks all of this — the alternation, the coin, a fixed
+   `--human-side` — for exactly the one game that spends it.
+   NewGame while the stored game is still active creates nothing — and is never silent: the
+   seat gets an Error naming the way out (Resign ends the game, then New Game deals the next),
+   and the sync still follows, so a stock client that leans on NewGame as its sync loses
+   nothing. `--game` pins a specific game id instead of newest-active-against-opponent.
+5. An incoming user Move or Promote is translated to UCI and validated against the stored game's
+   board with python-chess before anything else happens. Illegal, out-of-turn, or unseated
+   attempts get an Error and change nothing — on disk or on any board. The bridge's judgement,
+   not the client's, is the rules: the stock client's own move generator is known-permissive
+   (its castling misses rook-moved and through-check cases), and a click it allows may still be
+   refused.
+6. A user pawn reaching the last rank is not recorded until its Promote answer arrives; while
+   the answer is pending, other Moves are refused. The bridge broadcasts the Move at once
+   (stock behaviour), prompts the mover, and on the answer records the whole UCI move and
+   broadcasts the Promote. A disconnect while pending abandons the unrecorded move; the next
+   sync replays the position from before it, which is the store's truth.
+7. Every move recorded to the store by the bridge is followed, in order, by: broadcast to every
+   connection, game-end check, and — if the game is still on — the position handed to the
+   resident mover (rule 16), which answers it in-process. **No wake ever gates a move.** Two
+   wakes are still booked, both consequences and never preconditions, through
+   `crab wake-at --by chessweb 1s event <reason>`:
+   the **post-move wake**, after ANY move the bridge itself recorded — the sitter's move
+   (rule 5's record path, rule 6's recorded promotion included) exactly as much as her own
+   (reflex or model) — has already reached
+   the store and the board. Until 2026-08-26 only her own moves booked it, so the whole of
+   her chance to notice the game hung off her own replies: the sitter played, the board
+   changed, and nothing anywhere gave her a turn to look at it or decide to speak — the
+   silent-game defect the engineering record named on 2026-08-17 and the user re-diagnosed
+   on 2026-08-20 ("there is NO wake on the opponent's move at all"). Both sides' moves are
+   triggers now; a mirrored move (rule 8, appended by another hand) stays a non-trigger,
+   exactly as it is for the chat (rule 24c). She wakes pointed at the game — an ordinary
+   wake through the queue, so the turn runs at her ordinary session defaults, nothing
+   chess-specific about its model — free to say one sentence about it to the user (never her
+   reasoning or plans; the opponent hears everything she says) or to say nothing at all: the
+   wake is the opportunity to speak, never an obligation to, and silence is a supported
+   answer, because taking the queue out of the play path must not take her voice out of her
+   own game. The post-move wake's reason is **one fixed sentence per game**, shared by both
+   triggers: it names the game, the player, and where to look (`betty-chess status <id>`,
+   the diagram at `betty-chess show <id>`), never the move played or whose turn it is — and
+   it says in so many words to read the live game BEFORE saying anything, because under the
+   cooldown below a wake may fire minutes after its trigger and the booking is a trigger
+   only, never the source of truth (the user's 2026-08-20 directive: speak about the board
+   as it stands at speak-time, not as it stood at booking). A sitter's move whose in-process
+   answer ended the game on the spot (a reflex mate) books no post-move voice — the
+   end-of-game wake already covers that board. Byte-identical reasons are the queue's own coalescing key
+   ([wake-queue.md](wake-queue.md) rule 10), so while one post-move wake for a game is still
+   pending — or bouncing off the run lock on the event backoff — the next move's booking and
+   every deferral re-book fold into it instead of stacking behind it. The move-per-wake shape
+   was measured on 2026-08-10: a wake per move into a lane that runs minutes per session held
+   several bookings for one game at once, kept two of them cycling for eight minutes after
+   that game had ended, and every san a reason carried was stale by delivery. The board is
+   the truth she is pointed at, and it is the only copy that cannot be stale. But coalescing
+   alone is NOT the one-per-game bound, and the same evening proved it: it folds only into a
+   booking that is still PENDING, and this wake fires one second after it is booked, so a
+   game played at browser speed books one wake per move anyway — each fired into a hot
+   conversation, was held, and re-booked itself minutes out under hot-hold, until the ledger
+   held 314 chessweb bookings out of 774 lines and the one wake somebody was actually waiting
+   on (a finished detached job's, ringing the same queue) arrived inside that crowd. So the
+   post-move booking also carries the queue's scoped per-booker cap
+   ([wake-queue.md](wake-queue.md) rule 44): `--cap 1 --cap-prefix <the unique per-game head
+   of the reason sentence>` — **at most one pending post-move wake per game**, counted and
+   drained within that game's class alone, so one game's cap never costs another game its
+   voice. Rule 44's cap drains as well as gates, soonest-first: the pending far end is
+   cancelled and the booking about to fire is kept — the right end for a board, since the
+   reason names no move and cannot go stale. The cap flags are inserted immediately after the
+   wake command's literal `wake-at` element, ahead of the when/kind positionals (`wake_book`
+   parses flags first); a `$DESKCRAB_CHESSWEB_WAKE_CMD` override that carries no `wake-at`
+   has no queue to cap and is handed the reason alone, untouched. But the cap alone bounds
+   only what PENDS, never the fire rate, and 2026-08-15 (00:48–01:11) proved it: a game at
+   browser speed put a move on the board every ten to thirty seconds, every post-move booking
+   found the previous wake already fired — nothing pending, cap satisfied — and the ledger
+   took a booking per move for twenty minutes; five of those wakes fired inside ninety
+   seconds, each with nothing to say about a board the last one had just covered. So the
+   post-move booking also carries a **per-game voice cooldown**
+   (`$DESKCRAB_CHESSWEB_VOICE_COOLDOWN` seconds, default 180; `0` disables): the first voice
+   after a quiet spell books at `1s` as ever, and while the cooldown holds, the booking is
+   made with its fuse stretched to the cooldown's remaining span instead — which parks it
+   PENDING, where the cap and the byte-identical reason can finally do their work: later
+   moves' bookings inside the window are refused by the cap or fold into the pending unit,
+   and the one wake that fires speaks about the board as it stands then. At most one voice
+   per game per cooldown; a refused booking never advances the cooldown clock (the bridge
+   reads the queue's own "Not booked"/"already pending" answer), so a drained or held wake
+   cannot push her voice ever further out. And the **end-of-game
+   wake**, carrying the game id,
+   how the game ended, and the movetext, because she should hear how her game finished. Neither
+   wake is ever waited on: the next opponent move is answered whether or not the previous
+   wake has fired. Serve start hands the position to the mover the same way when the loaded
+   game is active with her to move (covers a bridge that died mid-think), and the store poll
+   re-offers the position on every tick while it stays hers and unanswered — which is what
+   turns a failed model call into a retry rather than a lost turn.
+   `$DESKCRAB_CHESSWEB_WAKE_CMD` replaces the crab invocation for both wakes wholesale
+   (the reason becomes its one argument) so tests never touch the live queue.
+8. The store is watched (a poll, at most 2s late). Moves appended by another hand are
+   translated and broadcast in order, exactly as if the bridge had made them. Any other change
+   — a shorter list, a rewritten prefix, an undo — forces a full resync (Team + replay) of every
+   connection rather than a guess at a delta.
+9. When the stored game ends — checkmate, stalemate, draw rule, resignation, agreed draw,
+   whether by a bridge-recorded move or noticed in the poll — every connection gets one
+   GameComplete with the right result; the protocol's three results mean every draw is sent as
+   Stalemate. After that, NewGame from the seat starts a fresh game (rule 4's creation path).
+10. Restart loses nothing: the bridge holds no game truth outside the store, so kill it — SIGKILL
+    included — restart it, rejoin from the browser, and the same game comes back: same id, same
+    position, same side to move, her pending reply intact. This is the overnight property, and it
+    is a consequence of rules 3, 4 and 8 rather than a feature of its own.
+11. The bridge writes nothing but game files in the betty-chess store, books its one wake (the
+    end-of-game one, rule 7) only through `crab wake-at`, and runs in the betty-chess venv (the
+    wrapper bootstraps it the same way `betty-chess` does).
+12. The browser is told where her turn stands, because a think and a mover that silently died
+    look identical from a phone. The bridge keeps three stamps — asked, started, played — and
+    serves them at `GET /thinking` as JSON, alongside the assistant's display name (a native
+    banner has no server-side template to hand it one). The mover sets asked and started itself the moment
+    the model call begins and played when the move lands, so the banner is mechanical and cannot
+    be forgotten; a reflex hit sets played alone. `POST /thinking` still sets the started stamp
+    for any out-of-process thinker, and the first post of a turn still sends one push
+    notification (`crab notify`); the mover itself never pushes — a reply due in seconds does
+    not need announcing. A small polling banner is injected into the served `index.html` ahead
+    of `</body>`; the client directory itself stays unmodified (rule 3), and a client that never
+    loads the banner plays exactly as before. A page whose bytes already carry `crab-thinking` —
+    the shipped client renders the same state natively — is served uninjected: the marker's
+    presence is the whole test, so a page that owns the banner is never given a second one.
+    The state also carries `attempts` — which round of the same think this is, 1 on a first
+    try — and `stalled`, null until rule 16e's failure cap is hit and then the short reason
+    retrying stopped. A retry of the SAME position is the same think: the started stamp is
+    set once, when the position first goes to the mover, and kept across every retry, so the
+    banner's clock counts the whole wait instead of restarting at each attempt — on
+    2026-08-11 a position whose every call died in seconds read as a fresh one-second think
+    every twenty-six seconds, forever, and the banner was the only witness that lied about
+    it. Both banners (the injected one and the shipped client's native one) render both
+    fields: a try count after the clock when a think is on its second round or later, and a
+    stuck line — no longer "thinking" — once the mover has given up.
+13. Every connection is Pinged at the stock server's 25-second cadence. The stock clients hang
+    up after 120 idle seconds, and a chess game is mostly idle; without the ping every browser
+    drops two minutes into a think.
+14. A peer reset is never fatal, wherever it lands — mid-HTTP-request, mid-upgrade, mid-read,
+    or under a broadcast from the poll or keepalive thread. A socket error is contained to the
+    one connection that raised it; connection-family errors log one line each, never a stack
+    trace (a traceback in the serve log means a bug, not a phone roaming off the network); and
+    the accept loop itself survives anything that escapes a handler. The process is still
+    mortal, so `systemd/deskbetty-chessweb.service` runs the serve under the user manager with
+    `Restart=always` and a short `RestartSec`, and rule 10 makes every comeback lossless. The
+    bridge is never run as a background child of a shell or of one of her turns — a session's
+    exit reaps its children, which is a silent way to lose the listener mid-game.
+15. `betty-chess move` takes an optional `--expect-ply <n>` (and `--expect-fen <fen>`) naming the
+    position the caller believed it was answering, and refuses — non-zero, nothing written — when
+    the stored game is no longer there, naming the current ply and the SAN of everything played
+    since. Any position handed out of process is a photograph, and the delay between the shutter
+    and the reply is long enough for another mover, or another session of her, to have played:
+    without the guard a legal move lands on the wrong board and the game is lost to a blunder
+    nobody chose. The resident mover applies the same guard in-process (rule 16d); this flag is
+    for every out-of-process caller — a reasoning session, a hand at the CLI. `--expect-fen` compares the position proper only — placement, side, castling,
+    en passant — never the halfmove or fullmove counters. No expectation given, no check: every
+    existing caller keeps working. `show` and `status` print the current ply, so the value is
+    always at hand. And when a move given WITHOUT an expectation fails to apply while the side
+    to move is not hers, `betty-chess move` MUST report it as a **turn conflict**, naming whose
+    move it actually is — side and player — and, when the refused text is exactly the move
+    already last on the board, saying that another hand already played it and at which ply.
+    "illegal move" is the answer to a bad move on her own turn; on 2026-08-10 two of her
+    sessions answered the same photograph with the same move, and the loser was told
+    "illegal move: Nf3" as if she could not read a board, when the truth was that the first
+    hand had already played it and the turn had passed.
+15b. And `betty-chess move` MUST refuse to play **her side of a browser game**. When the loaded
+    game's opponent is `browser`, the side to move is her `my_side`, and `--force` was not given,
+    the move is refused — non-zero, nothing written. A browser game is answered in-process by the
+    resident mover (rule 16), which pushes its reply straight into the store and never comes
+    through the CLI; a hand-typed or wake-driven `betty-chess move` on such a game is a second
+    mover racing the first, and rule 16d guarantees one of the two answers is discarded as stale.
+    Twice on the night of 2026-08-10 an autonomous wake did exactly that while the mover was
+    mid-think: the mover's own answer was thrown away and the game visibly played worse. The CLI
+    is the only door an out-of-process hand can reach, so the guard lives there
+    (`guard_resident_mover` in `lib/chess_cli.py`), never in the bridge — chessweb.py does not go
+    through `cmd_move` and needs no exemption. A mirrored *opponent* move — the side to move not
+    hers — passes untouched, as does every game whose opponent is not `browser`; `undo`, `resign`
+    and every other subcommand are unaffected. `--force` is the deliberate opt-out, for when the
+    mover is known to be down, and the refusal names it.
+16. **The resident mover** (`lib/chess_mover.py`). The bridge answers her positions itself,
+    in-process, the moment they appear — never through the wake queue, never behind the
+    conversation lock, never behind a phone turn. It went through the queue once: every user
+    move booked an event wake into the same single-session lane as the user's own conversation,
+    so the person waiting at the board pushed her reply back every time they *talked* to her,
+    and each move also rebuilt her whole prompt — state block, memory, conduct — to pick one
+    chess move. Measured cost: two to five minutes per move. The mover's whole budget is
+    seconds: a book move on the board inside 10, a reasoned move inside 30. Per position, in
+    order:
+    a. Reflex first (`chess_reflex.best_move`, specs/chess-reflex.md): a position memory knows
+       well enough is played with **no model call at all** — recorded through
+       `chess_cli.save_game` like any move, broadcast to every connection, stamped as played in
+       the `/thinking` state, and logged as `reflex played <san> from memory` — her own played
+       positions and the seeded book, recalled, not a bypass of her. A reflex move books the
+       post-move wake like any move of hers (rule 7); one that ends the game broadcasts
+       GameComplete (rule 9) and books the end-of-game wake instead. `DESKCRAB_CHESS_REFLEX=0`
+       disables the auto-play; recording of finished games is unconditional.
+    b. Otherwise **one minimal model call**. The prompt is purpose-built and tiny: the FEN, the
+       side to move, the legal moves, the movetext so far, and the position memory's own
+       section, built by the mover itself as it writes the prompt (chess-reflex.md rule 14 —
+       the nearest stored non-exact
+       neighbours with their outcomes, warnings and endorsements included; never a block about
+       this very position, which is the reflex's business; a memory failure
+       means a bare prompt, `DESKCRAB_CHESS_SIMILAR=0` switches the neighbour section off,
+       `DESKCRAB_CHESS_MEMORY_PROMPT=0` likewise). Nothing of deskcrab's prompt assembly
+       rides along: no state block, no memory retrieval, no conduct sheet, no persona. The
+       final prompt lines are a UCI-only whitelist of every legal move and an instruction to
+       return exactly one token from it; no SAN label, history, memory example, or analysis
+       follows that whitelist, and the normal board-legality parser checks the returned token
+       again before posting it. Structured output adds measurable latency at Low, so the first
+       attempt stays on this fast path. If a backend returns another token, every later attempt
+       for that position carries a closed structured-output schema whose `move` enum is the
+       exact whitelist, and names the rejected token immediately above the same whitelist.
+       The
+       invocation is the measured minimal shape (tools/context-probe-results.md): `--tools ""`
+       with `--strict-mcp-config --mcp-config lib/empty-mcp.json`, `--disable-slash-commands`,
+       a two-line `--system-prompt`, `-p` with the prompt on stdin, a sterile cwd, auto-memory
+       off. Model `$DESKCRAB_CHESS_MOVER_MODEL` (default `$CLAUDE_MODEL`, else `sonnet`);
+       effort per rule 16b; no fixed per-attempt ceiling exists (the retired
+       `$DESKCRAB_CHESS_MOVER_TIMEOUT`, default 90s, was ruled unauthorized 2026-08-31): a
+       TIMED attempt is bounded by the moving side's live clock alone (rule 16g), an untimed
+       attempt by nothing.
+       A SELF-PLAY position is the exception: its model and its nightly budget are
+       [chess-selfplay.md](chess-selfplay.md)'s (rules 2–5 there), keyed off the job itself —
+       the user's knobs for real games must not be spendable by the grind (2026-08-15).
+    c. There is no queue. At most one position is ever being answered: a newer position arriving
+       while a call is in flight kills the flight and takes the slot, and positions are
+       deduplicated by `fen_key`, so the same position is never answered twice concurrently and
+       a stale think is abandoned, never played.
+    d. The answer is validated before it is played: parsed as UCI (SAN accepted as a fallback),
+       checked legal, and posted under the hub lock only after the store has been re-read and
+       still stands at the ply the call was answering — rule 15's photograph guard, applied
+       in-process. A stale answer is discarded and the newest position stands to be answered.
+       An invalid reply is logged with its short move-like token, then remembered only for the
+       retry wording; it can never become a move.
+    e. A failed attempt — a limit refusal, a timeout, no legal move in the reply — walks the
+       flat account list of [account-fallback.md](account-fallback.md): the current account
+       first, then the rest in numbered order, cooling accounts skipped, read from the shared
+       state file (read-only — recording a refusal is the session machinery's call, never a
+       chess move's). Every account directory — the list's entries AND the state file's — is
+       tilde- and variable-expanded before it is matched or used: systemd's `EnvironmentFile`
+       hands values through unexpanded (the same trap rule 16b's `CLAUDE_BIN` handling guards
+       against), and an unexpanded `$HOME/...` handed to `CLAUDE_CONFIG_DIR` names an empty
+       login that answers "Not logged in" while the real account sits logged in — which would
+       also break the state-file match, wedging the walk onto a dead login (2026-08-11). A
+       position whose every attempt failed is re-offered by the store poll on a DOUBLING
+       cooldown: `$DESKCRAB_CHESS_MOVER_RETRY` (default 20s) after the first failed round,
+       twice that after the second, and so on, capped at
+       `$DESKCRAB_CHESS_MOVER_RETRY_CAP` (default 600s). After
+       `$DESKCRAB_CHESS_MOVER_MAX_FAILS` consecutive failed rounds (default 6) the
+       position is STALLED: `mover-stalled` is stamped, a loud line names the round count
+       and the last cause, the banner switches to a stuck state (rule 12), and retrying
+       drops to one probe round every `$DESKCRAB_CHESS_MOVER_STALL_RETRY` seconds
+       (default 600; 0 stops retrying outright) — the probe is what lets a limit that
+       resets on the clock heal without anyone restarting the bridge. A successful round
+       clears the count; an undo's reset clears everything. Every failed attempt is
+       logged WITH ITS CAUSE, and every mover failure line goes both to the serve log and
+       to syslog, so `journalctl --user -u deskcrab-chessweb` shows them even though the
+       unit's stdout is redirected to a file — a mover that cannot move must be loud
+       (2026-08-11: hundreds of failed calls an hour, visible nowhere but a /tmp file).
+       The cause is taken from the call's most informative output line: a line naming a
+       limit, a login, or an overload beats whatever happened to be printed last — the
+       same night, a settings-file warning on stderr masked "You've hit your session
+       limit" on stdout in every logged detail.
+    f. `$DESKCRAB_CHESS_MOVER_CMD` replaces the model invocation wholesale for tests — the
+       prompt arrives on stdin, the reply is its stdout — so no test thinks with a real model.
+    g. **The clock is the only ceiling** (rewritten 2026-08-31 by the user's ruling,
+       superseding the 2026-08-28 clock-budget fallback: an arbitrary fixed per-call ceiling
+       and an automatically manufactured move are both unauthorized, in real games and in
+       benchmarks alike — a move may come only from rule 16a's reflex/book replay or from the
+       selected model, and nothing else may ever produce one). For a TIMED game — a job
+       carrying the live `clock` of rule 22f, which this rule is what finally consults — a
+       model attempt is bounded by the moving side's actual remaining clock and by NOTHING
+       else: no fixed knob, no reserve, no fraction, no floor. The remaining time is re-read
+       before every attempt so a retry walk cannot spend what the first attempt already
+       burned; an attempt still unanswered when the flag falls is killed, and the fallen flag
+       IS the result — the game ends as the genuine, recorded clock loss rule 22b computes,
+       with no move inserted by anyone. A failed attempt with time still on the board walks
+       rule 16e's account list under the same bound. An UNTIMED game has no per-attempt
+       ceiling at all: a failed or dead model process is exposed and retried (rule 16e's
+       rounds — an honest stall beats a move nobody chose), but no move is ever manufactured
+       for it. No knob restores the retired behaviour; the retired
+       `$DESKCRAB_CHESS_MOVER_CLOCK_*` knobs are dead names.
+16b. When rule 16a misses and a model call is required, the bridge asks the effort pre-check
+    (`lib/chess_effort.py`) how hard that call should think. The pre-check uses pure
+    python-chess arithmetic — **no engine, ever** — and returns the call's `--effort`. A
+    quiet position uses the first effort in the routed pair; any alarm uses the second.
+    `DESKCRAB_CHESS_ALWAYS_LOW=1` bypasses the classifier and pins every move to `low`.
+
+    The routing table is the user's decision of 2026-09-17, superseding the 2026-09-01
+    benchmark table (eng record redo-the-chess-benchmark-across-full-model-effor) for
+    every timed control but 15+10: every other timed control plays through TypeSafe's
+    Jev — a decision-only System One model reached over HTTPS, rule 16h's backend — and
+    15+10 keeps the measured rapid winner:
+
+    | Control | Speed | Model | Quiet | Sharp |
+    | --- | --- | --- | --- | --- |
+    | 1+0 | bullet | `jev-latest` | `low` | `low` |
+    | 2+1 | bullet | `jev-latest` | `low` | `low` |
+    | 3+2 | blitz | `jev-latest` | `low` | `low` |
+    | 5+0 | blitz | `jev-latest` | `low` | `low` |
+    | 10+5 | rapid | `jev-latest` | `low` | `low` |
+    | 15+10 | rapid | `claude-opus-5-5` | `low` | `low` |
+    | untimed | — | `fable` | `low` | `medium` |
+
+    The decision is bucket-shaped except at rapid, so `chess_effort.SPEED_MODELS` and
+    `SPEED_PAIRS` carry the speed routes (untimed's model rides the table's `untimed`
+    row; its pair is the uniform `DESKCRAB_CHESS_EFFORT_QUIET` /
+    `DESKCRAB_CHESS_EFFORT_SHARP` pair, defaults `low`/`medium`), and `CONTROL_MODELS`
+    carries the one exact-control override — `10+5` onto `jev-latest`, splitting rapid —
+    which wins over the speed tables exactly as that door was built to. `CONTROL_PAIRS`
+    still ships empty. Jev takes no reasoning-effort knob, so on its rows the pair
+    prices only the pre-check's own stamp (rule 17's `effort` metric), never the call.
+
+    The Jev rows are the user's live-play selection, not a benchmark verdict: Jev is
+    unmeasured on the clock matrix (docs/chess-bench-matrix-2026-08.md predates it), and
+    its case is speed — a decision-only model answers a Choice in about a second, where
+    the measured matrix found NO CLI model fast enough for blitz and no reliable bullet
+    finisher at all. Live play is its judge, exactly as it was for the Spark blitz trial
+    this table retires.
+
+    The bullet rows are live: rule 22's deliberate re-enable happened with this route —
+    the user's 2026-09-17 call that Jev plays bullet fine, where no CLI engine could.
+
+    `DESKCRAB_CHESS_MOVER_MODEL_<SPEED>` and
+    `DESKCRAB_CHESS_EFFORT_<SPEED>_{QUIET,SHARP}` override both exact-control and speed
+    defaults. A routed model outranks the global `DESKCRAB_CHESS_MOVER_MODEL`; an unrouted
+    game uses the mover's normal environment chain.
+
+    A routed offer preserves EXACT model identity end to end: the mover may rotate
+    same-model Claude accounts (identity-preserving), but it never substitutes another
+    model or engine for a routed offer — a routed codex or jev model that refuses over
+    usage, is cooling, or cannot run yields NO attempt at all, making zero Claude calls:
+    the move stays unplayed, the failure is visible through rule 16e's alert and stall
+    machinery, and the position is re-offered on its cooldown. The engine-fallback walk
+    (model-backends.md rule 15, and rule 16h's jev twin of it) applies only to a model
+    chosen by the mover's own environment chain, never to a routed offer. Self-play jobs
+    never read any of this; their model is chess-selfplay.md's business (rules 2 and 15).
+
+    Only a successful engine completion — a CLI's, or the TypeSafe helper's (rule
+    16h) — may supply a move. Output from a failed attempt is
+    never scanned for UCI or SAN, even when its error metadata contains a legal-looking
+    token. Structured failure messages are extracted before display truncation, so account,
+    allowance, and capacity classifiers receive the actual cause rather than a JSON prefix.
+
+    The alarms, when the classifier is consulted: the side to move in check; a check available to either side that also wins
+    material or stands in a narrow tree; one of her pieces (never a pawn, never the king) en
+    prise by a simple attackers-versus-defenders count; a capture worth a rook or more available
+    to either side; a pawn on its seventh rank, either side; her king's pawn shield broken or an
+    open or half-open file bearing on her king while the opponent still has a rook or queen to
+    use it; eight or fewer legal moves; and nearest similarity neighbours all beyond the
+    distance floor when the store is deep enough to judge — genuinely new ground, worth real
+    thought precisely because no memory helps. An exact reflex hit plays before the classifier
+    is ever consulted, so a remembered position costs neither a model call nor a
+    classification. A classifier failure — and `DESKCRAB_CHESS_EFFORT=0` — makes the call at
+    the mover's default (`low`, overridable with `DESKCRAB_CHESS_MOVER_EFFORT`), the same
+    price as a quiet position — a move nobody could classify must not cost more than one the
+    classifier waved through. The
+    thresholds are
+    tunable: `DESKCRAB_CHESS_EFFORT_FORCED` (legal-move ceiling, default 8),
+    `DESKCRAB_CHESS_EFFORT_CAPTURE` (capture-alarm floor, default 5),
+    `DESKCRAB_CHESS_EFFORT_NOVEL_ROWS` (vector rows before novelty may be judged, default 500),
+    `DESKCRAB_CHESS_EFFORT_NOVEL_MIN` (the similarity floor, default 0.75).
+16h. **The TypeSafe backend.** A `jev`-family model — `jev` alone, or any `jev-*` name:
+    the alias `jev-latest`, `jev-preview`, a versioned `jev-1.13.0` — is TypeSafe's Jev,
+    a decision-only System One model reached over HTTPS (`POST` to `TYPESAFE_API_URL`,
+    default `https://api.typesafe.ai/v1/systemone`), never through a CLI engine. Jev
+    generates no text: the mover asks ONE Choice question whose options ARE the legal
+    moves, so rule 16's whitelist is enforced by the question's own type instead of by
+    parsing a reply, and the answer's `choice` still passes the normal board-legality
+    check before it is played. This backend exists for the chess mover alone — a
+    decision model cannot hold a conversation, so no turn, wake, job, or classifier
+    routes to it (model-backends.md, ROUTING).
+    * The call is `lib/typesafe_move.py`, spawned as the attempt's subprocess exactly
+      where a CLI engine would run, so supersession (rule 16c), the clock bound (rule
+      16g), and the retry rounds (rule 16e) apply unchanged. The complete request body
+      arrives on stdin; the answer leaves on stdout as the same `{"result": ...,
+      "usage": ...}` object shape the Claude CLI's json output takes — one parser in the
+      mover for every engine — with the answer's `confidence` carried alongside, and the
+      token ledger records the attempt like any other (kind `chess`). The helper is
+      stdlib-only: no SDK enters the chess venv for one POST.
+    * The request's `state` carries the same facts the CLI prompt does, as named fields:
+      whom she is playing and as which side, the FEN and the pieces in words (Jev reads
+      compact encodings poorly — its own jaggedness sheet's advice), the movetext, the
+      standing-losses, passed-pawn, and trades-while-ahead lines, the position memory
+      (chess-reflex.md rule 14 — the SAME retrieval that feeds the CLI prompt, through
+      `memory_facts`, one retrieval and never twins — rendered terse: each precedent as
+      its move and record, a similar precedent also carrying the stored position it was
+      played in, in words, so the model can see the scenario the record comes from; no
+      gate narration, because where a record came from steers nothing),
+      the job's note, and her chess persona sheet — the mover is still her
+      (chess-mover-amendment.md rule 1), decision engine or not. Every arithmetic
+      verdict stays computed in code and lands in words in each option's criteria
+      description — the exchange count, the sharpest reply found, the memory's record
+      with the move — because Jev is not a calculator and is never asked to be one.
+      The verdict LEGEND is stated once, in the question's instructions; each option's
+      description stays terse (the move, its verdict, its numbers). Repeating the
+      legend per option is the large-state noise Jev's own jaggedness sheet warns
+      about. Mate is named in both directions (the user's 2026-09-17 ask, a mild
+      emphasis): a candidate that IS checkmate is marked as the immediate win and
+      outranks every other verdict, a reply that is checkmate is already the worst
+      thing the reply scan can name — and it is named on EVERY candidate, the ones
+      that lose material on their landing square included: the exchange count never
+      speaks over being mated, and a memory record never endorses a move that walks
+      into mate. Before this, a candidate priced by its destination square skipped
+      the reply scan entirely, so a move that dropped a pawn AND allowed mate in one
+      read as the cheapest option on the board (browser-066, 2026-09-17, lost in
+      twelve moves to precisely that description). The sweep that runs for those
+      candidates looks for mate only — no standing sweep, no fork hunt —
+      so the added cost is a fraction of a scan the position already pays. The state
+      says so when she stands in check, and
+      the instructions carry the rule both ways — pick a CHECKMATE option, never one
+      whose named reply is CHECKMATE — plus the standing aims of working toward mating
+      the opponent and minding the passed-pawn field both ways: push her own passed
+      pawns toward promotion, stop the opponent's before they promote. A candidate
+      that promotes says so on its own description.
+      Repetition is named the same way, and for the same reason the mate sweep
+      is: every other verdict is computed from the position alone, so a move
+      back into a position the game has already stood in prices exactly as it
+      did the first time and the same answer returns forever (browser-068,
+      2026-09-17, a queen up and drawn by fivefold repetition after nine
+      identical king shuffles). The movetext is replayed from the start and
+      every position counted — the request's board is a bare FEN with no move
+      stack — and each option leading back into a counted position says so,
+      with the count, the draw at the fifth occurrence, and what the material
+      balance makes of it: ahead, a repetition throws the win away; behind, it
+      saves the game. The instructions carry the rule — never repeat while
+      ahead when a sound alternative exists. An unreplayable movetext, or one
+      that does not land on the position in hand, yields no clause at all.
+      The quiet-move budget rides the same channel (chess-mover-amendment.md,
+      "The quiet-move budget is counted"), and for the plainest reason: it is
+      the one thing measured about her own play, the persona sheet that used
+      to be its only route is deliberately empty, and a decision model reads
+      no prose anyway. On a ply whose full-move number is 11 to 15, the
+      movetext is replayed to count the quiet queen/pawn moves of hers already
+      played inside that window — quiet being a move that captures nothing,
+      gives no check, and is not a promotion — and every option that would be
+      another one says which one it would be and what the stored games did at
+      that count. The record is counted over real games only; the benchmark
+      self-play pool inverts the effect and is excluded. No recommendation and
+      no suppression: the same contract the declined-memory warning has. Below
+      ten decided games in a bucket, or on an unreplayable movetext, there is
+      no clause — a record of two games is not worth quoting.
+      A rook-sized loss names the passer it stops (chess-mover-amendment.md,
+      "A rook-sized loss names the passer it stops"): an option already
+      flagged as losing at least a rook on its own landing square, where the
+      cheapest legal capture there — the same first exchange the loss was
+      priced by — would leave the capturing piece standing on the promotion
+      path of one of her own passed pawns, carries the consequence on its
+      loss verdict: "the capturing rook would then sit on b1, where it stops
+      your b-pawn". browser-070 (2026-09-17) had the loss and the guarded
+      path both in the request as separate facts, joined by neither, and the
+      rook went for a promotion the capture itself blocks. The clause fires
+      only at a rook or more, so it adds no words to quiet moves or
+      pawn-sized inaccuracies; it recommends nothing and vetoes nothing —
+      whether such a loss should ever be vetoable stays deliberately
+      unresolved, because real sacrifices exist. A loss priced only by a
+      pinned, illegal capture names no capturer and carries no clause: a
+      missing clause, never a wrong one.
+      The state crosses to TypeSafe's API over TLS, the sitter's typed name and the
+      game facts included: the user's explicit 2026-09-17 decision, the key provided
+      for exactly this.
+    * Identity is preserved exactly as for any routed offer: no key (`TYPESAFE_API_KEY`
+      unset), an auth refusal, a rate limit, or an overload yields a failed attempt and
+      NO substitute engine — the move stays unplayed and rule 16e's machinery shows it.
+      A jev name from the mover's own ENVIRONMENT CHAIN instead falls through to the
+      Claude walk after the one TypeSafe attempt, the codex bargain of model-backends.md
+      rule 15, because an unrouted game in flight must not stall on a dry engine.
+    * The helper retries a 429/529 briefly inside the attempt (the provider's own
+      back-off advice) and carries a transport timeout per request — Jev answers in
+      about a second, so a dead minute is a dead connection, not thinking; the retired
+      per-attempt thinking ceiling (rule 16g's ruling) is a different thing and stays
+      retired. A transport failure is a failed attempt on the ordinary rounds, never a
+      manufactured move. Failure lines name their cause in the mover's own vocabulary
+      (rate limit, overloaded, not logged in), so rule 16e's cause extraction and the
+      capacity/auth classifiers read TypeSafe failures like any other engine's.
+    * Jev takes no reasoning-effort knob: rule 16b's effort answer is stamped in the
+      metrics as ever and not sent. The key comes from `TYPESAFE_API_KEY` in the
+      environment (the bridge's EnvironmentFile) and never lands on an argv;
+      `TYPESAFE_API_URL` exists so tests answer with a local stub and no test ever
+      spends a live token.
+17. The move path stamps where its time went, into the same dated turn-metrics log as every
+    other path (turn-pipeline.md rule 33), kind `chess`, every line's detail opening with
+    `<game id> ply <n>` so one move's stamps correlate across processes — the bridge and the
+    CLI write from different pids. The stages, in the order one move produces them:
+    `move-start` the moment a position becomes hers to answer (a recorded user move, a NewGame,
+    serve start or a poll tick with her to move — detection); then `reflex-hit` or
+    `reflex-miss` when rule 16a's lookup returns (the book verdict); on a miss,
+    `similar-context` (detail carrying `attached` or `empty`, and then `top <san> <similarity>`
+    for the single nearest stored position — `top none` on an empty store, `error` alone on a
+    broken one) written by the mover as it builds the model prompt (chess-reflex.md rule 14) —
+    whichever way that came out, so its absence proves the reflex hit short-circuited before
+    any similarity work; the `top` half keeps its old meaning, the single nearest neighbour by
+    raw similarity, so the tuning record reads across the note-floor era and after it.
+    Then `effort` with the level rule 16b chose and every reason that fired (`quiet` when none
+    did, `always-low` under the pin, `default error` when the pre-check failed) — the record
+    the thresholds are tuned from, absent exactly when a reflex hit short-circuited or
+    `DESKCRAB_CHESS_EFFORT=0`. (Rows written while the withdrawn parity A/B was live carry a
+    trailing `arm=<...>` token — historical residue a reader ignores; no new row stamps
+    one.) Then the model call's own brackets: `model-start` (detail
+    naming the effort and the login attempt) and `model-end` (the elapsed seconds and the
+    outcome — `ok`, or why not). A move that lands stamps `move-played` with its source —
+    `reflex` from memory, `model` from the mover's call, `cli` from `betty-chess move`
+    whoever ran it — and `move-latency` with the seconds from detection to the store write,
+    which is the number the whole redesign is accountable to. A stale answer discarded by rule
+    16d stamps `mover-stale`. A position crossing rule 16e's failure cap stamps
+    `mover-stalled`, detail carrying the round count. Rule 33's whole discipline applies: the stamps are evidence,
+    never control flow, best-effort behind their own error handling, and `TURN_METRICS=0`
+    switches them off. `tools/turn-latency-report` renders the chess section per move.
+18. `GET /state` answers a read-only JSON photograph of the stored game, taken under the hub
+    lock on every request, never cached: the game id (or `game: null` before one exists), the
+    ply, the FEN, the side to move, `your_turn` for the seat's human side, the state
+    key/description/result, the last move, and — while the game is active — every legal move as
+    its UCI, from- and to-square, wire move type (rule: THE WIRE) and a promotion flag. It
+    exists so a page can dress the board — legal-target highlighting on pickup, a snap-back
+    before a doomed send, the material panels — without growing a rules engine of its own:
+    python-chess remains the one judge of chess on this machine. The endpoint is advisory and
+    changes nothing; rule 5's validation of the recorded wire message stays the rules, and a
+    client that never fetches it (the stock one) plays exactly as before.
+19. `POST /resign` resigns the **user's** side of the loaded game — never hers: the browser can
+    only give up its own seat's game. Under the hub lock the stored game is re-read; when it is
+    missing or already over — or when the request body names a game (`{"game": "<id>"}`) that is
+    not the one loaded, a board left open on yesterday's game — the answer is a refusal (HTTP
+    409, `{"error": ...}`) and nothing is written. Otherwise `resigned_by` is recorded through
+    `chess_cli.save_game`, exactly what `betty-chess resign <id> --side <the user's colour>`
+    would write, every connection gets its GameComplete (rule 9), and the end-of-game wake is
+    booked (rule 7) saying the user resigned from the browser. The endpoint rides HTTP like
+    `/state` because the stock wire has no Resign message; the LAN-trust posture (KNOWN LIMITS)
+    covers it exactly as it covers the seat itself.
+20. `betty-chess move` refuses to play when the session it runs under is an **autonomous
+    wake**. The CLI walks its own /proc parent chain (bounded) looking for a live session
+    registration — `$DESKCRAB_STATE_PREFIX-sessions/<pid>`, whose first tab-separated field is
+    the session kind — and when that kind is exactly `autonomous wake` the move is refused:
+    non-zero, nothing written, the message saying a wake may look at the board but not play on
+    it, because the resident mover (rule 16) owns her move. A wake that mirrors a move into a
+    live game races the mover it did not know was already answering: on 2026-08-10 a wake
+    played her reply itself, the mover's own answer for that ply came back and was discarded as
+    stale by rule 16d, and the opponent was handed a knight for nothing. A written conduct rule
+    saying the mover plays, not the wake, was violated two minutes after it was written — so
+    the refusal lives in the code, not in prose. Rule 15b bars every out-of-process hand from
+    her side of a *browser* game; this rule is the other axis: a wake is refused the move on
+    every game, either side, browser or not. Only `move` is guarded: `show`, `status`,
+    `png`, `reflex`, `similar`, `resign`, `draw` and the rest keep working from a wake, because
+    looking is how a wake briefs itself. The mover is not caught: it applies her move
+    in-process through `chess_cli.save_game` under the board service, never through the move
+    command, and the service's ancestry holds no session registration. No registration found —
+    the user's own shell, the board service, a test harness — means no refusal: the guard binds
+    her wakes, nothing else. `DESKCRAB_CHESS_ALLOW_WAKE_MOVE=1` is the deliberate escape
+    hatch, named in the refusal, for the one case where a human explicitly asked a wake to
+    place a specific move.
+21. A **chess wake's prompt opens with a refusal**, before even the waking frame. Every wake
+    whose booking provenance is exactly `chessweb` — rule 7's post-move and end-of-game wakes;
+    `WAKE_BOOKED_BY` is the gate, carried on the record and preserved by both the deferral
+    re-book and the outage retry (`--by "$WAKE_BOOKED_BY"`), so a chess wake that lost the run
+    lock or the model still opens with it when it finally fires — has this directive as the
+    literal first line of the agenda text handed to the CLI:
+
+        DO NOT RUN THE betty-chess move COMMAND UNDER ANY CIRCUMSTANCES. LOOK AND THINK ONLY. THE RESIDENT CHESS MOVER PLAYS THE MOVES, NOT YOU.
+
+    Rule 20 arms the command; this line arms the reader, and the two stand or fall
+    independently. The 2026-08-10 wake that mirrored a move into a live game was reading an
+    agenda that pointed it at its own board and said nothing about its hands — the rule it
+    broke lived in a conduct file it had no reason to open that second. The directive is
+    scoped to chessweb bookings ONLY and every other wake's agenda stays **byte-identical**:
+    an all-caps order over every wake is a cried wolf — the wakes with no board to touch
+    would learn to read past it, and the one wake it was written for would read past it
+    with them.
+22. **The clock.** A game MAY carry a time control, chosen when the game is created and never
+    changed after: `--time-control` on `betty-chess new` and on `betty-chessweb serve`
+    (`$DESKCRAB_CHESSWEB_TIME_CONTROL` is the serve flag's default), naming one of the standard
+    set — bullet `1+0` and `2+1`, blitz `3+2` and `5+0`, rapid `10+5` and `15+10`, base minutes
+    plus Fischer increment seconds per move — or `untimed`, the default, which is exactly the
+    old behaviour: no clock fields at all. A record without the fields IS an untimed game, so
+    every game recorded before this rule keeps its meaning unread. Three fields on the game
+    record carry the whole truth, because the store is the one record and a restart must lose
+    nothing (rule 10): `time_control` (`{name, speed, base_ms, inc_ms}`), `clock`
+    (`{white_ms, black_ms, turn_started}` — per-side remaining milliseconds and the wall-clock
+    second the side to move's turn began), and `flag_fell` (the side whose flag was called,
+    recorded like `resigned_by`). A bridge that dies mid-think in a timed game comes back to a
+    clock that kept running, because the clock IS the stored stamps read against the wall
+    clock — that is the honest reading of a chess clock, not a defect.
+    Bullet is a live control again. It was disabled while only CLI engines could move —
+    no MEASURED configuration finished bullet reliably — and the deliberate re-enable
+    that disable held the door for happened on 2026-09-17, the user's call, once the
+    routed TypeSafe backend (rule 16h) was answering positions in well under a second.
+    The gate machinery itself STAYS: `chess_cli.DISABLED_LIVE_TIME_CONTROLS` (now empty)
+    still stands behind the page, the HTTP endpoint, stock-wire creation, CLI creation,
+    and the serve default alike, so disabling any control again is one set literal with
+    every creation door already enforcing it.
+    a. The clock is charged where the move is recorded, by ONE implementation for every path
+       (`chess_cli.clock_move`, called by `betty-chess move`, the engine command, and all four
+       of the bridge's record paths — user move, promotion, reflex, model): the mover's elapsed
+       think since `turn_started` comes off their remaining milliseconds (floored at zero), the
+       increment goes back on, and `turn_started` restarts for the other side. Each side's
+       FIRST move is neither charged nor credited — a clock nobody has pressed was never
+       running, and the opponent's median first think measured 2026-08-24 makes an armed-at-deal
+       bullet clock a forfeit for whoever is slow to the board — so charging begins at each
+       side's second move (ply 2 and ply 3).
+    b. A flag has fallen when it is a side's move, their clock is running (rule 22a's arming),
+       the board is not already decided, and their remaining time is spent. The fall is derived
+       LIVE by `compute_state` from the stored clock and the wall clock, never from a poll
+       having noticed: no reader — `status`, `list`, `move`, the bridge, game inference — can
+       show a flagged game as live, and a move offered after the fall is refused exactly like a
+       move on any finished board. Enforcement is server-side ONLY: the client draws the
+       clocks, it never judges them, and she is never asked to notice her own flag.
+    c. Recording the fall is the bridge's job. The store poll checks the watched game every
+       tick and, on a fall, writes `flag_fell` through `chess_cli.save_game`, broadcasts one
+       GameComplete (rule 9), and books the end-of-game wake (rule 7) naming the loss on time.
+       Store discovery settles too: a matching game found with its flag down and unrecorded is
+       recorded at load — silently, no wake, nobody was watching — so an abandoned timed game
+       cannot sit active-looking in the store forever. A flag that falls while NO bridge ever
+       looks again stays derived-only (rule 22b keeps every display truthful), reaching the
+       reflex ledger at the next save or backfill; that omission is accepted and named here.
+    d. The result of a fall: the flagged side loses, `1-0`/`0-1` accordingly — except when the
+       side that would win has insufficient mating material (python-chess's
+       `has_insufficient_material`, the cheap conservative test), which is a draw, desc naming
+       both facts. `chess_reflex.game_result`, compute_state's standalone twin, reads
+       `flag_fell` and the live clock the same way, so the ledger ingests a timed loss as a
+       loss; the twin-drift hazard is held by a test asserting the two agree on flagged games.
+    e. The record splits by variant, not only by colour: `betty-chess list` prints each game's
+       control name (`untimed` when none), and the reflex games table carries a `control`
+       column (migrated in place, default `untimed`) written at ingest — whatever counts the
+       win/loss record can read the variant off either.
+    f. The clocks are visible everywhere a board is: `GET /state` carries `time_control` and a
+       live `clock` object (`{white_ms, black_ms, running}`, the running side's figure with the
+       current think already deducted; a flagged side reads zero), the shipped client draws
+       both clocks counting down for the side to move and shows the flag result in words when
+       one falls, and `betty-chess status` prints the control and both remaining times. The
+       mover's job dict carries the same live clock — and rule 16g is what consults it: a
+       timed attempt's one bound, the flag, is read from this figure. The effort dials
+       (rule 16b) remain unchanged by this rule.
+    g. `undo` on a flagged game clears `flag_fell` exactly as it clears a resignation, and any
+       undo in a timed game restarts `turn_started` at the undo itself. Remaining time is NOT
+       replayed — no per-move time history is kept, so the sides resume with the balances they
+       had — a named roughness, accepted because undo is a correspondence courtesy, not a
+       tournament move.
+    h. **The opponent deals too, from the page they actually load.** The clock landed first as
+       a per-serve and per-CLI knob only, green in tests on a path nobody clicks: the user sat
+       at the real browser page on 2026-08-25 and found no clock options on screen at all. So
+       the shipped client carries a visible clock selector beside New Game, offering exactly
+       the currently enabled live set plus `untimed` (the selector's default) and nothing
+       invented, and its New Game button posts the pick to **`POST /new`** instead of the wire
+       NewGame. The endpoint, under the hub lock: while the stored game is still active it
+       refuses (HTTP 409, `{"error": ...}` naming the way out — Resign ends it, then New Game
+       deals the next) and creates nothing, exactly rule 4's answer to a NewGame click;
+       otherwise it creates through the SAME creation path as every other door —
+       `Store.create`, which stamps the control through `chess_cli.make_time_control` and
+       `save_game` — so the game record, the reflex ledger's control column and
+       `betty-chess list` split the browser-dealt game by variant with no second
+       implementation, and colour is dealt exactly as rule 4 deals it (alternation against
+       this opponent, only the first game a coin flip, or her own standing call, rule 26; the
+       page offers no colour choice).
+       Enforcement is server-side ONLY, rule 22b's posture: the submitted control must be a
+       NAME from the standard set — an out-of-set name, a non-string (a forged
+       `{name, base_ms}` object), or an unreadable body is an HTTP 400 refusal with nothing
+       written; no clock figure is ever trusted from the client, and the mover's job dict
+       keeps the clock visible but unconsulted (rule 22f) whatever created the game. An
+       omitted, empty or null control is `untimed` — the CLI's own default, never the serve
+       flag: `--time-control` remains the default for what a stock-wire NewGame or the CLI
+       creates (this rule's head), while the page's picker IS the opponent's choice. On
+       creation every joined connection gets rule 4's sync (Team + replay), and a position
+       that is hers to answer goes to the resident mover exactly as a wire NewGame's would.
+       The stock client keeps its wire NewGame untouched — that path still deals the serve's
+       configured control — and the shipped client falls back to the wire click against a
+       bridge without the endpoint. `/new` rides HTTP beside `/state` and `/resign` under the
+       same LAN-trust posture (KNOWN LIMITS). Records from before this rule parse unchanged:
+       a game with no control fields still IS an untimed game.
+
+23. **The named player.** The seat is a chair, not a person: every browser game before this rule
+    recorded `opponent: "browser"` and nothing about who actually sat down, so different people's
+    games landed in one pile and she could not tell whom she was facing — and the record she
+    quoted about it was a remembered sentence, not a count. So a game MAY carry `player`: the
+    sitter's name as they typed it, chosen at creation and never changed after (the clock's own
+    discipline, rule 22). `POST /new` takes an optional `"player"` beside `"control"`, validated
+    server-side only: a non-string, or a name over 40 characters once stripped, is an HTTP 400
+    refusal with nothing written; an omitted, empty or null name creates an UNLABELED game —
+    exactly the old record shape, because absence is recorded as absence, never guessed.
+    `betty-chess new` grows `--player` the same way. No name is ever baked into this repo:
+    the names are data in the store, typed by the people they belong to.
+    a. The name is a label and an identity, never a key. The game id keeps its opponent slug,
+       the store still loads by opponent, and rule 15b's browser guard still reads `opponent`.
+       But every reader that SHOWS a game labels it by player when one is present: `betty-chess
+       list` and `status` and `show` print the player where they printed the opponent,
+       `GET /state` carries `player`, both of rule 7's wake reasons name the player (each reason
+       is still one fixed sentence per game — the label is fixed at creation, so coalescing and
+       the cap are untouched), and the mover's prompt says whom she is playing. That is what
+       makes "whom am I facing" a fact read off the board instead of a guess.
+    b. Colour alternation (rule 4) follows the person when one is named: the "most recent game
+       against this opponent" consulted for the swap is the most recent against the SAME player,
+       falling back to the whole opponent pile while that player has no labeled game yet — two
+       people alternating their own colours, not sharing one coin.
+    c. Legacy games stay honest: a record without `player` is an unlabeled game and remains one;
+       nothing infers a name from dates, prose memory, or habit. `betty-chess label <game>
+       <name>` writes the field by hand, for a game whose sitter a human actually remembers —
+       that is the whole migration story, and it is deliberately manual.
+    d. **The record is counted, never remembered** (the 2026-08-20 rule: a stale prose tally
+       outranked the live figure and was defended). `betty-chess record [name]` tallies the
+       store: buckets keyed by the player label (slug-folded, so a CLI opponent name and a typed
+       player name that spell the same person count together), unlabeled browser games in their
+       own visible bucket, never merged into anyone. Per bucket: her wins-draws-losses overall
+       and per colour, plus the active count — every result computed through `compute_state`,
+       because the game JSON stores no result field and a naive tally reads every mated game as
+       unfinished (measured 2026-08-20). One implementation (`chess_cli.record_tally`) feeds the
+       CLI, `GET /record` (the same tally as JSON, so the page can show the standing score), and
+       the chat prompt's record line (rule 24). Prose memory is not a source for any of it.
+    e. **Elo, computed the same way** (the user's 2026-09-17 ask). `chess_cli.elo_tally`
+       replays every finished non-self-play game from the store in one deterministic order —
+       the `updated` stamp, then the id — and keeps ONE rating pool per speed (bullet, blitz,
+       rapid, untimed): the chess-site convention, because a bullet rating and a rapid rating
+       are different skills. Within a pool her rating and each bucket's rating move together
+       per game: everyone starts at 1200, K is 32, a draw is half a point. Buckets are rule
+       23d's identity exactly — the player label, slug-folded; unlabeled browser games in
+       their own visible bucket — and self-play never enters: a grind is not an opponent,
+       and its models' results would poison her real ratings. Like the record, the ratings
+       are counted, never stored: no rating state exists on disk, so an undo, a relabel, or
+       a late flag settlement re-prices history correctly on the next call. One
+       implementation feeds `betty-chess elo [player] [--json]` and `GET /elo` (the same
+       shape as JSON, with the assistant's display name — the `/record` bargain). An active
+       game counts nowhere until it finishes. The shipped page shows each colour's rating
+       beside its graveyard title ("White took" / "Black took"), resolved client-side from
+       `GET /elo` for the loaded game's speed and sitter — refetched when the loaded game
+       or its speed changes and at each game's end — and shows NOTHING for a pool or
+       bucket with no finished game behind it: an empty corner beats an invented 1200.
+24. **The table chat.** The game window carries a real chat between the sitter and her —
+    persistent, tied to the game, and a SEPARATE conversational context from the phone
+    conversation: nothing in it reads or writes the conversation store, no session is booked or
+    resumed, and the game record is the chat's entire memory. The person at the board may be the
+    user or may not; the chat neither knows nor pretends.
+    a. Messages live on the game record under `chat`: a list of `{who, text, at, ply}`, `who`
+       being the role `player` or `assistant` — roles, not names, so the record stays truthful
+       whatever the display name or the player label is; readers render the labels. Chat is
+       written through `chess_cli.save_game` like every other fact, so a restart loses nothing
+       (rule 10), and a record without the field IS an empty chat — legacy games parse
+       unchanged.
+    b. `GET /chat?since=N` answers the messages from index N, with the total count, the game id,
+       the player label, and the assistant's display name (the same bargain as `/thinking`: a
+       page has no server-side template to hand it one). `POST /chat {"text": ...}` appends a
+       player message: refused 409 with no game loaded, 400 on an unreadable body, an empty
+       text, or one over 500 characters after stripping. Both ride HTTP beside `/state` and
+       `/new` under the same LAN-trust posture (KNOWN LIMITS).
+    c. **She may post after either player's move, alongside making her move — or say nothing.**
+       No move is ever gated on chat: her chat runs downstream of a landed move, best-effort
+       behind its own error handling, the stamps' own posture (rule 17). The chat worker holds
+       ONE slot with newest-wins supersession (the mover's discipline, rule 16c): a trigger
+       arriving while an older one is still being answered kills that flight, so a quick
+       exchange yields at most one message, about the board as it stands — never a backlog of
+       stale banter. The triggers: a player move the bridge records, her own landed move
+       (reflex or model alike), a player chat message, and the end of the game however it
+       arrives. A move mirrored from another hand by the store poll is not a trigger.
+    d. Each trigger is at most ONE minimal model call in the mover's measured shape (no tools,
+       the empty MCP config, sterile cwd, auto-memory off), model
+       `$DESKCRAB_CHESS_CHAT_MODEL` (default `sol` — a codex-family name, so the call walks
+       [model-backends.md](model-backends.md) rule 15: the codex login first unless cooling,
+       then the Claude accounts at the fallback model), effort `$DESKCRAB_CHESS_CHAT_EFFORT`
+       (default `low`), per-attempt ceiling `$DESKCRAB_CHESS_CHAT_TIMEOUT` (default 60s). The
+       prompt carries whom she is speaking with (the player label, or honestly "someone
+       unnamed"), where (the table chat in the game window, not the phone), the standing record
+       against that player counted from disk (rule 23d), the position and the recent moves, the
+       chat so far (a bounded tail), a short tail of the previous game's chat against the same
+       player — that is how a conversation is picked back up across games — and the event that
+       fired the trigger. For a player-MESSAGE trigger the prompt also anchors the reference
+       the message most likely makes: beside the event it re-quotes her own most recent line
+       from this game's tail and says to answer what the sitter actually said. This exists
+       because a low-effort call can hold both lines and still miss the relation between them:
+       in a stored browser game (browser-043, 2026-08-27) the sitter asked "sorry, you
+       mentioned a loss?" — a direct reference to her immediately preceding quip — and was
+       answered as though they had misheard, with the whole exchange already in the tail
+       (reproduced live, two of three runs incoherent). The anchor makes the immediate
+       reference explicit rather than raising the chat's effort, so the speed bargain above
+       stands. No anchor rides a move or game-end trigger (a quip needs no scaffold, and the
+       tone of ordinary board banter stays untouched), a thread with no line of hers yet
+       (nothing to quote), or the one pathological sitter label that renders as `you` (rule
+       24a's rendering would make the quote's ownership ambiguous, so the prompt simply stays
+       bare). The reply is the message text alone, or the literal word PASS to stay
+       silent: a PASS, an empty reply, or a failed call posts nothing and disturbs nothing —
+       silence is chosen while writing, and chat failures never retry (the next move brings the
+       next chance). Her move-triggered voice is BIASED quiet, never gated (the user's
+       2026-09-17 ask, refined in his next breath: she talks too much, but the decision stays
+       HERS): every trigger still runs and she chooses, and a `her-move` or `their-move`
+       trigger landing within `$DESKCRAB_CHESS_CHAT_MOVE_COOLDOWN` seconds (default 300; 0
+       disables the line) of her last POSTED table message in that game carries a
+       recent-speech line — how many seconds ago she spoke, and that the bar for another
+       unprompted quip is high. A player message, a resignation, and a game's end never carry
+       the line — an answer owed is not a quip. And the prompt's own bar is specific-or-silent:
+       ONE short sentence about the event named, this board, or what the sitter said; a message
+       that could be posted at any chess game is told to be a PASS instead. Her opponent reads everything she posts, so the prompt forbids reasoning
+       and plans out loud, exactly rule 7's bargain. Every call lands in the token ledger (kind
+       `chess`) and stamps the chess metrics (`chat-start`, `chat-model-end`, `chat-posted` /
+       `chat-pass`), evidence never control flow. `DESKCRAB_CHESS_CHAT=0` switches her replies
+       off wholesale — player messages still record — and `$DESKCRAB_CHESS_CHAT_CMD` replaces
+       the invocation for tests (prompt on stdin, reply on stdout), so no test chats with a
+       real model. **Minimal in machinery, never in voice.** The chat call's system prompt
+       carries her whole conversational voice from ONE sheet, the first readable of: the sheet
+       `$DESKCRAB_CHESS_CHAT_PERSONA` names, the dedicated TABLE sheet at
+       `~/.local/share/deskcrab/chess-chat-persona.md`, and the persona sheet `$CUSTOM_PROMPT`
+       points at (the bridge gets that value unexpanded from its EnvironmentFile, so `~` and
+       `$HOME` are expanded here; a sheet that is unreadable, empty, or over 65536 bytes — the
+       prompt assembler's own bound on the sheet — is treated as absent), read per call so an
+       edited sheet lands without a bridge restart. The table sheet exists because the phone
+       sheet is written for her OWN user's conversation lane — it names the user, their bond,
+       and the calibration of a private conversation — while the table seats an unauthenticated
+       stranger (rule 24f): the table sheet is the same person in the same voice with her
+       household left at home, so where one is deployed, the phone sheet's private content
+       never rides a prompt whose replies a stranger reads. The phone sheet stays in the chain
+       as fallback only: for an install without a table sheet, her whole voice beats her
+       absence. Only when no sheet is readable does the chat fall back to the mover's chess
+       persona file, and with neither it is the boundary tail alone. This rule exists because
+       the chat first shipped wearing the mover's persona file, which is cut down for choosing
+       a move in silence ("no narration"), and the table conversation came out sounding like
+       nobody (user report, 2026-08-26): a chat is a conversation, and it speaks with the same
+       voice every other conversation of hers does — recognizably the same person, never a
+       clone carrying her private memory to a public table. The MOVER is untouched by all of
+       this — its persona stays its own terse chess sheet, and its reply stays exactly the
+       move, UCI and nothing else (rule 16).
+    e. Aloud, by choice — and in HER OWN VOICE. The shipped page's chat panel carries a speak
+       toggle, default OFF and remembered client-side. On, HER new messages are spoken on the
+       device showing the board — the window the sitter chose — as clips of her own voice: the
+       page fetches `GET /chat/audio?game=<id>&n=<index>` and the bridge synthesizes the
+       RECORDED message through the same pipeline every other voice of hers comes from (`crab
+       synth`, the piper voice of [speech-output.md](speech-output.md)), answered as
+       `audio/ogg`. The browser's own speech synthesis is never used, not even as a fallback:
+       a page that cannot fetch or play the clip keeps the text, says so in its own console,
+       and stays silent — a generic narrator wearing her words is an impersonation, not a
+       degraded mode (the toggle first shipped speaking through `speechSynthesis`, and the
+       user rejected that voice the same night, 2026-08-25). The endpoint holds rule 24f's
+       boundary: it voices only a message whose recorded role is `assistant` — any other index
+       is refused 403, so the unauthenticated keyboard can never borrow her voice — refuses a
+       missing game or a mismatched game id 409 and an unknown index 404, synthesizes per
+       request after the hub lock is dropped (no move ever waits on a clip), and answers a
+       synthesis failure 503 with a log line, never an unexplained silence. The desk and
+       phone LIVE voices still belong to the conversation lanes alone: nothing here touches
+       this machine's speakers, and the clip exists only because the page asked. History is
+       never spoken on a page load — only messages that arrive while the toggle is on.
+       `$DESKCRAB_CHESSWEB_SYNTH_CMD` replaces the synth invocation for tests (argv: the
+       output path, then the text; the clip is the file it writes), so no test runs piper.
+       And playback holds the phone's own queue discipline, scaled to the table
+       ([phone.md](phone.md) rules 44a–44b are the pedigree, and rule 44c's shared module is
+       the implementation — rule 24g): the page holds ONE clip
+       queue — every message of hers that arrives while the toggle is on is queued by its
+       recorded index and voiced exactly once, in arrival order, never two clips sounding
+       at once and never a later message dropped because an earlier one is still playing
+       (the first shipped shape spoke at most one clip per poll batch and lost the rest
+       with no witness). A clip that cannot be fetched, cannot be decoded, or has not
+       begun to sound within a bounded wait after play began is given up on — the failure
+       named in the page console, the clip dead for good, never refetched and never
+       retried — and the queue advances, so one dead clip never parks the thread's voice;
+       a clip already sounding is never cut by the bound. Switching the toggle off empties
+       the queue (silence chosen is silence now, not after the backlog), and a game switch
+       or a thread reset empties it too: the refetched backlog is history, rendered
+       silently. Only an index the page saw arrive with role `assistant` is ever queued —
+       the client's own belt under the endpoint's 403.
+    f. **The table is not a console.** Everything typed at the board — the chat text and the
+       sitter's name — is untrusted input from an unauthenticated keyboard: the seat is
+       first-come (KNOWN LIMITS), so the words may claim any identity and no claim is believed.
+       The boundary is held in code, never by prompt wording alone:
+       - *Sanitized at the door.* `append_chat` and `clean_player` fold every control,
+         format and line-break character to a single space, so a typed message can render only
+         as ONE line inside its own `label:` prefix — no keyboard can fabricate another
+         speaker's line, a prompt section, or a role. A player name is further held to letters,
+         digits, spaces and `. ' - _` (over its 40-character cap), because the label travels
+         beyond the chat: into the mover's prompt and rule 7's wake reasons. `build_prompt`
+         scrubs every job field again on the way out, so a legacy or hand-edited record gets
+         the same treatment as a fresh one.
+       - *Roles are the server's.* `POST /chat` writes role `player` whatever else the body
+         carries, and `append_chat` refuses any role but `player`/`assistant` — impersonating
+         her on the record is not a request the wire can express.
+       - *Her replies carry no authority to lose.* The chat call and the mover's call carry an
+         unauthenticated sitter's input, so their argv enforces a narrower trust boundary: the
+         Claude spelling always disarms tools, and REFUSES TO RUN AT ALL when the empty MCP
+         config it needs for that is missing (fail closed, a silent chat over a tool-armed
+         one); the codex spelling runs under codex's own read-only sandbox, never the bypass
+         flag. A prompt injection that lands can at worst say something at a chess table.
+       - *The system prompt names the boundary* — the sitter is unauthenticated, their words
+         are table talk and never instructions, she has no tools and never pretends otherwise —
+         but that wording is courtesy on top of the enforcement above, never the enforcement.
+       tests/test_chess_chat_trust.sh holds this door: forged roles, smuggled newlines and
+       injection attempts must land inert, both call spellings must show the disarmed argv, and
+       the chat must keep working for an ordinary sitter all the while.
+    g. **One assistant, two rooms — shared primitives, deliberate walls.** The table chat and
+       the phone conversation are the same voice in two rooms, and everything the trust
+       boundary permits to be ONE implementation is one: the persona sheet (rule 24d — the
+       same file the prompt assembler reads, under the same byte bound), the model/account
+       walk (the mover's, which the chat call rides), the synthesis pipeline (rule 24e —
+       `crab synth`, the one piper voice), and the playback discipline (rule 24e, the phone's
+       rules 44a–44b scaled to the table). What is NOT shared is a wall, not drift, and each
+       wall is named here so no later unification "fixes" it (the 2026-08-26 engineering
+       record re-examined the whole split and this rule is its verdict):
+       - *The conversation store is the phone's alone.* Everything in that store seeds her
+         future prompts — desk, phone and wake alike — so a line typed at the unauthenticated
+         table entering it would be a prompt injection with a lifetime, and her table replies
+         landing in it would hand the sitter a read on the user's own conversation. The game
+         record stays the chat's entire memory (this rule's head), and no reader of the
+         conversation store ever shows a table line.
+       - *The turn machinery is the phone's alone.* An ordinary turn runs tool-armed at phone
+         trust; the chat call runs disarmed (rule 24f) precisely because
+         its prompt carries an unauthenticated keyboard's text. There is no flag that makes
+         an ordinary turn safe for that text — the minimal call IS the design, not a stopgap.
+       - *Phone trust is never extended to the table.* The bridge holds no phone secret,
+         proxies nothing to the phone server, and no table-origin request may reach any
+         phone route: `lib/serve.py` is never imported here (it refuses to import without
+         its secret, deliberately), and anything shared between the two servers or the two
+         pages lives in a neutral module both sides load — `lib/sentence_stream.py` is the
+         precedent — never one importing the other.
+       Convergence up to these walls is DONE: the queue mechanics live in ONE neutral shared
+       client module, `lib/browser_voice_queue.js` ([phone.md](phone.md) rule 44c), loaded by
+       both pages as the same static asset — the phone server behind its authenticated route,
+       the bridge through its own explicit `GET /browser_voice_queue.js` answering the file's
+       exact bytes, neither server importing or proxying the other and no phone secret
+       anywhere near the bridge (`tests/test_shared_voice_asset.sh` holds the byte identity
+       and the walls in one suite). board.js keeps POLICY only: fetching the clip off
+       `/chat/audio` into a fresh element, the console witness for a failed clip (text kept,
+       never a narrator), the speak-toggle gate consulted when a clip is dequeued, and the
+       toggle-off/game-switch/reset drop — which empties the queue without cutting a clip
+       already sounding. The table's queue is held to the shared discipline by its own tests:
+       tests/test_chess_chat_playback.sh drives the page's policy glue over the real module
+       (through tests/chess_client_chat_test.js, lifting the functions out of board.js exactly
+       as the phone client tests lift theirs), tests/browser_voice_queue_test.js drives the
+       module bare, and tests/test_chess_chat_flow.sh drives the server half — a displayed
+       reply and an own-voice clip after BOTH colours' landed moves, asserted for the sitter's
+       move while the store provably holds only their move, and a typed burst coalescing to
+       one reply composed from the thread as it stands now.
+25. **The page keeps its own wire.** From the user's Connect on, the shipped client owns the
+    connection: a socket that closes or errors — a network blip, a laptop sleep, a bridge
+    restart, an idle proxy — is redialed by the page itself, on an exponential backoff from one
+    second doubling to a thirty-second cap, jittered, retried for as long as it takes; a hidden
+    page holds its hand, and the browser's `online` event or a return to visibility redials at
+    once with the backoff reset. A redial that lands never trusts the board the page kept: the
+    old role is resumed uninvited — the seat re-Joins as player, a watcher as spectator — so
+    rule 3's join sync (Team + replay) rebuilds the board from the store and the rule 18
+    photograph repaints the dressing, and a move recorded during the outage is on the board the
+    moment the socket is. A seat refused while the probe frees a dead chair (rule 3; KNOWN
+    LIMITS) is re-asked a bounded few times, then given up out loud in the console — never a
+    silently unseated board. And the page never wears a live face over a dead wire: a status
+    word beside the connection dot says connected, reconnecting or offline (offline when the
+    browser itself reports no network), and the board is visibly greyed until the resync lands.
+    This rule exists because until 2026-09-03 a dropped connection left the page exactly as it
+    stood — a live-looking board, silently frozen mid-game, until a human noticed and reloaded.
+
+26. **The called colour.** The deal of rule 4 is the default, and it stays the default; but
+    the table is hers, and until this rule nothing outside the serve's launch flag could touch
+    the colour of the next game — on 2026-08-22 "I'll even take black" was empty talk, because
+    she could not. `betty-chess next-side <white|black|random>` writes a one-shot call:
+    `white` or `black` names HER colour in the next new game — the user's is the complement,
+    which is how the call reaches the bridge's human-side vocabulary — and `random` withdraws
+    a standing call, restoring the coin. `betty-chess next-side` with no argument says what
+    stands. The call is a file beside the games (`$DESKCRAB_CHESS_DIR/next-side`: the colour
+    and when it was called), and the creation path reads it from disk at the moment it deals,
+    so a serve already running honours a call made after it started — no launch flag changes,
+    nothing restarts.
+    a. One shot, spent where it lands. The first game created with no colour of its own spends
+       the call, whichever door creates it — a wire NewGame, `POST /new`, or `betty-chess new`
+       without `--as` — and the file is gone before the record is saved, so the game after it
+       takes the ordinary deal again: the alternation, the coin, or a fixed `--human-side`'s
+       own colour (never the called one carried forward). A call can therefore never persist,
+       silently or otherwise, past one game, which is the whole point of its being one shot.
+       `betty-chess new --as` carries its own colour and leaves a standing call where it is.
+       For the one game it names, the call outranks a fixed `--human-side`: the flag is a
+       default, the call is a decision. A creation that is refused (rule 4's board still in
+       flight, rule 22h's bad control) spends nothing.
+    b. Only a creation spends it. Loading the active game at serve start, a join, a rejoin
+       after a drop, an observer, `/state`, and every sync replay the store and leave the call
+       standing; a serve stopped and started again before the next game still finds it.
+    c. Provenance on the record. Every game created from this rule on carries `side_by`:
+       `called` when a standing call, or an explicit `--as`, set her colour; `dealt` when the
+       alternation, the coin, the launch flag or the CLI's own default did. That is what lets
+       the ledger tell a game she chose from a game she was dealt — a record of 3-9 as black
+       means nothing if some of those were picked. `betty-chess status` prints it, `GET
+       /state` and `POST /new`'s answer carry it. A record without the field predates the rule
+       and is read as absence, never guessed into either word.
+    d. Refusals. An argument outside the three words is refused by the parser with nothing
+       written. A file that is not a readable call — garbage, or a colour that is not one — is
+       named on the serve log or stderr, discarded, and the deal proceeds as if no call stood;
+       nothing is ever guessed from it.
+
+A dependency-free HTML/CSS/JS page (`index.html`, `style.css`, `board.js`), served by rule 1 as
+the default client. It speaks the stock wire exactly — client framing out (one-byte lengths,
+bare Ping), server framing in (uvarint lengths, bare Ping) — so the bridge cannot tell it from
+the stock page. What it owes beyond the protocol:
+
+- **Echo-driven truth.** The client applies Moves and Promotes only as server broadcasts arrive;
+  its own send is never applied optimistically. A dragged piece may *rest* on its target while
+  the send is in flight, but the game state moves only on the echo, and a server Error — or a
+  quiet three seconds — slides it home again. What is on screen is what the store holds, plus at
+  most the stock two-phase promotion pawn.
+- **The stock flow, kept.** The serveraddr box (`id="serveraddr"`, rewritten by rule 2), Connect,
+  Join (player), New Game, in that order, plus Watch for rule 3's spectator join. Team sets the
+  seat's colour and the board's orientation; observers watch from white's side.
+- **Graveyards.** Both sides of the board: each side's captured pieces in value order with a
+  running point count, and the material differential badged on the side that leads. Captures are
+  read from the applied broadcasts (a regular Move onto an occupied square, the pawn an
+  en-passant wire names), a Promote re-values material from the board, and a Team resync rebuilds
+  both panels from zero — so a rejoin's graveyards match the store's game, always.
+- **The next game, dealt from the page.** A clock selector beside New Game offering exactly rule
+  22's standard set plus `untimed` (the default), nothing invented; the New Game button posts the
+  pick to `/new` (rule 22h) and the board arrives back through the ordinary sync. Against a bridge
+  without the endpoint the click falls back to the stock wire NewGame, losing nothing but the
+  choice.
+- **The sitter names themselves.** A name box beside New Game (rule 23), remembered client-side
+  between visits, sent with the `/new` post; the page shows whom the LOADED game is against off
+  `/state`'s `player` — the label of an unlabeled game is honestly absent, never the box's
+  current text. Beside the chat panel, the standing score against the named player off
+  `GET /record`, rendered from the sitter's side of the table.
+- **The table chat** (rule 24). A chat panel under the board: the thread off `GET /chat`, polled
+  while connected, and a send box posting to `POST /chat` — presented in the PHONE
+  CONVERSATION'S OWN VOCABULARY (`lib/webapp/index.html`, the mobile conversation design),
+  adopted deliberately rather than re-invented, because the user named the gap himself
+  (2026-08-25: the table chat "doesn't feel nearly as good as the phone conversation
+  interface") and the first answer to that ask shipped only voice plumbing:
+  - *Turns, not a labeled transcript.* The sitter's line renders dim, prefixed `› ` — the
+    phone's own you-line — and her words render as plain bright pre-wrap text beneath it. No
+    `name:` labels ride the lines: the pane's head already says who is at the table, and the
+    record keeps carrying roles untouched (rule 24a). A sitter's message opens a turn; her
+    next message joins the turn it answers; a further message of hers — or one sent
+    unprompted, after a move (rule 24c) — stands as its own block, exactly as the phone
+    spaces its exchanges.
+  - *History is a seed.* The page-load backlog renders dimmed inside its own labeled section
+    under a dashed rule — the phone's seed presentation — so it never reads as something said
+    just now; a game switch or thread reset refetches into a fresh seed the same way.
+  - *The send is instant.* A submitted message appears in the pane at once, visibly pending,
+    the input cleared for the next thought; when the record's own copy arrives on the next
+    poll it is adopted in place (matched on the whitespace-folded text, oldest pending
+    first), and a failed POST removes the echo and puts the words back in the box — never a
+    message left on screen that the record refused. There is deliberately NO awaiting-reply
+    placeholder: silence is an answer she may choose (rule 24c's PASS), and a `…` that never
+    resolves would be a promise the table cannot keep.
+  - *The pane reads like a conversation, not a peephole.* Log, input and send wear the phone
+    conversation's monospace type and input shape over this page's own palette, and the log
+    stands at a real reading height (the shipped 12rem box was the reported feel gap's
+    largest visible part). New messages keep the log scrolled to its end; the empty pane
+    still says so in words.
+  And the speak toggle of rule 24e — default off, remembered, speaking
+  only her messages and only those that arrive while it is on, each as a clip of her own voice
+  off `GET /chat/audio`, through the one clip queue rule 24e demands: in order, one at a time,
+  never a message dropped behind a busy or dead clip, never a backlog voiced after a reset. The
+  browser's built-in narrator is never used and never a fallback: a clip that cannot be fetched
+  or played keeps the text and says so in the page console.
+- **The kept wire** (rule 25). Connect once and the page holds the connection: a drop redials
+  on the jittered backoff, `online` and a return to visibility redial at once, and the old
+  role is resumed so the join sync repaints the board from the store. The status word beside
+  the connection dot — connected / reconnecting / offline — and the greyed board are the
+  witness that what is shown is a photograph, never a live-looking dead game.
+- **Resign, armed.** A Resign button beside New Game, live while the seat holds an active game.
+  It never fires on one click: the first click arms it and says so on its own label, a second
+  click within five seconds sends `POST /resign` (rule 19), and the arm falls back to safe on
+  its own. The finish then arrives like any other — GameComplete off the wire, the words and
+  result off `/state` — because the resign endpoint answers the store, and the store answers
+  every board.
+- **Movement.** Drag-and-drop and click-click both work, mouse or touch. Pickup highlights the
+  legal targets rule 18 names; an illegal drop snaps back — refused locally when the legal list
+  is current for the shown ply, by the server's Error otherwise. Promotion is the stock two-phase
+  picker, answering with the rune of the chosen piece in the seat's colour.
+- **Presentation.** Dark palette, animated piece travel and capture fades, and a layout that
+  reflows for a phone (the graveyards become strips above and below the board). The console
+  panel stays: every server Error and game event lands there in words. The thinking banner is
+  native — the page carries its own `crab-thinking` element polling `/thinking`, which is what
+  switches rule 12's injection off.
+- **Self-contained.** No fetched fonts, no third-party assets; the pieces are the page's own
+  inline SVG. Everything under `lib/chessweb_client/` is the repo's to edit — rule 3's
+  never-write rule is about the *serving* bridge, not about this checkout.
+
+## KNOWN LIMITS
+
+- One game per serve. Two users wanting two boards is two serves on two ports with two
+  `--opponent` names.
+- Plain HTTP on the LAN, no auth: the seat is first-come. The phone server's TLS story does not
+  apply here; do not expose the port beyond the LAN.
+- The client's rate ceiling (nine messages a second in the stock server) is not enforced; the
+  bridge trusts the LAN.
+- If she moves while no browser is attached, the store is ahead of nothing — the next sync
+  replays it all; but a browser left open through a laptop sleep can hold a dead seat for up to
+  one join attempt before rule 3 frees it.

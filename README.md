@@ -12,6 +12,8 @@ A push-to-talk desktop assistant for Linux powered by [Claude Code](https://docs
 - **Conversation memory** with automatic archiving after inactivity
 - **Text mode** — skip voice and type directly with `crab how's the weather?`
 - **Fully configurable** — custom prompts, whisper fixes, context files, model selection
+- **Remote client** — `crab serve` puts an installable web app in front of the same assistant, so a phone can talk to it while the CLI, tools, and conversation stay on the laptop
+- **Long-term memory** — `crab memory` keeps a local vector store (sqlite-vec + ollama embeddings) of standing rules and learned facts, retrieved into the prompt instead of injected forever
 - **Debug viewer** for watching Crab's tool calls and reasoning in real-time
 
 ## Dependencies
@@ -22,7 +24,8 @@ A push-to-talk desktop assistant for Linux powered by [Claude Code](https://docs
 - `aplay` (ALSA utils — for audio playback)
 - `notify-send` (for desktop notifications)
 - [render-md](https://github.com/TheDiscordian/render-md) (optional — for the display channel)
-- Python 3
+- `ffmpeg` and whisper.cpp's `whisper-cli` (optional — for the remote client)
+- Python 3 (the `markdown` package is optional — it renders the remote client's display channel)
 
 ### Arch Linux / CachyOS
 
@@ -41,18 +44,18 @@ mkdir -p ~/.local/share/piper
 
 ## Install
 
-```bash
-git clone https://github.com/TheDiscordian/deskcrab.git
-cd deskcrab
+`crab` finds `lib/` beside itself, resolving symlinks first — so link the entry points at the
+checkout rather than copying them, and an update is a `git pull`:
 
-# Copy scripts
-cp crab crab-debug ~/.local/bin/
-cp -r lib ~/.local/lib/deskcrab/
-chmod +x ~/.local/bin/crab ~/.local/bin/crab-debug
+```bash
+git clone https://github.com/TheDiscordian/deskcrab.git ~/src/deskcrab
+
+ln -s ~/src/deskcrab/crab ~/.local/bin/crab
+ln -s ~/src/deskcrab/crab-debug ~/.local/bin/crab-debug
 
 # Create config
 mkdir -p ~/.config/deskcrab
-cp deskcrab.conf.example ~/.config/deskcrab/deskcrab.conf
+cp ~/src/deskcrab/deskcrab.conf.example ~/.config/deskcrab/deskcrab.conf
 $EDITOR ~/.config/deskcrab/deskcrab.conf
 ```
 
@@ -68,6 +71,10 @@ Bind these to a key in your compositor:
 | Stop and process (release) | `crab stop` |
 | Stop TTS playback | `crab shutup` |
 | Open debug viewer | `crab-debug` |
+| Serve the phone client | `crab serve` |
+| What is running, scheduled, and which login answers | `crab status` |
+| Print the prompt a live session receives | `crab context` |
+| Every subcommand | `crab help` |
 
 **Hyprland** example (SUPER+A as push-to-talk):
 
@@ -94,7 +101,9 @@ crab "what time is it in Tokyo?"
 crab "summarize this file: ~/notes.md"
 ```
 
-Any argument that isn't a subcommand (`start`, `stop`, `shutup`) is treated as a text query.
+Any argument that isn't a subcommand is treated as a text query. `crab help` prints the full list of
+subcommands; a leading dash is rejected as a mistyped flag rather than spoken, and `help` itself
+prints usage rather than becoming a turn.
 
 ### Debug viewer
 
@@ -121,18 +130,26 @@ Edit `~/.config/deskcrab/deskcrab.conf`. See `deskcrab.conf.example` for all opt
 | `CONVO_TIMEOUT` | No | Seconds of inactivity before archiving conversation (default: 300) |
 | `CUSTOM_PROMPT` | No | Path to a markdown file appended to Crab's core system prompt |
 | `WHISPER_FIXES` | No | `sed` expressions to fix common whisper mistranscriptions |
-| `TTS_FIXES` | No | `sed` expressions to fix TTS pronunciation (spoken text only) |
-| `CONTEXT_FILES` | No | Space-separated list of files to include in the prompt |
+| `TTS_FIXES` | No | `sed` expressions to fix TTS pronunciation or add input-line pauses (spoken text only) |
+| `CLAUDE_TOOLS_TURN` | No | Tools a turn or wake may use (default: `Bash,Read,Write,Edit,WebFetch,WebSearch`) |
+| `CLAUDE_SKILLS` | No | `1` to give her sessions the skills catalogue back (default: off, worth ~6,700 tokens a session) |
+| `PROMPT_BUDGET_<layer>_<profile>` | No | Override one prompt layer's byte budget, e.g. `PROMPT_BUDGET_L6_TURN=12000` |
 | `ASSISTANT_NAME` | No | Persona name the assistant sees in its system prompt (default: `Crab`) |
 | `NOTIFY_NAME` | No | Name shown in notifications (default: `ASSISTANT_NAME` if set, else `DeskCrab`) |
 | `WANTS_FILE` | No | Durable goals file the assistant maintains and pursues during autonomous wakes |
 | `WAKE_QUIET_HOURS` | No | Hours (`HH-HH`, wraps midnight) when wakes never speak or open windows |
 | `WAKE_EFFORT` | No | Effort level for autonomous wakes (default: `CLAUDE_EFFORT`) |
 | `WAKE_STALL_TIMEOUT` | No | Seconds without output or CPU activity before a wake is presumed hung (default: 300) |
+| `SERVE_SECRET` | No | Shared secret for the remote client; unset disables `crab serve` entirely |
+| `SERVE_PORT` | No | Port for `crab serve` (default: 8723) |
+| `SERVE_BIND` | No | Address for `crab serve` (default: `127.0.0.1`) |
+| `SERVE_TIMEOUT` | No | Seconds a single remote turn may take before it is abandoned (default: 600) |
 
 ### Custom prompt
 
 Crab has a built-in system prompt that handles core behavior (TTS formatting, display channel, speed optimization). Your custom prompt is **appended** to this, so use it for project-specific context or personal preferences — not for overriding Crab's core instructions.
+
+The identity layer has a byte budget, and a custom prompt that overruns it is fitted by whole markdown sections, with the ones left behind named in the prompt rather than silently dropped. `crab context --layers` shows each layer's measured size against its budget; `PROMPT_BUDGET_L1_TURN` raises it.
 
 ```bash
 cp custom-prompt.md.example ~/.config/deskcrab/custom-prompt.md
@@ -150,7 +167,7 @@ WHISPER_FIXES='s/mycool app/MyCoolApp/gi; s/\bhy plant\b/Hyprland/gi'
 
 ### TTS fixes
 
-Piper mispronounces some words — or spells them out letter-by-letter (e.g. "hmph"). Rewrite them with sed expressions before they're spoken. Fixes apply only to the spoken reply; display-channel content is untouched:
+Piper mispronounces some words — or spells them out letter-by-letter (e.g. "hmph"). Rewrite them with sed expressions before they're spoken. A replacement newline starts a new Piper input line but not a pause — Piper's sentence silence follows punctuation as espeak segments it, not line breaks, so a fix that wants a pause must emit punctuation (measured 2026-09-04; an em-dash already earns its own break, so don't rewrite it away). Fixes apply only to the spoken reply; display-channel content is untouched:
 
 ```bash
 TTS_FIXES='s/\bhmph\b/humph/gi'
@@ -160,9 +177,20 @@ TTS_FIXES='s/\bhmph\b/humph/gi'
 
 Give the assistant its own durable goals and let it work on them unprompted. Set `WANTS_FILE` in your config and the assistant gains:
 
-- **A wants file** it maintains itself — adding wants as they form in conversation, dating progress notes, and retiring satisfied ones. The file is injected into every prompt, so wants persist across sessions.
-- **`crab wake`** — an autonomous session: the assistant reviews its wants, advances one, and updates the file. Nobody is waiting, so it only speaks (or opens a display window) when it judges something worth surfacing; otherwise it replies `(quiet)` and the wake is invisible. Wakes are skipped (or rescheduled) if a recording or speech is in progress, and unattended sessions are told to take no destructive or outward-facing actions. Sessions have **no wall-clock limit** — the assistant controls its own duration and can chain longer work across wakes; only a session showing no life signs (no output *and* no process-tree CPU activity, so long compiles count as alive) for `WAKE_STALL_TIMEOUT` seconds is presumed hung and reaped.
-- **`crab wake-at <when>`** — the assistant (or you) can schedule a one-shot wake via a transient systemd timer: `crab wake-at 2h`, `crab wake-at 45min`, `crab wake-at "09:30"`.
+- **A wants file** it maintains itself — adding wants as they form in conversation, dating progress notes, and retiring satisfied ones. Each want's body lives in its own document under `wants/`; the prompt carries the shelf's **titles**, one line per want, with the bodies one open away. A shelf whose whole contents sit in every prompt becomes a dumping ground, because it is the only page guaranteed to be read next time.
+- **`crab wake`** — an autonomous session: the assistant reviews its wants, advances one, and updates the file. Nobody is waiting, so it only speaks (or opens a display window) when it judges something worth surfacing; otherwise it says nothing at all — an empty reply — and the wake is invisible, its work still journaled from the stream's own tool calls. A reply opening with `(quiet)` is the other form: it is shown as a bubble and never touches the speakers. Unattended sessions are told to take no destructive or outward-facing actions. The assistant controls its own duration and can chain longer work across wakes: a session showing no life signs (no output *and* no process-tree CPU activity, so long compiles count as alive) for `WAKE_STALL_TIMEOUT` seconds is presumed hung and reaped, and the unit carries a backstop ceiling of `WAKE_RUNTIME_MAX` seconds (default 2 h).
+
+  **Being mid-conversation does not skip a wake.** It used to, which meant a wake arriving during any conversation did no reading and no want work at all. The session now runs regardless; if you are recording or on a call when it finishes, its output is held back — speech, window, and phone alike — and what it swallowed goes to the session journal.
+- **`crab wake-at <when>`** — the assistant (or you) can schedule a one-shot wake: `crab wake-at 2h`, `crab wake-at 45min`, `crab wake-at "09:30"`, `crab wake-at "Sat 14:00"`. A calendar time is resolved to the next matching moment and booked as a **delay**, so the timer fires once and never re-arms for tomorrow. A near-duplicate is refused rather than stacked — a booking with the same reason landing within `WAKE_COALESCE_WINDOW` (default 15 min) of a pending one is not added, and every booking is nudged off any second another booking already holds. Bookings are durable: the timer itself is transient, but each booking is also recorded under `~/.local/share/deskcrab/wakes/`, and `crab wake-restore` rebuilds timers from those records — still-future wakes at their original moment, wakes that came due while the machine was off fired once, promptly, staggered rather than all at once. Install the login reconciler so this happens automatically after a reboot:
+
+```bash
+cp systemd/deskcrab-wake-restore.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable deskcrab-wake-restore.service
+```
+
+  Cancel a pending wake with `crab wake-cancel <unit>`, or the whole queue with `crab wake-cancel --all` — stopping just the timer is not enough, the record would bring it back at next login.
+  Every change to the queue (booked, cancelled, restored, collapsed, purged) is appended to `~/.local/share/deskcrab/wakes/ledger.log`, and `crab status` lists the records rather than the timers, warning about any booking whose timer is missing.
 - **Random background wakes** — install the provided timer for wakes every 3–6 hours:
 
 ```bash
@@ -172,6 +200,129 @@ systemctl --user enable --now deskcrab-wake.timer
 ```
 
 Set `WAKE_QUIET_HOURS="23-09"` to keep night wakes fully silent (they still run and can work — they just never speak or open windows).
+
+Only one wake runs at a time. A wake that arrives while another is thinking is re-armed about fifteen minutes later with its kind and reason intact, never dropped, and spaced off any moment another booking already holds. Talking to the assistant does not defer a wake — only another wake does.
+
+`crab wake-tidy` prunes the queue by hand: fired timers nothing remembers, repeated promises, and bookings sharing a second. It also runs at the end of every wake.
+
+### Event wakes
+
+A timer wakes the assistant *at* a moment; an event wake tells it *why*. `crab wake event "<reason>"` starts an autonomous session whose agenda is the reason, falling back to the wants file only if the event turns out to need nothing.
+
+Emitters are small scripts driven by systemd `.path` units, which watch the filesystem with the kernel's own inotify — no polling loop and no `inotify-tools` dependency. One ships as an example: a new meeting transcript appearing means a call just ended, which is worth noticing.
+
+```bash
+cp systemd/deskcrab-notice-transcriptions.* ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now deskcrab-notice-transcriptions.path
+```
+
+It watches `~/Documents/Transcriptions` (edit the unit for another path), seeds its state silently on first run so an existing backlog never triggers a wake, and defers while a [Parley](https://github.com/devdocsorg/parley) recording is still writing, so it reads a finished transcript rather than half of one. Write your own emitter by pointing `lib/notice-newfiles <name> <dir> <phrase>` at any directory worth watching.
+
+These units are deliberately not enabled by installation. Turning one on changes how the machine behaves towards you, unprompted — that should be a decision you make, not a default you inherit.
+
+### Self-change awareness
+
+A second shipped emitter watches the files that constitute the assistant itself — the wants shelf and documents, conduct, engineering threads, the day journal, the memory store, the config, and the deskcrab repo — and fires an event wake when one is created, modified, or deleted by a hand that was not its own. The wake carries what changed, when, and a git diff where the file is tracked; it offers awareness, never an instruction.
+
+```bash
+cp systemd/deskcrab-notice-selfchange.* ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now deskcrab-notice-selfchange.path
+```
+
+A watcher only speaks when something is wrong, which means a watcher that has silently stopped being triggered looks exactly like a quiet week. `lib/canary-selfchange` asks the question the silence cannot — it creates and removes a sentinel inside a watched directory and waits for the emitter's heartbeat to move, proving the whole chain from kernel inotify to the emitter's own code:
+
+```bash
+cp systemd/deskcrab-canary-selfchange.* ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now deskcrab-canary-selfchange.timer
+```
+
+A stopped `.path` unit is restarted and reported; a heartbeat that will not move fires an event wake naming what is currently unguarded; an emitter that is merely busy is inconclusive rather than an alarm. Run it by hand with `lib/canary-selfchange --no-wake`; results land in `~/.local/state/deskcrab/canary-self.log`.
+
+Attribution is the point: the assistant's own writes never wake it. Writers declare themselves with `crab touching <paths>` — a windowed suppression record, wired automatically into turns and wakes (from the stream's own tool calls), detached jobs, the day journal, and the memory store — and a change named by a live session's `crab claim` is likewise read as its own. Deletions are stricter than anything else: only an explicit `touching` record excuses one, so a deleted want always surfaces. Bursts settle (`NOTICE_SELF_SETTLE`) into a single wake, and judgement waits for a live session to finish writing before deciding whose hand it saw. Extra personal directories go in `SELF_WATCH_EXTRA` (colon-separated) plus matching `PathChanged=` lines in a drop-in on the `.path` unit. The emitter's decisions are logged to `~/.local/state/deskcrab/notice-self.log`.
+
+## Long-term memory
+
+`crab memory` gives the assistant a durable, local memory: a [sqlite-vec](https://github.com/asg017/sqlite-vec) store of short records embedded with `nomic-embed-text` on a local [ollama](https://ollama.com) daemon. Nothing leaves the machine. Records come in two kinds — a `directive` is something you told the assistant (a standing rule; never decayed, only superseded when you change your mind), a `note` is something it learned on its own.
+
+```bash
+crab memory add --kind directive "Stay silent during meetings: no speech, no windows."
+crab memory add "The transcript watcher sanitises filenames — ls the directory instead."
+crab memory search "what should I do during a meeting"
+crab memory list            # active records; --all includes superseded/retired
+crab memory dump            # the whole store as readable text
+crab memory forget 12       # retire a record by id
+crab memory ingest          # distil new journal turns + transcripts into records
+```
+
+Setup: the sqlite-vec extension ships as a Python wheel, so it lives in its own venv — `uv venv ~/.local/share/deskcrab/venv && uv pip install --python ~/.local/share/deskcrab/venv/bin/python sqlite-vec` — and `ollama pull nomic-embed-text` provides the embedder. Set `MEMORY_STORE=1` in the config to have every prompt build retrieve a short recollection block.
+
+What the store is asked depends on what the session is. **In conversation** the subject is the conversation — your last message, with the assistant's preceding reply behind it as context, and no wants at all. **On a wake** the subject is that wake's agenda: its reason, plus the one want being worked if the reason names one, and only that want's most recent dated section. Retrieval is deliberately fail-safe — an empty store adds nothing, and if the embedder is down the prompt gets pinned records plus a warning rather than an error.
+
+`crab memory ingest` reads what is new in the day journal and the transcriptions directory (tracked by a cursor file), asks a cheap Claude session what actually earns a permanent record, and writes the survivors through a dedup pass: a near-identical record just refreshes the existing one, and a conflicting one supersedes it — the newer voice wins, the older stays readable in `--all`.
+
+### Sleeping every night
+
+Run the ingest nightly and the day's facts become records the assistant can recall in milliseconds; skip it and they exist only as raw transcript. `lib/sleep-nightly` wraps the ingest as that habit — "sleep" — and stamps `~/.local/share/deskcrab/last-slept` after a night that actually happened (a failed ingest does not stamp). `sleep-nightly status` reports how long since the last sleep and exits non-zero past 48 hours (`SLEEP_ROT_HOURS`), so rot is checkable in one command.
+
+```bash
+cp systemd/deskcrab-sleep.* ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now deskcrab-sleep.timer
+```
+
+The timer fires at 03:10 with `Persistent=true`: a machine that was off overnight sleeps at boot instead of skipping the night.
+
+## Remote client (phone)
+
+`crab serve` puts a small web app in front of the assistant so a phone can talk to it. The assistant does not move: the phone is a microphone, a speaker, and a screen, while the `claude` CLI, the system prompt, the tools, the wants file, and the conversation all stay on this machine. A remote turn is the same conversation as the desktop one — ask something on the laptop, follow it up from the phone.
+
+```bash
+# in your config
+SERVE_SECRET="$(head -c 18 /dev/urandom | base64 | tr -d '/+=')"
+
+crab serve            # listens on 127.0.0.1:8723
+```
+
+Open `http://127.0.0.1:8723/?k=<secret>`. The key is stored in a cookie on first load, so the app can be installed to a home screen and opened with no querystring afterwards. Requests without the key get a flat `404` — an unauthenticated caller is told nothing about what is running here.
+
+When Beatrice is playing OpenRSC, `/openrsc` on that same authenticated origin is a
+mobile/fullscreen read-only spectator. It shows the cropped live game, the private game pointer as
+the desktop preview's magenta ring/crosshair, current activity, HP, fatigue, tile, movement state,
+and positive XP/hour. One low-rate frame producer is shared by all viewers and shuts down when
+nobody is watching; the page exposes no game-control endpoint. An
+already authenticated phone can open `/openrsc` directly. To let another Tailscale user watch
+without giving them access to the assistant or chat, run `crab openrsc-link` and send them the
+spectator-only URL it prints.
+
+For access limited to the local network, set `SERVE_BIND="0.0.0.0"`, restart the service, and
+scope the host firewall rule to the LAN interface/subnet. Generate a LAN share link with `crab
+openrsc-link http://<laptop-lan-address>:8723`; plain HTTP is sufficient for this read-only page
+(the microphone-based phone assistant still requires HTTPS).
+
+**Reaching it from a phone.** Browsers only grant microphone access in a secure context, so the server must be behind TLS. It binds loopback by default; publishing it is a separate, deliberate act:
+
+```bash
+tailscale serve --bg https / http://127.0.0.1:8723
+```
+
+Under the hood, `/ask` takes the browser's recording (Chrome sends WebM/Opus, iOS Safari sends MP4/AAC — ffmpeg decodes either), transcribes it with **batch** `whisper-cli` rather than `whisper-stream`, and hands the text to `crab remote`, which runs a normal turn and returns the spoken half as an Opus file plus the display half as HTML. Batch transcription of a finished clip is both simpler and faster than the desktop's settle-and-poll loop, so a remote turn costs only a couple of seconds more than a local one end to end. Remote turns are serialized — two overlapping requests queue rather than race.
+
+`crab serve` needs `ffmpeg` and `whisper-cli`; the optional Python `markdown` package renders the display channel properly (without it, display content is shown as preformatted text).
+
+**Keeping it up.** A phone is only useful if the server is running when you reach for it, which a hand-started process is not — it dies with the terminal that launched it and with the next reboot. Install the unit instead:
+
+```bash
+cp systemd/deskcrab-serve.service ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now deskcrab-serve.service
+```
+
+`Restart=always` covers a crash; `WantedBy=default.target` covers a reboot. The unit sets `PATH` to include `~/.local/bin`, since a user unit does not inherit a login shell's PATH and the server shells out to `claude`, `ffmpeg`, `whisper-cli`, and `piper`. Logs go to `/tmp/crab-serve.log` and to `journalctl --user -u deskcrab-serve`.
+
+Restarts are graceful: on SIGTERM the server stops accepting new turns (the phone client retries them against the fresh server automatically) but finishes any reply already in flight before exiting, so a `systemctl --user restart deskcrab-serve` never cuts the assistant off mid-sentence. This relies on the unit's `KillMode=mixed` and `TimeoutStopSec` — keep them if you edit the unit. `/health` reports `draining: true` while a shutdown is waiting on a turn.
 
 ## Display channel
 
@@ -199,7 +350,7 @@ If [weather-cache](https://github.com/TheDiscordian/weather-cache) is installed 
 
 ## Conversation history
 
-Crab maintains a running conversation at `/tmp/deskcrab-convo.txt`. After a period of inactivity (default: 5 minutes), the conversation is archived to `~/.local/share/deskcrab/archive/` with a timestamp filename. This lets Crab remember context within a session while keeping old conversations for reference.
+Crab maintains a running conversation at `/tmp/deskcrab-convo.txt`. After a period of inactivity (`CONVO_TIMEOUT`, default 15 minutes), the conversation is archived with a timestamp filename to `ARCHIVE_DIR` — default `~/.local/share/deskcrab/archive/`, configurable in `deskcrab.conf`, so check the config before concluding from an empty default directory that archives are missing. The archive is written and byte-verified before the live conversation is let go; a failed archive leaves the conversation in place and says so loudly.
 
 The archive directory can be changed with `ARCHIVE_DIR` in your config, and the inactivity timeout with `CONVO_TIMEOUT`.
 
@@ -210,11 +361,17 @@ crab start   →  whisper-stream (recording)
 crab stop    →  whisper transcription → claude CLI → TTS streaming
                                                   → display channel (optional)
 crab <text>  →  claude CLI → TTS streaming → display channel (optional)
+crab serve   →  HTTP  →  ffmpeg → whisper-cli (batch) → crab remote
+                                               → opus reply + display HTML
 ```
 
 - `crab` — main entry point (voice + text)
 - `lib/common.sh` — shared functions (TTS, conversation, prompt building, Claude invocation)
+- `lib/serve.py` — stdlib HTTP front end for the remote client
+- `lib/webapp/` — the phone client (single page, installable)
 - `crab-debug` — real-time debug viewer
+- `lib/betty-chess` — persistent correspondence chess (`lib/chess_cli.py` is the program; the wrapper owns its venv)
+- `lib/chess_reflex.py` — chess position memory: every move of every finished game, keyed by the FEN it was played from, weighted by how the game ended. Known positions (openings, remembered traps) are answered instantly from `reflex.db` instead of costing a model turn; `betty-chess reflex <fen>` shows what memory would do, `betty-chess reflex --backfill` ingests games recorded before the memory existed. See `specs/chess-reflex.md`.
 
 ## License
 

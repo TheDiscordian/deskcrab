@@ -1,0 +1,433 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#171c19">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="OpenRSC">
+<title>Beatrice · OpenRSC</title>
+<link rel="manifest" href="/openrsc/manifest.webmanifest" crossorigin="use-credentials">
+<link rel="icon" href="/openrsc/icon.svg" type="image/svg+xml">
+<link rel="icon" href="/openrsc/icon-192.png" sizes="192x192" type="image/png">
+<link rel="apple-touch-icon" href="/openrsc/apple-touch-icon.png">
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #090c0a; --card: #121813; --line: #29342b; --ink: #edf2e9;
+    --dim: #9ba79c; --live: #70cf85; --warn: #e2b866; --bad: #dc776d;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--ink); }
+  body { font: 14px/1.35 system-ui, sans-serif; padding: max(10px, env(safe-area-inset-top))
+    max(10px, env(safe-area-inset-right)) max(10px, env(safe-area-inset-bottom))
+    max(10px, env(safe-area-inset-left)); }
+  header { max-width: 1024px; margin: 0 auto 9px; display: flex; align-items: center;
+    gap: 9px; min-height: 34px; }
+  .presence { display: flex; align-items: center; gap: 8px; flex: 1; min-width: 150px; }
+  /* Three remembered sizes (compact / medium / large), chosen by the Face
+     button and persisted locally. Large is a genuinely readable portrait;
+     the game frame below stays the page's primary surface. */
+  .portrait { position: relative; width: 92px; height: 92px; flex: 0 0 92px;
+    border-radius: 13px; overflow: hidden; border: 1px solid #e2b86688;
+    background: radial-gradient(circle at 50% 32%, #2a2420, var(--card) 78%);
+    box-shadow: 0 5px 18px #0008; }
+  .portrait[data-face-size="compact"] { width: 48px; height: 48px; flex-basis: 48px;
+    border-radius: 11px; }
+  .portrait[data-face-size="medium"] { width: 92px; height: 92px; flex-basis: 92px; }
+  .portrait[data-face-size="large"] { width: 164px; height: 164px; flex-basis: 164px;
+    border-radius: 17px; }
+  .portrait img { position: absolute; inset: 0; width: 100%; height: 100%;
+    object-fit: cover; transition: opacity .22s ease;
+    /* Legibility against the dark study: a display treatment, never a
+       repaint of the artwork. */
+    filter: brightness(1.09) contrast(1.03); }
+  .portrait [data-face-mouth] { position: absolute; inset: auto;
+    width: auto; height: auto; transition: none; pointer-events: none; }
+  .portrait .attentive { opacity: 0; }
+  .portrait.paused .resting, .portrait.expressive .resting { opacity: 0; }
+  .portrait.paused .attentive, .portrait.expressive .attentive { opacity: 1; }
+  .portrait.unavailable { display: none; }
+  /* Speaking: a quiet, steady cue — no pulsing, no bobbing. */
+  .portrait.speaking { border-color: var(--live);
+    box-shadow: 0 0 0 1px #70cf8544, 0 5px 18px #0008; }
+  @media (prefers-reduced-motion: reduce) {
+    .portrait img { transition: none; }
+  }
+  .presence-copy { min-width: 0; }
+  .presence-state { color: var(--dim); font-size: 11px; white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis; }
+  h1 { margin: 0; font-size: 17px; font-weight: 650; letter-spacing: .01em; flex: 1; }
+  .dot { display: inline-block; width: 9px; height: 9px; margin-right: 7px;
+    border-radius: 50%; background: var(--bad); box-shadow: 0 0 0 3px #dc776d22; }
+  .dot.live { background: var(--live); box-shadow: 0 0 0 3px #70cf8522; }
+  button, a.button { appearance: none; border: 1px solid var(--line); border-radius: 7px;
+    background: var(--card); color: var(--ink); padding: 6px 9px; font: inherit;
+    text-decoration: none; cursor: pointer; }
+  button:active, a.button:active { transform: translateY(1px); }
+  main { max-width: 1024px; margin: auto; }
+  .screen { position: relative; width: 100%; min-height: 180px; background: #000;
+    border: 1px solid var(--line); border-radius: 9px; overflow: hidden;
+    display: grid; place-items: center; }
+  .screen img { display: block; width: 100%; height: auto; max-height: calc(100vh - 160px);
+    object-fit: contain; image-rendering: pixelated; user-select: none; -webkit-user-drag: none; }
+  .game-pointer { display: none; position: absolute; z-index: 2; width: 25px; height: 25px;
+    border: 3px solid #f0f; border-radius: 50%; transform: translate(-50%, -50%);
+    box-shadow: 0 0 0 2px #fff; pointer-events: none; }
+  .game-pointer.visible { display: block; }
+  .game-pointer::before, .game-pointer::after { content: ""; position: absolute;
+    left: 50%; top: 50%; background: #f0f; transform: translate(-50%, -50%);
+    filter: drop-shadow(0 0 1px #fff); }
+  .game-pointer::before { width: 45px; height: 2px; }
+  .game-pointer::after { width: 2px; height: 45px; }
+  .notice { position: absolute; inset: 0; display: grid; place-items: center;
+    padding: 24px; text-align: center; color: var(--dim); background: #000c; }
+  .notice.hidden { display: none; }
+  .hud { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .chip { border: 1px solid var(--line); border-radius: 999px; background: var(--card);
+    color: var(--dim); padding: 4px 9px; font-variant-numeric: tabular-nums; }
+  .chip strong { color: var(--ink); font-weight: 600; }
+  .chip.danger strong { color: var(--bad); }
+  .recent-thought { position: relative; margin-top: 9px; padding: 11px 14px 12px 17px;
+    border: 1px solid #e2b8663d; border-left: 3px solid var(--warn); border-radius: 9px;
+    background: linear-gradient(135deg, #191c16, #111713); box-shadow: 0 5px 18px #0004; }
+  .recent-thought[hidden] { display: none; }
+  .thought-label { color: var(--warn); font-size: 10px; font-weight: 700;
+    letter-spacing: .11em; text-transform: uppercase; }
+  .thought-text { position: relative; margin: 5px 0 0; padding-left: 18px;
+    color: var(--ink); font: 500 15px/1.45 ui-serif, Georgia, serif; }
+  .thought-text::before { content: "“"; position: absolute; left: -2px; top: -7px;
+    color: #e2b86688; font-size: 29px; line-height: 1; }
+  .current-plan { margin-top: 8px; padding: 11px 14px 13px;
+    border: 1px solid #70cf8538; border-left: 3px solid var(--live); border-radius: 9px;
+    background: linear-gradient(135deg, #121d18, #101613); box-shadow: 0 5px 18px #0003; }
+  .current-plan[hidden] { display: none; }
+  .plan-label { color: var(--live); font-size: 10px; font-weight: 700;
+    letter-spacing: .11em; text-transform: uppercase; }
+  .plan-text { margin: 6px 0 0; color: var(--ink); font: 500 14px/1.5 system-ui, sans-serif;
+    overflow-wrap: anywhere; }
+  .read-only { color: var(--dim); font-size: 12px; margin: 8px 2px 0; }
+  .read-only b { color: var(--live); font-weight: 600; }
+  #screen:fullscreen { border: 0; border-radius: 0; width: 100vw; height: 100vh; }
+  #screen:fullscreen img { width: 100vw; height: 100vh; max-height: none; object-fit: contain; }
+  @media (orientation: landscape) and (max-height: 600px) {
+    body { padding-top: 5px; padding-bottom: 5px; }
+    header { margin-bottom: 5px; }
+    .screen img { max-height: calc(100vh - 96px); }
+    .read-only { display: none; }
+  }
+</style>
+</head>
+<body>
+<header>
+  <div class="presence">
+    <div class="portrait" id="portrait" data-face-size="medium"
+        aria-label="Beatrice playing OpenRSC">
+      <img class="resting" data-face-base src="/openrsc/portrait/resting.png"
+        alt="Beatrice, calmly playing OpenRSC">
+      <img class="attentive" data-face-expr src="/openrsc/portrait/attentive.png"
+        alt="" aria-hidden="true">
+    </div>
+    <div class="presence-copy">
+      <h1><span class="dot" id="dot"></span>Beatrice · OpenRSC</h1>
+      <div class="presence-state" id="presence-state">at the game</div>
+    </div>
+  </div>
+  <button id="face-size" type="button">Face: Medium</button>
+  <button id="pause" type="button">Pause</button>
+  <button id="fullscreen" type="button">Fullscreen</button>
+  <a class="button" href="/" aria-label="Back to Beatrice">Back</a>
+</header>
+<main>
+  <div class="screen" id="screen">
+    <img id="frame" alt="Live read-only view of Beatrice playing OpenRSC">
+    <div class="game-pointer" id="game-pointer" aria-hidden="true"></div>
+    <div class="notice" id="notice">Connecting to her game…</div>
+  </div>
+  <div class="hud" id="hud"></div>
+  <section class="recent-thought" id="recent-thought" hidden
+    aria-labelledby="thought-label">
+    <div class="thought-label" id="thought-label">Recent thought</div>
+    <blockquote class="thought-text" id="thought-text"></blockquote>
+  </section>
+  <section class="current-plan" id="current-plan" hidden
+    aria-labelledby="plan-label">
+    <div class="plan-label" id="plan-label">Current plan</div>
+    <p class="plan-text" id="plan-text"></p>
+  </section>
+  <p class="read-only"><b>Read-only spectator.</b> This page has no route for mouse,
+    keyboard, or game commands. Watching cannot interrupt her play.</p>
+</main>
+<script src="/openrsc/face_card.js"></script>
+<script>
+"use strict";
+// The one-time share key has already become an HttpOnly, path-scoped cookie.
+// Remove it from the visible/copyable URL without causing a second request.
+if (new URLSearchParams(location.search).has("g"))
+  history.replaceState(null, "", location.pathname);
+const frame = document.getElementById("frame");
+const notice = document.getElementById("notice");
+const dot = document.getElementById("dot");
+const hud = document.getElementById("hud");
+const recentThought = document.getElementById("recent-thought");
+const thoughtText = document.getElementById("thought-text");
+const currentPlan = document.getElementById("current-plan");
+const planLabel = document.getElementById("plan-label");
+const planText = document.getElementById("plan-text");
+const pause = document.getElementById("pause");
+const screen = document.getElementById("screen");
+const gamePointer = document.getElementById("game-pointer");
+const portrait = document.getElementById("portrait");
+const presenceState = document.getElementById("presence-state");
+let running = true, generation = 0, frameAbort = null, objectUrl = "";
+let frameStartPending = false;
+let pointerPosition = null;
+
+const esc = value => String(value).replace(/[&<>"']/g, ch =>
+  ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[ch]);
+const chip = (label, value, cls="") =>
+  `<span class="chip ${cls}">${esc(label)} <strong>${esc(value)}</strong></span>`;
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
+
+function startFrameLoop() {
+  // A visibility change can race the cancelled fetch's catch/finally path.
+  // Defer and coalesce starts so that finally can release the old controller;
+  // whichever start wins then owns the one live loop.
+  if (frameStartPending) return;
+  frameStartPending = true;
+  setTimeout(() => {
+    frameStartPending = false;
+    if (running && !document.hidden && !frameAbort) frameLoop();
+  }, 0);
+}
+
+function updatePointer() {
+  if (!pointerPosition || !frame.naturalWidth || !frame.naturalHeight) {
+    gamePointer.classList.remove("visible");
+    return;
+  }
+  const imageRect = frame.getBoundingClientRect();
+  const screenRect = screen.getBoundingClientRect();
+  const scale = Math.min(imageRect.width / frame.naturalWidth,
+                         imageRect.height / frame.naturalHeight);
+  const shownWidth = frame.naturalWidth * scale;
+  const shownHeight = frame.naturalHeight * scale;
+  const contentLeft = imageRect.left - screenRect.left - screen.clientLeft
+    + (imageRect.width - shownWidth) / 2;
+  const contentTop = imageRect.top - screenRect.top - screen.clientTop
+    + (imageRect.height - shownHeight) / 2;
+  const {x, y} = pointerPosition;
+  if (x < 0 || y < 0 || x >= frame.naturalWidth || y >= frame.naturalHeight) {
+    gamePointer.classList.remove("visible");
+    return;
+  }
+  gamePointer.style.left = `${contentLeft + (x + .5) * scale}px`;
+  gamePointer.style.top = `${contentTop + (y + .5) * scale}px`;
+  gamePointer.classList.add("visible");
+}
+
+function paintFrame(blob, nextPointer, signal) {
+  // Wait for this frame to be decoded before requesting the next one. Merely
+  // replacing img.src at capture speed can outrun a throttled mobile browser,
+  // overwrite load handlers, and leak the displaced object URLs.
+  return new Promise((resolve, reject) => {
+    const url = URL.createObjectURL(blob);
+    const old = objectUrl;
+    let settled = false;
+    let timer = null;
+
+    const finish = error => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      signal.removeEventListener("abort", onAbort);
+      frame.onload = null;
+      frame.onerror = null;
+      if (error) {
+        URL.revokeObjectURL(url);
+        reject(error);
+        return;
+      }
+      objectUrl = url;
+      if (old) URL.revokeObjectURL(old);
+      resolve();
+    };
+    const onAbort = () => {
+      const error = new Error("frame request cancelled");
+      error.name = "AbortError";
+      finish(error);
+    };
+
+    frame.onload = () => {
+      pointerPosition = nextPointer;
+      updatePointer();
+      finish();
+    };
+    frame.onerror = () => finish(new Error("frame decode failed"));
+    timer = setTimeout(() => finish(new Error("frame decode timed out")), 3000);
+    signal.addEventListener("abort", onAbort, {once: true});
+    if (signal.aborted) onAbort();
+    else frame.src = url;
+  });
+}
+
+async function frameLoop() {
+  if (!running || document.hidden || frameAbort) return;
+  const controller = new AbortController();
+  frameAbort = controller;
+  try {
+    while (running && !document.hidden && !controller.signal.aborted) {
+      try {
+        const res = await fetch(`/openrsc/frame.jpg?after=${generation}`, {
+          cache: "no-store", credentials: "same-origin", signal: controller.signal,
+        });
+        if (!res.ok) {
+          let msg = "Her game is not available right now.";
+          try { msg = (await res.json()).error || msg; } catch (_) {}
+          notice.textContent = msg;
+          notice.classList.remove("hidden");
+          dot.classList.remove("live");
+          await sleep(1000);
+          continue;
+        }
+        const next = Number(res.headers.get("X-Frame-Generation")
+                            || generation + 1);
+        const pointerX = Number(res.headers.get("X-Pointer-X"));
+        const pointerY = Number(res.headers.get("X-Pointer-Y"));
+        const nextPointer = Number.isFinite(pointerX) && Number.isFinite(pointerY)
+          && pointerX >= 0 && pointerY >= 0 ? {x: pointerX, y: pointerY} : null;
+        const blob = await res.blob();
+        await paintFrame(blob, nextPointer, controller.signal);
+        generation = next;
+        notice.classList.add("hidden");
+        dot.classList.add("live");
+      } catch (err) {
+        // Abort ends this controller's loop. Reusing its permanently-aborted
+        // signal after a quick hide/show transition was the mobile freeze.
+        if (err.name === "AbortError") break;
+        notice.textContent = "Connection lost; retrying…";
+        notice.classList.remove("hidden");
+        dot.classList.remove("live");
+        await sleep(1000);
+      }
+    }
+  } finally {
+    if (frameAbort === controller) frameAbort = null;
+    if (running && !document.hidden) startFrameLoop();
+  }
+}
+
+async function refreshState() {
+  try {
+    const res = await fetch("/openrsc/state", {
+      cache: "no-store", credentials: "same-origin",
+    });
+    if (!res.ok) throw new Error("state unavailable");
+    const st = await res.json();
+    gameActivity = st.activity || st.objective || "at the game";
+    updatePresence();
+    const bits = [];
+    if (st.player_status) bits.push(chip("Player", st.player_status));
+    if (st.activity) bits.push(chip("Activity", st.activity));
+    if (st.objective && st.objective !== st.activity)
+      bits.push(chip("Objective", st.objective));
+    if (st.hp) bits.push(chip("HP", `${st.hp.current}/${st.hp.maximum}`,
+      st.hp.current * 3 <= st.hp.maximum ? "danger" : ""));
+    if (st.fatigue !== null) bits.push(chip("Fatigue", st.fatigue));
+    if (st.tile) bits.push(chip("Tile", `${st.tile.x}, ${st.tile.z}`));
+    if (st.in_combat) bits.push(chip("State", "combat", "danger"));
+    else if (st.sleeping) bits.push(chip("State", "sleeping"));
+    else if (st.walking) bits.push(chip("State", "moving"));
+    for (const xp of st.xp_rates || [])
+      bits.push(chip(`${xp.skill} XP/hr`, Number(xp.per_hour).toLocaleString()));
+    hud.innerHTML = bits.join("") || chip("Game", st.available ? "live" : "offline");
+    if (st.recent_thought) {
+      thoughtText.textContent = st.recent_thought;
+      recentThought.hidden = false;
+    } else {
+      thoughtText.textContent = "";
+      recentThought.hidden = true;
+    }
+    if (st.plan) {
+      planLabel.textContent = st.plan_current === false
+        ? (st.player_phase === "active" ? "Plan being revised" : "Last plan")
+        : "Current plan";
+      planText.textContent = st.plan;
+      currentPlan.hidden = false;
+    } else {
+      planText.textContent = "";
+      currentPlan.hidden = true;
+    }
+  } catch (_) {
+    hud.innerHTML = chip("Game", "connection lost", "danger");
+    gameActivity = "game view unavailable";
+    updatePresence();
+  }
+}
+
+// Her face, mirrored read-only from the shared broker through the same
+// spectator key as the frames (specs/face.md rules 33-35, and the
+// 2026-08-30 amendment). The shared FaceCard module carries the mechanics —
+// manifest frames, automatic expression, real-clip mouth motion, the
+// remembered three-step size; THIS page keeps the policy: the pause
+// expression stays the local truth and the caption uses only allowlisted
+// facts already on the HUD.
+let gameActivity = "at the game", faceSpeaking = false;
+function updatePresence() {
+  presenceState.textContent = (running ? gameActivity : "spectator paused")
+    + (faceSpeaking ? " · speaking" : "");
+}
+const faceCard = window.FaceCard && FaceCard.init({
+  root: portrait,
+  routes: {
+    manifest: "/openrsc/face/manifest.json",
+    state: "/openrsc/face/state",
+    asset: id => "/openrsc/face/asset/" + encodeURIComponent(id),
+  },
+  fetchOpts: {cache: "no-store", credentials: "same-origin"},
+  sizeKey: "deskcrab-face-size-openrsc",
+  sizes: ["compact", "medium", "large"],
+  defaultSize: "medium",
+  sizeButton: document.getElementById("face-size"),
+  onState(st) {
+    faceSpeaking = !!(st && st.speaking);
+    updatePresence();
+  },
+});
+
+pause.addEventListener("click", () => {
+  running = !running;
+  pause.textContent = running ? "Pause" : "Resume";
+  portrait.classList.toggle("paused", !running);
+  if (faceCard) faceCard.setHint(running ? null : "attentive");
+  presenceState.textContent = running ? "returning to the game" : "spectator paused";
+  if (!running) {
+    if (frameAbort) frameAbort.abort();
+    notice.textContent = "Spectator paused";
+    notice.classList.remove("hidden");
+  } else {
+    startFrameLoop();
+  }
+});
+document.getElementById("fullscreen").addEventListener("click", () => {
+  if (document.fullscreenElement) document.exitFullscreen();
+  else screen.requestFullscreen().catch(() => {});
+});
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) {
+    if (frameAbort) frameAbort.abort();
+  } else if (running) startFrameLoop();
+});
+window.addEventListener("resize", updatePointer);
+document.addEventListener("fullscreenchange", updatePointer);
+setInterval(() => { if (!document.hidden) refreshState(); }, 1000);
+refreshState();
+startFrameLoop();
+if ("serviceWorker" in navigator)
+  navigator.serviceWorker.register("/openrsc/sw.js", {scope: "/openrsc/"})
+    .catch(() => {});
+</script>
+</body>
+</html>

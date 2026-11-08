@@ -1,0 +1,963 @@
+#!/usr/bin/env bash
+# night-work — the night spends itself on the owed work.
+#
+# Part of sleep, run after the stamp, the review and the promise sweep, as
+# the night's last phase (specs/nightly.md rules 54-61). The owed work
+# accumulates faster than waking hours spend it, and the stretch between the
+# night's stamp and the morning is machine time nobody is using. This turns
+# that stretch into builders: each round, the QUEUED briefs the daytime
+# dispatch policy shelved (specs/jobs.md rules 30-34) go out first, oldest
+# first, through `crab job dispatch` — already-written work, no model call —
+# and then one model call reads the LIVE open
+# engineering records (rule 58c: the records drawer `crab eng` keeps, state
+# open, newest-touched first — never the frozen pre-records archive, which
+# is closed by construction and bought already-finished work four nights
+# over), the promise sweep's genuine end-of-day misses, and
+# the wake queue's pending reasons — the whole owed-work shelf (rule 58b) —
+# beside the job list and the night's own ledger, picks what is GENUINELY
+# actionable without the user's voice in the room — never a note, never
+# settled work, never a duplicate of a job running or already dispatched —
+# and writes a self-contained brief per pick — from each record as it
+# CURRENTLY instructs (`lib/eng current`, rule 58c: a paragraph an amendment
+# retired is a stub, never a live instruction), and a brief that cites a
+# record is held against the record's newest state at the door (rule 60b: a
+# record that moved since composition makes the brief stale and re-judged; a
+# brief quoting a retired sentence is refused). Each brief goes
+# through the job door (`crab job`), never around it, so every builder
+# carries the whole jobs contract. Then the night waits, re-reads what is
+# still open, and goes again — for hours, until the wall-clock cutoff, at
+# which point
+# dispatch stops, in-flight builders are left to finish, and the sleep
+# pipeline carries on so the night ends idle and available. Sleeping is an
+# active activity, the user's own design: reading the day and then idling
+# until morning is not it.
+#
+#   night-work run     take up the owed work until the cutoff, the cap permitting
+#
+# Every failure path exits 0 with a trace line on stdout (the night's log):
+# a broken night's work costs only itself, never the night.
+#
+# Knobs, environment or deskcrab.conf (this file sources lib/common.sh):
+#   NIGHT_WORK=0                 switch the phase off
+#   NIGHT_WORK_CUTOFF=06:00      local wall clock, the user's hard line;
+#                                   no new dispatch at or past it, re-checked
+#                                   before every dispatch ("@<epoch>" is the
+#                                   test's spelling)
+#   NIGHT_WORK_CAP=2             max concurrent jobs (dispatched or
+#                                   running), counting everyone's — two is
+#                                   the user's standing overnight ceiling
+#                                   (2026-08-11): eight at once burned two
+#                                   logins inside an hour
+#   NIGHT_WORK_POLL=300          seconds between rounds
+#   NIGHT_WORK_WINDOW_MAX=21600  a start further than this from the next
+#                                   cutoff takes up nothing (the noon catch-up)
+#   NIGHT_WORK_ROUNDS_MAX=0      0 = rounds bounded by the cutoff alone
+#   NIGHT_WORK_MODEL=gpt-5.6-sol the selector — picking work is judgement,
+#                                   and every sleep judgment is the night
+#                                   judge's (specs/nightly.md rules 14c-14e);
+#                                   no fallback model may select in its place
+#   NIGHT_WORK_EFFORT=high       the judge's reasoning effort
+#   NIGHT_WORK_TIMEOUT=600       seconds per selection call
+#   NIGHT_WORK_THREADS_DIR / _RECORDS_DIR / _LEDGER   the material paths
+#                                   (_RECORDS_DIR: the live records drawer,
+#                                   default $NIGHT_WORK_THREADS_DIR/records)
+#   DESKCRAB_NO_DISPATCH=1          dry-run: real selection, nothing started,
+#                                   no ledger written (rule 61)
+set -uo pipefail
+
+# readlink -f before dirname, or the deployed symlink's logical `..` walks
+# into ~/.local/lib and sources a lib/common.sh that does not exist
+# (specs/nightly.md rule 6a; dead in production until 2026-08-11).
+SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/.." && pwd)"
+# shellcheck source=common.sh
+. "$SCRIPT_DIR/lib/common.sh"
+
+DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/deskcrab"
+# The live shelf (rule 58c). The old THREADS_FILE (engineering.md) and the
+# drawer's OPEN.md/INDEX.md are the frozen pre-records archive — read-only
+# history in which everything is closed by construction — and they are
+# CLOSED to the selector: shopping from them bought already-finished work
+# on four separate nights (2026-08-15 to 08-17, the record
+# the-nightly-drain-shops-from-the-frozen-archive). An archive item a hand
+# judges still owed is migrated to a live record, never re-fed to the drain.
+THREADS_DIR="${NIGHT_WORK_THREADS_DIR:-$DATA_DIR/engineering}"
+RECORDS_DIR="${NIGHT_WORK_RECORDS_DIR:-$THREADS_DIR/records}"
+LEDGER="${NIGHT_WORK_LEDGER:-$DATA_DIR/night-work/dispatched.tsv}"
+CUTOFF_SPEC="${NIGHT_WORK_CUTOFF:-06:00}"
+CAP="${NIGHT_WORK_CAP:-2}"
+POLL="${NIGHT_WORK_POLL:-300}"
+WINDOW_MAX="${NIGHT_WORK_WINDOW_MAX:-21600}"
+ROUNDS_MAX="${NIGHT_WORK_ROUNDS_MAX:-0}"
+# Defaults from the night's one judge (nightly.md rule 14c-i); this pair
+# overrides it for work selection alone.
+NIGHT_WORK_MODEL="${NIGHT_WORK_MODEL:-${NIGHT_JUDGE_MODEL:-gpt-5.6-sol}}"
+NIGHT_WORK_EFFORT="${NIGHT_WORK_EFFORT:-${NIGHT_JUDGE_EFFORT:-high}}"
+CRAB="${CRAB_BIN:-$SCRIPT_DIR/crab}"
+CLAUDE_BIN="${CLAUDE_BIN:-$(command -v claude 2>/dev/null || echo "$HOME/.local/bin/claude")}"
+
+# The account log names the path that recorded each refusal
+# (specs/account-fallback.md rule 11) — the night's classifies are their own
+# kind, never a defaulted "session". Not exported: nothing dispatched from
+# here should inherit it.
+SESSION_KIND=night-work
+
+say() { printf 'night-work: %s\n' "$1"; }
+
+# Rule 58a's second half: a cut that actually happens is announced. The byte
+# bound on each section of the selector's material is design, but a trim
+# nobody can see is silent truncation — the thing the standing rule forbids
+# everywhere (specs/prompt-assembly.md rule 36 is the same rule at the
+# prompt's own scale). A section that outgrew its budget is named on the
+# night log at the moment it is bounded: which section, its true size in
+# bytes, and the budget it was cut to. A section inside its budget passes
+# without a word, and a missing file is an empty section, never an over-run.
+section_overrun() {  # <section name> <true bytes> <budget bytes>
+    [ "$2" -gt "$3" ] 2>/dev/null || return 0
+    say "round ${ROUNDS:-0}: the $1 outgrew its budget — $2 bytes against $3, cut to the budget on a character boundary (rule 58a)"
+}
+
+# Rule 60a's resolver: the workdir a selection dispatch defaults to when the
+# selector supplies none. The deployed symlink (~/.local/lib/deskcrab, rule
+# 6a) points into the checkout's lib/, so its parent IS the repo root — the
+# exact walk a builder had to perform by hand on 2026-08-15 after its job was
+# dispatched into sleep's own cwd. When the symlink is missing or its parent
+# holds no .git, this script's own checkout stands in (SCRIPT_DIR is already
+# resolved through readlink -f above). Prints the root and returns 0, or
+# prints nothing and returns 1 — the caller's git verification is the final
+# gate either way.
+night_default_workdir() {
+    local lnk root
+    if lnk="$(readlink -f "$HOME/.local/lib/deskcrab" 2>/dev/null)" \
+        && [ -n "$lnk" ] && [ -d "$lnk" ]; then
+        root="$(dirname "$lnk")"
+        if [ -e "$root/.git" ]; then printf '%s' "$root"; return 0; fi
+    fi
+    if [ -e "$SCRIPT_DIR/.git" ]; then printf '%s' "$SCRIPT_DIR"; return 0; fi
+    return 1
+}
+
+# One selection question to the NIGHT JUDGE — the one shared walk of
+# specs/nightly.md rules 14c-14e, sourced, never re-implemented. No fallback
+# model: a round the judge cannot answer selects nothing, because picking the
+# night's work is exactly the judgment no cheaper model may make.
+# shellcheck source=nightly-judge
+. "$LIB_DIR/nightly-judge"
+classify_walk() {  # <verdict-line-ERE>
+    nightly_judge_walk "$NIGHT_WORK_MODEL" "$NIGHT_WORK_EFFORT" \
+        "${NIGHT_WORK_TIMEOUT:-600}" night-work "$1"
+}
+
+running_jobs() {  # every sidecar standing dispatched or running — the whole box's, not ours
+    # dispatched counts (nightly.md rule 57): a builder between the dispatch
+    # call and its worker's first write already holds a slot and an account,
+    # and a count blind to it overshot the cap in exactly the window where
+    # one round's dispatches had not yet spoken as the next round counted.
+    local f s n=0
+    for f in "$JOBS_DIR"/*.json; do
+        [ -e "$f" ] || continue
+        s="$("$SCRIPT_DIR/lib/job-status" get "$f" state 2>/dev/null)"
+        case "$s" in dispatched|running) n=$(( n + 1 )) ;; esac
+    done
+    printf '%s' "$n"
+}
+
+job_state() {  # <job id> — the sidecar's state now, or `missing`
+    local s=""
+    [ -f "$JOBS_DIR/$1.json" ] \
+        && s="$("$SCRIPT_DIR/lib/job-status" get "$JOBS_DIR/$1.json" state 2>/dev/null)"
+    printf '%s' "${s:-missing}"
+}
+
+# The records that a job standing queued, dispatched or running was sent
+# against (its sidecar's `record`, jobs.md rule 7b), however it was sent —
+# the night's own picks and a daytime `crab job --record` alike. One line
+# each, for ACTIVE_RECORDS.
+active_records() {
+    python3 -I - "$JOBS_DIR" <<'PY'
+import glob, json, os, sys
+for f in glob.glob(os.path.join(sys.argv[1], "*.json")):
+    try:
+        with open(f) as fh:
+            j = json.load(fh)
+    except (OSError, ValueError):
+        continue
+    if j.get("state") in ("queued", "dispatched", "running") and j.get("record"):
+        print(j["record"])
+PY
+}
+
+# Rule 59 for one open record: excluded (status 0) while the work bought for
+# it can still land — dispatched tonight (by this run, or on the ledger under
+# tonight's date, so a restarted night never buys it twice), a ledgered job
+# still queued, dispatched or running, or any such job carrying the record.
+# Anything else is open work again. Leaves the record's earlier dispatches,
+# one line each, in RECORD_PRIOR for rule 58c's header.
+record_excluded() {  # <record id>
+    local rid="$1" night key jid title st hit=1 today
+    RECORD_PRIOR=""
+    today="$(date +%F)"
+    case " $TONIGHT_KEYS " in *" $rid "*) hit=0 ;; esac
+    case " $ACTIVE_RECORDS " in *" $rid "*) hit=0 ;; esac
+    [ -f "$LEDGER" ] || return "$hit"
+    while IFS=$'\t' read -r night key jid title; do
+        [ "$key" = "$rid" ] || continue
+        st="$(job_state "$jid")"
+        RECORD_PRIOR="${RECORD_PRIOR}  - night $night: job $jid, now $st
+"
+        [ "$night" = "$today" ] && hit=0
+        case "$st" in queued|dispatched|running) hit=0 ;; esac
+    done < "$LEDGER"
+    return "$hit"
+}
+
+queued_jobs() {  # the queued backlog's ids, oldest first (nightly.md rule 56a)
+    local f id qe
+    for f in "$JOBS_DIR"/*.json; do
+        [ -e "$f" ] || continue
+        [ "$("$SCRIPT_DIR/lib/job-status" get "$f" state 2>/dev/null)" = queued ] || continue
+        id="$("$SCRIPT_DIR/lib/job-status" get "$f" id 2>/dev/null)"
+        [ -n "$id" ] || continue
+        qe="$("$SCRIPT_DIR/lib/job-status" get "$f" queued_epoch 2>/dev/null)"
+        case "$qe" in ''|*[!0-9]*) qe=0 ;; esac
+        printf '%s\t%s\n' "$qe" "$id"
+    done | sort -n | cut -f2
+}
+
+cmd_run() {
+    if [ "${NIGHT_WORK:-1}" != 1 ]; then
+        say "off (NIGHT_WORK=${NIGHT_WORK:-})"; return 0
+    fi
+    # The judge's own engine binary, by the model name (specs/nightly.md rule
+    # 14c; model-backends rule 1). Existence only — a cooling codex engine
+    # still runs the queue phase, and each round's failed selection says so
+    # in the walk's own name (rule 14e).
+    case "$(model_backend "$NIGHT_WORK_MODEL")" in
+        codex)
+            if ! [ -x "$CODEX_BIN" ] && ! command -v "$CODEX_BIN" >/dev/null 2>&1; then
+                say "no codex binary for the night judge ($NIGHT_WORK_MODEL) — nothing selected, nothing dispatched"
+                return 0
+            fi ;;
+        *)
+            if [ ! -x "$CLAUDE_BIN" ]; then
+                say "no claude binary — nothing selected, nothing dispatched"; return 0
+            fi ;;
+    esac
+
+    # One-time move of the durable ledger: this mechanism was called the
+    # backlog drain until 2026-08-20, and its dispatch record lived under
+    # that name. The picks on it are what keeps rule 59's dedup honest
+    # across the rename, so the file moves rather than starting over —
+    # declared here (rule 6), once; after the first night this runs, the
+    # legacy path is gone and this block never speaks again. The literal
+    # old name below is deliberate: it is the only way to find the file
+    # the old code wrote.
+    local LEGACY_LEDGER="$DATA_DIR/backlog-drain/dispatched.tsv"
+    if [ ! -e "$LEDGER" ] && [ -f "$LEGACY_LEDGER" ]; then
+        mkdir -p "$(dirname "$LEDGER")"
+        touch_suppress "$(dirname "$LEDGER")" 2>/dev/null
+        if mv "$LEGACY_LEDGER" "$LEDGER" 2>/dev/null; then
+            say "the dispatch ledger moved from the mechanism's old name — $LEGACY_LEDGER -> $LEDGER, records intact"
+            rmdir "$(dirname "$LEGACY_LEDGER")" 2>/dev/null
+        else
+            say "the ledger at $LEGACY_LEDGER could not be moved to $LEDGER — tonight judges from a fresh ledger"
+        fi
+    fi
+    # No selection material is not "nothing to take up": the queued backlog
+    # is the night's FIRST material (nightly.md rule 56a), and it exists
+    # whether or not a single engineering thread does. This used to return
+    # here, and the shelved briefs of an instance with no threads file waited
+    # for a night that never worked them. Selection is switched off; the
+    # night still takes up the queue.
+    local NO_THREADS=""
+    if [ ! -d "$RECORDS_DIR" ]; then
+        NO_THREADS=1
+        say "no engineering threads — selection is off; the night still takes up the queued backlog"
+    fi
+
+    local NOW CUTOFF
+    NOW="$(date +%s)"
+    case "$CUTOFF_SPEC" in
+        @*) CUTOFF="${CUTOFF_SPEC#@}"
+            case "$CUTOFF" in ''|*[!0-9]*)
+                say "cannot parse NIGHT_WORK_CUTOFF '$CUTOFF_SPEC'"; return 2 ;;
+            esac ;;
+        *)  if ! CUTOFF="$(date -d "today $CUTOFF_SPEC" +%s 2>/dev/null)"; then
+                say "cannot parse NIGHT_WORK_CUTOFF '$CUTOFF_SPEC'"; return 2
+            fi
+            # The cutoff names a time of night, and sleep starts before it:
+            # 03:10 against an 04:00 cutoff is today, 23:50 against it is
+            # tomorrow. `date -d tomorrow`, not +86400: DST nights are why.
+            [ "$CUTOFF" -le "$NOW" ] \
+                && CUTOFF="$(date -d "tomorrow $CUTOFF_SPEC" +%s 2>/dev/null)"
+            ;;
+    esac
+
+    # The daylight guard (rule 56): Persistent=true means a machine that was
+    # off at 03:10 sleeps at noon, and a noon round of builders would fill
+    # the day's working hours. A caught-up night still sleeps; it does not
+    # take up the backlog.
+    if [ $(( CUTOFF - NOW )) -gt "$WINDOW_MAX" ]; then
+        say "next cutoff ($CUTOFF_SPEC) is $(( (CUTOFF - NOW) / 60 )) min away — outside the ${WINDOW_MAX}s night-work window; a daylight catch-up takes up nothing"
+        return 0
+    fi
+
+    local DRY=""
+    [ -n "${DESKCRAB_NO_DISPATCH:-}" ] && DRY=1 && say "dry-run (DESKCRAB_NO_DISPATCH) — selection is real, dispatch and the ledger are not"
+
+    local WORK; WORK="$(mktemp -d "${TMPDIR:-/tmp}/deskcrab-night-work-XXXXXX")"
+    # shellcheck disable=SC2064
+    trap "rm -rf '$WORK'" EXIT
+
+    # Rule 58's walk: the records judged so far this pass, whether this
+    # pass has bought anything (a pass that did starts the next one), the
+    # record keys dispatched tonight (rule 59), and SELECTION_DONE once a
+    # whole pass found nothing — after that only the queue runs.
+    local ROUNDS=0 DISPATCHED=0 OUR_IDS="" REASON="" SKIP_QUEUED=""
+    local JUDGED="" PASS_PICKS=0 PASS_CALLS=0 TONIGHT_KEYS="" SELECTION_DONE=""
+    while :; do
+        NOW="$(date +%s)"
+        if [ "$NOW" -ge "$CUTOFF" ]; then
+            REASON="the cutoff ($CUTOFF_SPEC) — in-flight builders finish on their own"
+            break
+        fi
+        if [ "$ROUNDS_MAX" -gt 0 ] 2>/dev/null && [ "$ROUNDS" -ge "$ROUNDS_MAX" ]; then
+            REASON="the round cap (NIGHT_WORK_ROUNDS_MAX=$ROUNDS_MAX)"
+            break
+        fi
+        ROUNDS=$(( ROUNDS + 1 ))
+
+        # `crab jobs` first — the reporting path reaps hard-killed workers,
+        # so the count below is of jobs actually running — and its text is
+        # the duplicate-evidence the selector reads.
+        local JOBS_RAW JOBS_TEXT RUNNING FREE
+        JOBS_RAW="$("$CRAB" jobs 2>/dev/null)"
+        section_overrun "job list" "$(printf '%s' "$JOBS_RAW" | wc -c)" 6000
+        JOBS_TEXT="$(printf '%s' "$JOBS_RAW" | utf8_head 6000)"
+        RUNNING="$(running_jobs)"
+        FREE=$(( CAP - RUNNING ))
+        if [ "$FREE" -le 0 ]; then
+            say "round $ROUNDS: cap full ($RUNNING running, cap $CAP) — waiting"
+            local S=$(( CUTOFF - NOW )); [ "$S" -gt "$POLL" ] && S="$POLL"
+            [ "$S" -lt 1 ] && S=1
+            sleep "$S"
+            continue
+        fi
+
+        # The queued backlog goes first (nightly.md rule 56a): the briefs the
+        # daytime policy shelved are already-written work — no model call, no
+        # judgement to buy — so they spend the night's slots before the
+        # selector is asked to invent anything. Oldest first, through the
+        # door and never around it, DESKCRAB_JOB_NIGHT open so the door knows
+        # the window (jobs.md rule 31), the cutoff re-checked before EVERY
+        # dispatch (rule 56: a dispatch a minute past the line is a dispatch
+        # past the line). A refusal that is not the block marker skips the
+        # brief for the rest of the night — never a retry loop — and the
+        # block marker ends the night for everyone.
+        local SENT_THIS_ROUND=0 BLOCKED="" CUTOFF_HIT="" QID QOUT QRC
+        for QID in $(queued_jobs); do
+            [ "$FREE" -le 0 ] && break
+            case " $SKIP_QUEUED " in *" $QID "*) continue ;; esac
+            if [ "$(date +%s)" -ge "$CUTOFF" ]; then CUTOFF_HIT=1; break; fi
+            if [ -n "$DRY" ]; then
+                say "round $ROUNDS: would dispatch queued job '$QID'"
+                SKIP_QUEUED="$SKIP_QUEUED $QID"
+                SENT_THIS_ROUND=$(( SENT_THIS_ROUND + 1 ))
+                DISPATCHED=$(( DISPATCHED + 1 ))
+                FREE=$(( FREE - 1 ))
+                continue
+            fi
+            QOUT="$(DESKCRAB_JOB_NIGHT=1 "$CRAB" job dispatch "$QID" 2>&1)"; QRC=$?
+            if [ "$QRC" -ne 0 ]; then
+                case "$QOUT" in
+                    *"the last job never began"*)
+                        say "the job door is blocked — ${QOUT%%$'\n'*}"
+                        BLOCKED=1; break ;;
+                    *)  say "round $ROUNDS: queued job '$QID' refused — ${QOUT%%$'\n'*} — skipped for the night"
+                        SKIP_QUEUED="$SKIP_QUEUED $QID"
+                        continue ;;
+                esac
+            fi
+            say "round $ROUNDS: dispatched queued job '$QID'"
+            OUR_IDS="$OUR_IDS $QID"
+            SENT_THIS_ROUND=$(( SENT_THIS_ROUND + 1 ))
+            DISPATCHED=$(( DISPATCHED + 1 ))
+            FREE=$(( FREE - 1 ))
+        done
+        if [ -n "$BLOCKED" ]; then
+            REASON="the job door's block marker — no builder can begin, so none is asked to"
+            break
+        fi
+        if [ -n "$CUTOFF_HIT" ]; then
+            REASON="the cutoff ($CUTOFF_SPEC) — in-flight builders finish on their own"
+            break
+        fi
+        if [ "$FREE" -le 0 ]; then
+            # The queue filled the slate; selection waits for the next round.
+            NOW="$(date +%s)"
+            local S=$(( CUTOFF - NOW )); [ "$S" -gt "$POLL" ] && S="$POLL"
+            [ "$S" -lt 1 ] && S=1
+            sleep "$S"
+            continue
+        fi
+
+        # No engineering threads: the queued phase above was the whole round
+        # (rule 56a) — a selector with nothing to read is not called, so no
+        # model tokens are spent inventing work from an empty shelf. The
+        # night ends when the queue is dry and nothing of tonight's is still
+        # running.
+        if [ -n "$NO_THREADS" ] || [ -n "$SELECTION_DONE" ]; then
+            if [ "$SENT_THIS_ROUND" -eq 0 ]; then
+                local ID ANY=""
+                for ID in $OUR_IDS; do
+                    [ "$("$SCRIPT_DIR/lib/job-status" get "$JOBS_DIR/$ID.json" state 2>/dev/null)" = running ] \
+                        && ANY=1 && break
+                done
+                if [ -z "$ANY" ]; then
+                    if [ -n "$SELECTION_DONE" ]; then
+                        REASON="every open record was judged tonight and nothing more is actionable — the queue is dry and nothing of tonight's is still running"
+                    else
+                        REASON="the queue is dry and there are no engineering threads to select from"
+                    fi
+                    break
+                fi
+            fi
+            NOW="$(date +%s)"
+            local S=$(( CUTOFF - NOW )); [ "$S" -gt "$POLL" ] && S="$POLL"
+            [ "$S" -lt 1 ] && S=1
+            sleep "$S"
+            continue
+        fi
+
+        # The live shelf (rule 58c): the open records, whole — front matter
+        # and body, so the selector reads each record's state with its own
+        # eyes — newest-touched first, the order `eng list --state open`
+        # already produces. lib/eng is the one parser of record front
+        # matter; nothing here re-implements it. utf8_head, never a bare
+        # `head -c`, for every cut — a byte cut through a multibyte
+        # character would hand the selector and the night's stream log
+        # invalid UTF-8 (rule 58a; the wake ledger's incident, in prompt
+        # form). And a cut that actually happens says so on the night log
+        # first: the bound is design, a cut nobody can see is not (rule
+        # 58a's second half). A record past the total budget is never
+        # silently dropped: it rides its one-line list entry in the
+        # overflow section, still live, still selectable.
+        local RECORDS_TEXT OVERFLOW LIST_RAW LEDGER_TAIL
+        local RID RF RB TAKE BUDGET_LEFT=24000 INCLUDED=0 CLIPPED=0
+        local OPEN_KEYS="" ELIGIBLE="" UNJUDGED="" BATCH_KEYS="" EXCLUDED_KEYS="" NEXCL=0
+        local ACTIVE_RECORDS
+        ACTIVE_RECORDS="$(active_records | tr '\n' ' ')"
+        RECORDS_TEXT="" OVERFLOW=""
+        if ! LIST_RAW="$(DESKCRAB_ENG_DIR="$RECORDS_DIR" \
+                "$SCRIPT_DIR/lib/eng" list --state open 2>/dev/null)"; then
+            # Rule 58b's discipline: an unreadable section is presented AS
+            # unreadable, never silently omitted.
+            say "round $ROUNDS: the open records could not be read — the selector is told so"
+            RECORDS_TEXT="(the open records could not be read tonight — judging from less than the whole shelf)"
+            OVERFLOW="(unknown tonight)"
+            LIST_RAW=""
+        fi
+        # Rule 59, applied before the judge is called: a record whose
+        # ledgered work can still land never reaches the prompt. The judge is
+        # never left to infer an exclusion from a view of the ledger — a
+        # ledger tail that hid older rows is how one record already ledgered
+        # was picked, refused and called a dry backlog round after round.
+        for RID in $(printf '%s\n' "$LIST_RAW" \
+                | sed -n 's/.* \[\([a-z0-9-]\{1,\}\)\] — opened .*/\1/p'); do
+            [ -f "$RECORDS_DIR/$RID.md" ] || continue
+            OPEN_KEYS="$OPEN_KEYS $RID"
+            if record_excluded "$RID"; then
+                EXCLUDED_KEYS="$EXCLUDED_KEYS $RID"; NEXCL=$(( NEXCL + 1 ))
+                continue
+            fi
+            ELIGIBLE="$ELIGIBLE $RID"
+            case " $JUDGED " in *" $RID "*) ;; *) UNJUDGED="$UNJUDGED $RID" ;; esac
+        done
+        [ "$NEXCL" -gt 0 ] && say "round $ROUNDS: $NEXCL open record(s) left out while their ledgered work can still land (rule 59):$EXCLUDED_KEYS"
+        # Rule 58's walk. Every eligible record judged and this pass bought
+        # something: the backlog moved, so a fresh pass begins. Every one
+        # judged, at least one call made, and nothing bought: selection is
+        # finished for the night. (A pass with no eligible record still makes
+        # its one call — the promises and wakes ride it.)
+        if [ -z "$UNJUDGED" ] && [ "$PASS_CALLS" -gt 0 ]; then
+            if [ "$PASS_PICKS" -gt 0 ]; then
+                JUDGED="" PASS_PICKS=0 PASS_CALLS=0 UNJUDGED="$ELIGIBLE"
+                say "round $ROUNDS: the whole shelf was judged and the pass bought work — a fresh pass begins"
+            else
+                SELECTION_DONE=1
+                say "round $ROUNDS: every eligible open record has been judged tonight and the last pass picked nothing — selection is finished; the queue still runs"
+                continue
+            fi
+        fi
+        for RID in $UNJUDGED; do
+            RF="$RECORDS_DIR/$RID.md"
+            # The record as it CURRENTLY instructs (rule 58c; records rule
+            # 9a): lib/eng's own rendering, a retired paragraph standing as
+            # its stub so the retired words never enter the prompt, and a
+            # record with nothing superseded byte for byte its file. The
+            # view is KEPT, per record, under the work dir: rule 60b holds
+            # the brief against a fresh rendering at the door, and this is
+            # the one it was composed from. A record the tool cannot render
+            # rides as its raw file, exactly as before.
+            CF="$WORK/composed-$RID.md"
+            if ! DESKCRAB_ENG_DIR="$RECORDS_DIR" "$SCRIPT_DIR/lib/eng" current "$RID" \
+                    > "$CF" 2>/dev/null; then
+                cp -f "$RF" "$CF" 2>/dev/null || : > "$CF"
+            fi
+            RB="$(wc -c < "$CF" 2>/dev/null)"
+            # An unreadable record still takes its place in a batch, so the
+            # walk always moves and the judge sees it as it is.
+            case "$RB" in ''|*[!0-9]*|0) RB=1 ;; esac
+            # A record rides at its own size up to the per-record budget. One
+            # that no longer fits what is left of the batch waits for the
+            # next batch whole, rather than riding cut to a sliver of itself;
+            # only the first record of a batch is ever cut to fit.
+            TAKE=6000
+            [ "$RB" -lt "$TAKE" ] 2>/dev/null && TAKE="$RB"
+            if [ "$TAKE" -gt "$BUDGET_LEFT" ] && [ "$INCLUDED" -gt 0 ]; then
+                TAKE=0
+            fi
+            [ "$TAKE" -gt "$BUDGET_LEFT" ] && TAKE="$BUDGET_LEFT"
+            if [ "$TAKE" -le 0 ]; then
+                CLIPPED=$(( CLIPPED + 1 ))
+                OVERFLOW="$OVERFLOW$(printf '%s\n' "$LIST_RAW" | grep -F -- "[$RID]" | head -1)
+"
+                continue
+            fi
+            record_excluded "$RID"
+            section_overrun "open record '$RID'" "$RB" "$TAKE"
+            RECORDS_TEXT="$RECORDS_TEXT--- $RID ---
+${RECORD_PRIOR:+(earlier nights already dispatched builders for this record — judge whether revised work is owed, never the same work again:
+$RECORD_PRIOR)
+}$(utf8_head "$TAKE" "$CF" 2>/dev/null)
+
+"
+            INCLUDED=$(( INCLUDED + 1 ))
+            BATCH_KEYS="$BATCH_KEYS $RID"
+            BUDGET_LEFT=$(( BUDGET_LEFT - TAKE ))
+        done
+        JUDGED="$JUDGED$BATCH_KEYS"
+        say "round $ROUNDS: judging $INCLUDED open record(s) in this batch; $CLIPPED more wait for a later batch tonight (rule 58)"
+        if [ "$CLIPPED" -gt 0 ]; then
+            say "round $ROUNDS: the open records outgrew the 24000-byte batch — the $INCLUDED next unjudged are in, $CLIPPED more on their list lines only (rule 58a)"
+        fi
+        [ -n "$RECORDS_TEXT" ] || RECORDS_TEXT="(no open records — the live shelf is empty tonight)"
+        # 24000, not less: the live drawer holds sixty open records tonight
+        # and a real one-liner measured ~285 bytes, so anything smaller cuts
+        # open records out of the selector's sight — invisible open work,
+        # the very defect rule 58c exists to close. The cut past it is
+        # announced, as ever.
+        section_overrun "overflow list" "$(printf '%s' "$OVERFLOW" | wc -c)" 24000
+        OVERFLOW="$(printf '%s' "$OVERFLOW" | utf8_head 24000)"
+        [ -n "$OVERFLOW" ] || OVERFLOW="(none — every unjudged open record is above in full)"
+        # Rule 59 for the other sources: their keys are the judge's own, so
+        # the whole ledger is their dedupe, and the selector sees every such
+        # key — not a tail that hides the older rows. Record keys are left
+        # out: their exclusion is already applied above.
+        LEDGER_TAIL="$(awk -F'\t' -v open="$OPEN_KEYS" '
+            BEGIN { n = split(open, o, " "); for (i = 1; i <= n; i++) rec[o[i]] = 1 }
+            !($2 in rec) && !seen[$2]++ { print $1 "\t" $2 "\t" $3 "\t" $4 }' \
+            "$LEDGER" 2>/dev/null)"
+        [ -n "$LEDGER_TAIL" ] || LEDGER_TAIL="(none yet)"
+
+        # The rest of the owed-work shelf (rule 58b). The sweep's genuine
+        # end-of-day misses — its `type: sweep` records, never the live
+        # checker's raw catches, which run heavily false — and among them
+        # only the UNRESOLVED: a row a `sweep-resolution` row has answered
+        # (rule 53f — fulfilled, struck, or booked alike) is settled debt,
+        # and before this exclusion every recent raw row stayed eligible for
+        # redispatch until it aged out, fifty reconciled misses among them
+        # (the record the-end-of-day-promise-sweep-calls-existing-arte). The
+        # identity walk is lib/promise_ledger.py's, the one reader; the count
+        # of resolved rows excluded is stated in the section itself, never
+        # silently dropped. And the pending wake reasons, where owed work
+        # sits waiting for a live turn that cannot commit to the repository
+        # anyway. Either section failing to read is presented AS unreadable
+        # and named on the night log, never silently omitted: the selector
+        # must know it judges from less than the whole shelf.
+        local OWED PENDING
+        if ! OWED="$(python3 - "$PROMISE_LEDGER" "$LIB_DIR" 2>/dev/null <<'PY'
+import os, sys, time
+path, libdir = sys.argv[1], sys.argv[2]
+sys.path.insert(0, libdir)
+from promise_ledger import read_rows, owed
+cut = time.time() - 3 * 86400
+try:
+    ledger_rows = read_rows(path)
+except OSError:
+    if os.path.exists(path):
+        print("(the promise ledger could not be read tonight — judging from less than the whole shelf)")
+    else:
+        print("(no promise ledger yet)")
+    sys.exit(0)
+owed_rows, resolved_n = owed(ledger_rows, cut)
+rows = []
+for d in owed_rows:
+    promise = " ".join(str(d.get("promise", "?")).split())[:300]
+    why = " ".join(str(d.get("why", "")).split())[:200]
+    if d.get("origin_day"):
+        # A fallen-due miss (nightly.md rule 53l): promised on an earlier day
+        # for the swept one, and that day's record never showed it done.
+        rows.append("- [%s, said %s at %s for %s] \"%s\" — %s"
+                    % (d.get("day", "?"), d.get("origin_day"), d.get("said_at", "?"),
+                       d.get("due", "?"), promise, why))
+    else:
+        rows.append("- [%s, said at %s] \"%s\" — %s"
+                    % (d.get("day", "?"), d.get("said_at", "?"), promise, why))
+rows = rows[-20:]
+if resolved_n:
+    rows.append("(%d swept miss(es) from these nights already resolved — "
+                "fulfilled, struck, or booked — and off the shelf)" % resolved_n)
+print("\n".join(rows) if rows else "(no swept misses on the ledger)")
+PY
+)"; then
+            OWED="(the promise ledger could not be read tonight — judging from less than the whole shelf)"
+        fi
+        case "$OWED" in
+            "(the promise ledger could not be read"*)
+                say "round $ROUNDS: the promise ledger could not be read — the selector is told so" ;;
+        esac
+        PENDING=""
+        local WF PN=0
+        for WF in "$WAKES_DIR"/*.wake; do
+            [ -e "$WF" ] || continue
+            wake_record_read "$WF" || continue
+            [ "$PN" -ge 20 ] && { PENDING="$PENDING
+  (…more pending wakes clipped)"; break; }
+            PN=$(( PN + 1 ))
+            PENDING="$PENDING
+- [fires $(date -d "@$WK_FIRE" '+%F %H:%M' 2>/dev/null || echo '?'), booked by $WK_BOOKED_BY] $(utf8_trim "$WK_REASON" 300)"
+        done
+        [ -n "$PENDING" ] || PENDING="
+(nothing is on the books)"
+
+        local PROMPT="You do the night's work of a desktop assistant: while she
+sleeps, her open owed work becomes detached builder jobs. Below is the whole
+shelf, and every part of it is LIVE: her open engineering records — one
+stateful record per thread, front matter and all, newest-touched first —
+this call's batch of them; the open records whose bodies wait for a later
+batch tonight are listed by one line, and are judged in their own batch —
+then the promises the night sweep found genuinely missed at end
+of day, and the wakes already on the books (owed work often parks there —
+and a live waked session cannot commit to her own repository, so
+builder-shaped work on a wake otherwise waits forever). Nothing outside
+these sections is on the shelf: her frozen pre-records archive is closed to
+this selection because everything in it is history. Then
+the current job list, and the keys of promise and wake picks the night's
+work has ALREADY dispatched on earlier rounds and nights. An open record
+whose dispatched work can still land is not in this material at all.
+
+Each record rides as it CURRENTLY instructs: every entry, newest first, with
+a one-line stub standing wherever an amendment retired a paragraph — the stub
+is history, never an instruction, and the amendment entry governs. Compose a
+brief from the record's current instructions as a whole, never from its
+opening entry alone: the opening entry is the original ask, a later entry
+amends it only where the record marks the amendment, and nothing an amendment
+retired may be asked of the builder.
+
+Pick AT MOST $FREE items, from ANY of those sources, that are genuinely
+actionable engineering work right now — work that needs no conversation and
+no decision from the user — and write a builder's brief for each. Skip,
+without exception:
+- notes, incident write-ups, decisions and diary entries with no work left;
+- anything the material itself records as done, landed, fixed, verified;
+- anything a RUNNING, QUEUED, or recently finished job already covers — match
+  the job list below by substance, not wording; a queued brief dispatches
+  tonight on its own, so selecting its subject buys the same work twice;
+- every promise or wake pick whose key is on the night-work ledger below;
+- any open record from the waiting list: pick only from the records shown in
+  full in this batch;
+- anything that waits on the user's decision or needs his voice in the room,
+  and anything the material says is deliberately parked, held for a quiet
+  moment, or claimed by another hand;
+- any wake whose reason is speaking, awareness, reflection, chess, or a
+  reminder — dispatch a wake's work only when the reason names concrete
+  buildable work a detached builder can finish alone.
+Fewer is better: an unnecessary builder burns a night's tokens. If nothing
+qualifies, answer with the NOTHING line.
+
+Each brief must be fully self-contained — the builder arrives knowing ONLY
+the brief's text. It must name: the repository or directory to work in by
+absolute path (take it from the material), the thread, promise, or wake it
+came from, the concrete work, the constraints the material names, and how
+the builder
+must verify its work before reporting done. Never write a brief that only
+waits on, watches, or coordinates other work: a builder must carry its own
+work. For a pick from the open records, the key slug IS the record's id,
+verbatim. For a pick from the promises or the wakes, invent a short stable
+key slug from its subject, exactly as a record's. Answer in exactly this
+form and nothing else:
+
+TASK: <key-slug> | <absolute workdir, or -> | <one-line title>
+BRIEF:
+<the full brief, as many lines as it needs>
+END
+
+(repeat the TASK/BRIEF/END block per pick, at most $FREE)
+or, when nothing qualifies, exactly:
+NOTHING: <one line saying why>
+
+=== THE OPEN ENGINEERING RECORDS (LIVE — state: open, newest-touched first, each as it currently instructs) ===
+$RECORDS_TEXT
+=== OPEN RECORDS WAITING FOR A LATER BATCH TONIGHT (live; judged in their own batch, not this one) ===
+$OVERFLOW
+
+=== PROMISES THE NIGHT SWEEP FOUND MISSED (recent nights) ===
+$OWED
+
+=== WAKES ALREADY ON THE BOOKS (fire time, booker, reason) ===
+$PENDING
+
+=== THE JOB LIST (running and recently finished) ===
+$JOBS_TEXT
+
+=== PROMISE AND WAKE PICKS ALREADY DISPATCHED BY THE NIGHT'S WORK (night, key, job id, title) ===
+$LEDGER_TAIL"
+
+        local OUT
+        PASS_CALLS=$(( PASS_CALLS + 1 ))
+        if ! OUT="$(printf '%s' "$PROMPT" | classify_walk '^(TASK|NOTHING)\b')"; then
+            REASON="no selection from the night judge ($NIGHT_WORK_MODEL) — nothing more can be judged tonight, and no cheaper model may pick the night's work"
+            break
+        fi
+
+        # Parse the TASK/BRIEF/END blocks into $WORK/<n>.{key,wd,title,brief}.
+        rm -f "$WORK"/*.key "$WORK"/*.wd "$WORK"/*.title "$WORK"/*.brief 2>/dev/null
+        local N=0 INBRIEF=0 LINE REST TKEY TWD TTITLE
+        while IFS= read -r LINE; do
+            case "$LINE" in
+                TASK:*)
+                    N=$(( N + 1 )); INBRIEF=0
+                    REST="${LINE#TASK:}"
+                    IFS='|' read -r TKEY TWD TTITLE <<< "$REST"
+                    # IFS='|' leaves each field padded with the spaces around
+                    # the separators; trim them before the tr below, which
+                    # would otherwise turn them into leading and trailing
+                    # hyphens on the key. (TWD strips all whitespace, TTITLE
+                    # trims its own — only the key needs the guard.)
+                    printf '%s' "$TKEY" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//' \
+                        | tr '[:upper:] ' '[:lower:]-' \
+                        | tr -cd 'a-z0-9-' | head -c 80 > "$WORK/$N.key"
+                    printf '%s' "$TWD" | tr -d ' \t' > "$WORK/$N.wd"
+                    utf8_trim "$(printf '%s' "$TTITLE" | sed 's/^ *//; s/ *$//')" 200 \
+                        > "$WORK/$N.title"
+                    ;;
+                BRIEF:*) INBRIEF=1; : > "$WORK/$N.brief" ;;
+                END)     INBRIEF=0 ;;
+                *)  [ "$INBRIEF" = 1 ] && [ "$N" -gt 0 ] \
+                        && printf '%s\n' "$LINE" >> "$WORK/$N.brief" ;;
+            esac
+        done <<< "$OUT"
+
+        # SENT_THIS_ROUND, BLOCKED and CUTOFF_HIT carry over from the queued
+        # phase above: the cap and the counters are the round's, not the
+        # phase's.
+        local I SEL_SENT=0
+        for I in $(seq 1 "$N"); do
+            [ "$SEL_SENT" -ge "$FREE" ] && break
+            if [ "$(date +%s)" -ge "$CUTOFF" ]; then CUTOFF_HIT=1; break; fi
+            local KEY WD TITLE BRIEF SQUEEZED
+            KEY="$(cat "$WORK/$I.key" 2>/dev/null)"
+            WD="$(cat "$WORK/$I.wd" 2>/dev/null)"
+            TITLE="$(cat "$WORK/$I.title" 2>/dev/null)"
+            BRIEF="$(cat "$WORK/$I.brief" 2>/dev/null)"
+            if [ -z "$KEY" ]; then
+                say "round $ROUNDS: pick $I has no usable thread key — skipped"
+                continue
+            fi
+            # The null-brief guard, held here as well as at the door: a brief
+            # that is empty, null-shaped, or too thin to act on is nobody's
+            # work (rule 60; the door's own guard is the backstop).
+            SQUEEZED="$(printf '%s' "$BRIEF" | tr -d '[:space:]')"
+            case "$SQUEEZED" in
+                ''|null|None|undefined)
+                    say "round $ROUNDS: '$KEY' came back with a null-shaped brief — skipped"
+                    continue ;;
+            esac
+            if [ "${#SQUEEZED}" -lt 80 ]; then
+                say "round $ROUNDS: '$KEY' came back with a brief too thin to act on (${#SQUEEZED} chars) — skipped"
+                continue
+            fi
+            # A record pick must be one this batch showed in full; any
+            # other key is a promise or wake pick, deduped by the whole
+            # ledger (rule 59). IS_RECORD tells the dispatch below which.
+            local IS_RECORD=""
+            case " $OPEN_KEYS " in *" $KEY "*) IS_RECORD=1 ;; esac
+            if [ -n "$IS_RECORD" ]; then
+                # Read again at the moment of dispatch: a judge call takes
+                # minutes, and a job sent against the record meanwhile — or
+                # this same answer naming it twice — is work that can still
+                # land (rule 59).
+                ACTIVE_RECORDS="$(active_records | tr '\n' ' ')"
+                if record_excluded "$KEY"; then
+                    say "round $ROUNDS: '$KEY' still has work that can land — skipped (rule 59)"
+                    continue
+                fi
+                case " $BATCH_KEYS " in
+                    *" $KEY "*) ;;
+                    *)  case " $EXCLUDED_KEYS " in
+                            *" $KEY "*) say "round $ROUNDS: '$KEY' still has ledgered work that can land — skipped (rule 59)" ;;
+                            *)          say "round $ROUNDS: '$KEY' was not in this batch — skipped; it is judged with its own body" ;;
+                        esac
+                        continue ;;
+                esac
+            elif case " $TONIGHT_KEYS " in *" $KEY "*) true ;; *) false ;; esac \
+                || awk -F'\t' -v k="$KEY" '$2 == k { found = 1 } END { exit !found }' \
+                    "$LEDGER" 2>/dev/null; then
+                say "round $ROUNDS: '$KEY' is already on the ledger — skipped"
+                continue
+            fi
+
+            BRIEF="The night's work, from the open item '$KEY': $TITLE
+
+$BRIEF"
+            # The dispatch workdir, resolved and verified (rule 60a). An
+            # empty or "-" field used to fall through to a dispatch with no
+            # -C at all, so the builder inherited THIS process's cwd —
+            # sleep's own room, not a git checkout: all four 2026-08-15
+            # dispatches and 20260903-040620 again went out that way, three
+            # of the four builders surviving only by walking to the real
+            # repo by hand, while collection judged the declared
+            # non-checkout and called the work uncollectable. The default is
+            # that walk done here instead (night_default_workdir), and
+            # whatever is finally chosen must sit inside a git work tree
+            # before the door is called — dispatched work is committed in
+            # the same run, and a non-checkout makes that impossible. A pick
+            # whose workdir fails the check is REFUSED, loudly, on the night
+            # log and stderr both, and the round moves to the next pick.
+            # The chosen value rides -C on EVERY dispatch — the no- -C
+            # branch is gone — so the sidecar, job-collect and the
+            # self-change watcher's workdir claim all see the one tree the
+            # builder actually works in.
+            if [ -z "$WD" ] || [ "$WD" = "-" ]; then
+                WD="$(night_default_workdir)" || WD=""
+            fi
+            if [ -z "$WD" ] || [ ! -d "$WD" ] \
+                || ! git -C "$WD" rev-parse --show-toplevel >/dev/null 2>&1; then
+                say "round $ROUNDS: dispatch REFUSED for '$KEY' — workdir '${WD:-unresolvable}' is not a git work tree, and dispatched work must commit in its own run (rule 60a) — $TITLE"
+                printf 'night-work: round %s: dispatch REFUSED for '\''%s'\'' — workdir '\''%s'\'' is not a git work tree (rule 60a) — %s\n' \
+                    "$ROUNDS" "$KEY" "${WD:-unresolvable}" "$TITLE" >&2
+                continue
+            fi
+            # Record picks carry the same update and submission gates as
+            # every other record build (jobs.md rule 27a). Re-read after
+            # selection: a concurrent submission or closure must stand.
+            local OUTPUT RC JOB_ID RECORD_STATE
+            local -a RECORD_ARGS=()
+            if [ -f "$RECORDS_DIR/$KEY.md" ]; then
+                RECORD_STATE="$(DESKCRAB_ENG_DIR="$RECORDS_DIR" \
+                    "$SCRIPT_DIR/lib/eng" field "$KEY" state 2>/dev/null)" || RECORD_STATE=""
+                if [ "$RECORD_STATE" != open ]; then
+                    say "round $ROUNDS: '$KEY' is no longer open (${RECORD_STATE:-unreadable}) — skipped"
+                    continue
+                fi
+                # Rule 60b, first check: the brief is held against the
+                # record's NEWEST state, never dispatched on the state it
+                # was composed from. The record is rendered again and
+                # compared byte for byte with the view the selector was
+                # handed; a record that moved at all — an amendment, a
+                # touch, a hand's correction — makes the brief STALE. It is
+                # not dispatched, and the record returns to the unjudged
+                # set so the next round composes the brief again from the
+                # record as it now stands. The origin (2026-08-21 18:22):
+                # the store brief was rewritten to drop the exact block from
+                # the move prompt, and the builder dispatched thirty seconds
+                # later still carried the old plan.
+                local COMPOSED_VIEW="$WORK/composed-$KEY.md" NOW_VIEW="$WORK/now-$KEY.md"
+                if ! DESKCRAB_ENG_DIR="$RECORDS_DIR" "$SCRIPT_DIR/lib/eng" current "$KEY" \
+                        > "$NOW_VIEW" 2>/dev/null; then
+                    cp -f "$RECORDS_DIR/$KEY.md" "$NOW_VIEW" 2>/dev/null || : > "$NOW_VIEW"
+                fi
+                if [ ! -s "$COMPOSED_VIEW" ] || ! cmp -s "$COMPOSED_VIEW" "$NOW_VIEW"; then
+                    say "round $ROUNDS: '$KEY' moved since its brief was composed (last touched $(DESKCRAB_ENG_DIR="$RECORDS_DIR" "$SCRIPT_DIR/lib/eng" field "$KEY" last_touched 2>/dev/null)) — the brief is STALE and is not dispatched; the record is judged again from its current instructions (rule 60b) — $TITLE"
+                    JUDGED=" $(printf '%s' "$JUDGED" | tr ' ' '\n' | grep -vx -- "$KEY" | tr '\n' ' ')"
+                    continue
+                fi
+                # Rule 60b, second check: a brief that quotes a sentence the
+                # record has superseded cannot reach the door, whatever view
+                # it was composed from. lib/eng reads the marker; the night
+                # only asks.
+                local QUOTED
+                if QUOTED="$(DESKCRAB_ENG_DIR="$RECORDS_DIR" "$SCRIPT_DIR/lib/eng" \
+                        quotes-superseded "$KEY" "$WORK/$I.brief" 2>/dev/null)"; then
+                    say "round $ROUNDS: dispatch REFUSED for '$KEY' — the brief quotes an instruction the record has superseded: \"$QUOTED\" (rule 60b) — $TITLE"
+                    printf 'night-work: round %s: dispatch REFUSED for '\''%s'\'' — the brief quotes an instruction the record has superseded: "%s" (rule 60b) — %s\n' \
+                        "$ROUNDS" "$KEY" "$QUOTED" "$TITLE" >&2
+                    continue
+                fi
+                RECORD_ARGS=(--record "$KEY")
+            fi
+            # The dry-run stops HERE, before the door: rule 61 promises real
+            # selection — the workdir resolved and verified above exactly as
+            # a live round would — with nothing started and no ledger
+            # written, so the dispatch call itself must never happen.
+            if [ -n "$DRY" ]; then
+                say "round $ROUNDS: would dispatch '$KEY' in $WD — $TITLE"
+                TONIGHT_KEYS="$TONIGHT_KEYS $KEY"
+                PASS_PICKS=$(( PASS_PICKS + 1 ))
+                SEL_SENT=$(( SEL_SENT + 1 ))
+                SENT_THIS_ROUND=$(( SENT_THIS_ROUND + 1 ))
+                DISPATCHED=$(( DISPATCHED + 1 ))
+                continue
+            fi
+            # DESKCRAB_JOB_NIGHT is how the door knows the night window is
+            # open (jobs.md rule 31) — without it the daytime policy would
+            # queue the night's own picks straight back onto the shelf it is
+            # working.
+            OUTPUT="$(DESKCRAB_JOB_NIGHT=1 "$CRAB" job -C "$WD" \
+                "${RECORD_ARGS[@]}" "$BRIEF" 2>&1)"; RC=$?
+            if [ "$RC" -ne 0 ]; then
+                case "$OUTPUT" in
+                    *"the last job never began"*)
+                        say "the job door is blocked — ${OUTPUT%%$'\n'*}"
+                        BLOCKED=1; break ;;
+                    *)  say "round $ROUNDS: dispatch refused for '$KEY' — ${OUTPUT%%$'\n'*}"
+                        continue ;;
+                esac
+            fi
+            JOB_ID="$(printf '%s\n' "$OUTPUT" | sed -n 's/^Job \([^ ]*\) dispatched.*/\1/p' | head -1)"
+            [ -n "$JOB_ID" ] || JOB_ID="?"
+            # The ledger is the night's one write, declared before made
+            # (rules 6 and 59) so her own night never reads as an
+            # intruder's hand.
+            mkdir -p "$(dirname "$LEDGER")"
+            touch_suppress "$(dirname "$LEDGER")" 2>/dev/null
+            printf '%s\t%s\t%s\t%s\n' "$(date +%F)" "$KEY" "$JOB_ID" "$TITLE" >> "$LEDGER"
+            OUR_IDS="$OUR_IDS $JOB_ID"
+            TONIGHT_KEYS="$TONIGHT_KEYS $KEY"
+            PASS_PICKS=$(( PASS_PICKS + 1 ))
+            say "round $ROUNDS: dispatched '$KEY' as job $JOB_ID — $TITLE"
+            SEL_SENT=$(( SEL_SENT + 1 ))
+            SENT_THIS_ROUND=$(( SENT_THIS_ROUND + 1 ))
+            DISPATCHED=$(( DISPATCHED + 1 ))
+        done
+        if [ -n "$BLOCKED" ]; then
+            REASON="the job door's block marker — no builder can begin, so none is asked to"
+            break
+        fi
+        if [ -n "$CUTOFF_HIT" ]; then
+            REASON="the cutoff ($CUTOFF_SPEC) — in-flight builders finish on their own"
+            break
+        fi
+
+        # Nothing bought this round: the walk at the next round's start
+        # decides at once — the next batch, a fresh pass, or selection
+        # finished — so the backlog is never called dry while a record waits
+        # unjudged, and never polled empty to the cutoff (rule 58).
+        if [ "$SENT_THIS_ROUND" -eq 0 ]; then
+            continue
+        fi
+
+        NOW="$(date +%s)"
+        local S=$(( CUTOFF - NOW )); [ "$S" -gt "$POLL" ] && S="$POLL"
+        [ "$S" -lt 1 ] && S=1
+        sleep "$S"
+    done
+
+    say "done — $DISPATCHED job(s) dispatched over $ROUNDS round(s); stopped at ${REASON:-the cutoff}"
+    return 0
+}
+
+case "${1:-}" in
+    run) cmd_run ;;
+    *)   echo "Usage: night-work run" >&2; exit 2 ;;
+esac

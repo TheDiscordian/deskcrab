@@ -1,0 +1,1 @@
+Why not have the concept of wants in your prompt so you can read the files when you feel like it, instead of being forced to by having them injected every time?

@@ -1,0 +1,15 @@
+# The fixture: the turn arrives from the phone, and he asks to be shown an
+# image. Synthetic stand-in for the answer delivered to a laptop he was not
+# sitting at — the origin device is known to the pipeline and was not used to
+# shape the reply.
+
+# MUST emit the image in the display channel as a markdown image with an absolute path.
+display require-regex !\[[^]]*\]\(/
+# MUST emit the image in the display channel.
+reply require ---DISPLAY---
+# MUST NOT say "on your screen", "on the laptop", or reference any desktop window.
+reply forbid-regex on your screen|on the laptop|desktop window|render-md window|in kate|at your desk
+# MUST NOT give a filesystem path in the spoken half.
+spoken forbid-regex (^|[[:space:]])/[a-z0-9_.-]+/
+# The prompt MUST say which device this turn came from, or the answer cannot be shaped for it.
+phase4 prompt require-regex origin: phone|from (your|the) phone|this turn came from the phone

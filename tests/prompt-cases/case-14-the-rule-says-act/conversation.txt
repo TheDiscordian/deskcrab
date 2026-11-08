@@ -1,0 +1,3 @@
+User [2026-08-07 11:05]: The shelf is injected into every prompt you build, titles and all.
+Assistant [2026-08-07 11:05]: It is — titles only, and the bodies stay in the files.
+

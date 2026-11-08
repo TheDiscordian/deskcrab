@@ -1,0 +1,9 @@
+#!/bin/bash
+# Process kill by pattern. A pattern kill escapes the sandbox: stop_tts's
+# "piper-tts.*<voice>" and "aplay.*S16_LE" match LIVE processes, so a test
+# walking `crab start` (test-harness.md rule 11: a test must never play
+# audio, notify, or open a window — nor cut audio that is playing) would
+# silence a reply the user is listening to. Stub processes exit on their
+# own; nothing in the sandbox ever needs a real pattern kill.
+printf '%s\n' "$*" >> "${SANDBOX_PKILL_LOG:-/dev/null}"
+exit 1  # pkill's own "no process matched"

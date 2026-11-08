@@ -1,0 +1,1922 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#000000">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Beatrice">
+<title>DeskCrab</title>
+<link rel="manifest" href="/manifest.webmanifest" crossorigin="use-credentials">
+<link rel="icon" href="/icon.svg" type="image/svg+xml">
+<link rel="icon" href="/icon-192.png" sizes="192x192" type="image/png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<style>
+  :root { --bg:#000; --fg:#e0e0e0; --dim:#888; --accent:#6aafff;
+          --panel:#141414; --code:#2a2a2a; --border:#333; }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--fg);
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: 15px; line-height: 1.6;
+    display: flex; flex-direction: column;
+    padding: env(safe-area-inset-top) env(safe-area-inset-right)
+             env(safe-area-inset-bottom) env(safe-area-inset-left);
+  }
+  header {
+    padding: 12px 16px; border-bottom: 1px solid var(--border);
+    display: flex; justify-content: space-between; align-items: baseline; gap: 12px;
+  }
+  header h1 { font-size: 15px; margin: 0; font-weight: 600; }
+  #status { color: var(--dim); font-size: 13px; flex: 1; text-align: right; }
+  #status.busy { color: var(--accent); }
+  #status.err { color: #ff8080; }
+  #bell { background: none; border: none; font: inherit; font-size: 16px;
+          padding: 0 2px; cursor: pointer; filter: grayscale(1); opacity: .55; }
+  #bell.on { filter: none; opacity: 1; }
+  #game { color: inherit; text-decoration: none; font-size: 16px; padding: 0 2px;
+          filter: grayscale(.35); opacity: .72; }
+  /* The public-pocket switch. Unmuted it sits as quietly as the bell; muted it
+     wears the page's danger colours, because a glance must settle whether this
+     phone can make a sound. */
+  #mute { background: none; border: none; font: inherit; font-size: 16px;
+          padding: 0 2px; cursor: pointer; filter: grayscale(1); opacity: .55; }
+  #mute.muted { filter: none; opacity: 1; background: #3a1414;
+                border: 1px solid #a33; border-radius: 8px; padding: 2px 8px; }
+
+  main { flex: 1; min-height: 0; overflow-y: auto; padding: 16px; }
+  .turn { margin-bottom: 18px; }
+  /* Where the conversation already was when this page loaded — dimmed, so it
+     never reads as something said just now. */
+  #seed { margin-bottom: 22px; padding-bottom: 14px;
+          border-bottom: 1px dashed var(--border); }
+  #seed .turn { opacity: .72; }
+  .seed-label { color: var(--dim); font-size: 12px; text-transform: uppercase;
+                letter-spacing: .08em; margin-bottom: 10px; }
+  .seed-summary { color: var(--dim); font-size: 13px; line-height: 1.5;
+                  white-space: pre-wrap; margin-bottom: 16px;
+                  padding-left: 10px; border-left: 2px solid var(--border); }
+  /* The conversation file was rewritten under this page — compacted, or rotated
+     to the archive so a fresh one starts. Everything above the rule was said
+     before that happened, and it stays on screen. */
+  .rewound { display: flex; align-items: center; gap: 10px;
+             color: var(--dim); font-size: 11px; text-transform: uppercase;
+             letter-spacing: .08em; margin: 4px 0 20px; }
+  .rewound::before, .rewound::after { content: ""; flex: 1;
+             border-top: 1px dashed var(--border); }
+  /* Said at the laptop, not here — marked so it never reads as this phone's
+     own turn arriving. */
+  .turn.elsewhere { border-left: 2px solid var(--border); padding-left: 10px; }
+  .turn.elsewhere::before { content: "at the laptop"; display: block;
+                            color: var(--dim); font-size: 11px;
+                            text-transform: uppercase; letter-spacing: .08em;
+                            margin-bottom: 6px; }
+  .you { color: var(--dim); }
+  .you::before { content: "› "; }
+  .reply { white-space: pre-wrap; }
+  .thoughts { margin: 6px 0 8px; padding-left: 10px; border-left: 2px solid var(--border); }
+  .thought { color: var(--dim); font-size: 12px; line-height: 1.45;
+             overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .thought.tool { color: var(--accent); opacity: .8; }
+  /* The whole trail is kept, not just the tail — scrolling back through the
+     log should show what was thought and run on every past turn. Folded once
+     the turn ends so old turns stay one line. */
+  .thoughts.folded .thought { display: none; }
+  .th-head { color: var(--dim); font-size: 12px; cursor: pointer;
+             margin: 6px 0 2px; user-select: none; }
+  /* Display blocks live inside the turn that produced them, so scrolling back
+     through the log shows each one where it belongs. Tap the header to fold. */
+  .display { margin-top: 12px; background: var(--panel);
+             border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .disp-head { padding: 8px 12px; font-size: 13px; color: var(--dim);
+               display: flex; align-items: center; gap: 8px; cursor: pointer;
+               user-select: none; background: var(--code); }
+  .disp-head .caret { transition: transform .15s; }
+  .display.folded .disp-head .caret { transform: rotate(-90deg); }
+  .disp-body { padding: 12px; }
+  .display.folded .disp-body { display: none; }
+  .disp-body img { max-width: 100%; height: auto; border-radius: 6px; }
+  .disp-body pre { background: var(--code); padding: 12px; border-radius: 6px; overflow-x: auto; }
+  .disp-body code { background: var(--code); padding: 2px 6px; border-radius: 3px; }
+  .disp-body pre code { background: none; padding: 0; }
+  .disp-body table { border-collapse: collapse; width: 100%; }
+  .disp-body th, .disp-body td { border: 1px solid var(--border); padding: 6px 10px; text-align: left; }
+  .disp-body a { color: var(--accent); }
+  .disp-body > :first-child { margin-top: 0; }
+  .disp-body > :last-child { margin-bottom: 0; }
+
+  /* The transport for a handed piece (crab play): its name, the native
+     controls for play/pause and seek, and its own dismissal. display:flex
+     would defeat the hidden attribute, so hidden is restated. */
+  #media { border-top: 1px solid var(--border); background: var(--panel);
+           padding: 10px 16px; display: flex; flex-direction: column; gap: 8px; }
+  #media[hidden] { display: none; }
+  #media-head { display: flex; align-items: center; gap: 8px; }
+  #media-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+                 white-space: nowrap; font-size: 13px; }
+  #media-title::before { content: "♪ "; color: var(--accent); }
+  #media-close { background: none; border: none; color: var(--dim); font: inherit;
+                 cursor: pointer; padding: 0 4px; }
+  #media audio { width: 100%; height: 36px; }
+
+  footer { padding: 16px; border-top: 1px solid var(--border); display: flex;
+           flex-shrink: 0;
+           flex-direction: column; gap: 12px; }
+  #talk {
+    width: 100%; padding: 26px; font: inherit; font-size: 17px; font-weight: 600;
+    color: var(--fg); background: var(--panel); border: 1px solid var(--border);
+    border-radius: 14px; touch-action: none; user-select: none;
+  }
+  #playnow { padding: 14px; font: inherit; font-size: 16px; color: #ffdada;
+             background: #143a1a; border: 1px solid #3a3; border-radius: 12px; }
+  #talk.rec { background: #3a1414; border-color: #a33; color: #ffdada; }
+  /* Busy is a hint, not a wall (spec rule 5): the button keeps working
+     mid-turn — hold records and queues, tap stops speech — so it must not
+     look disabled. The old .45 read as a grey dead control, which is exactly
+     what the user reported it as. */
+  #talk.busy { opacity: .85; }
+  /* Speech is playing: the same button is now also the stop control. Wins over
+     .busy because a turn's clips play while the turn is still running — which
+     is exactly when stopping matters most. */
+  #talk.speaking { opacity: 1; border-color: #a33; color: #ffdada; }
+  .row { display: flex; gap: 8px; }
+  #text { flex: 1; min-width: 0; padding: 12px; font: inherit; color: var(--fg);
+          background: var(--panel); border: 1px solid var(--border); border-radius: 10px; }
+  #send { padding: 12px 16px; font: inherit; color: var(--fg); background: var(--panel);
+          border: 1px solid var(--border); border-radius: 10px; }
+  #attach { padding: 12px 14px; font: inherit; color: var(--fg); background: var(--panel);
+            border: 1px solid var(--border); border-radius: 10px; }
+  #attachment-preview { display: flex; align-items: center; gap: 10px;
+                        padding: 8px; background: var(--panel);
+                        border: 1px solid var(--border); border-radius: 10px; }
+  #attachment-preview[hidden] { display: none; }
+  #attachment-preview img { width: 64px; height: 64px; object-fit: cover;
+                            border-radius: 7px; }
+  #attachment-name { flex: 1; min-width: 0; overflow: hidden;
+                     text-overflow: ellipsis; white-space: nowrap; color: var(--dim); }
+  #attachment-remove { padding: 8px 10px; font: inherit; color: #ffdada;
+                       background: #3a1414; border: 1px solid #a33;
+                       border-radius: 8px; }
+  /* The brake (spec rules 47-50): visible whenever a turn is in flight, in
+     the page's danger colours — stopping her must never require hunting. */
+  #stop { padding: 14px; font: inherit; font-size: 16px; font-weight: 600;
+          color: #ffdada; background: #3a1414; border: 1px solid #a33;
+          border-radius: 12px; }
+  /* A message sent while a turn runs: visibly queued, never dropped. */
+  .reply.queued { color: var(--dim); }
+</style>
+</head>
+<body>
+<header><h1 id="name">DeskCrab</h1><span id="status">ready</span><a id="game" href="/openrsc" title="Watch OpenRSC" aria-label="Watch OpenRSC">🎮</a><button id="mute">🔊</button><button id="bell" hidden>🔔</button></header>
+<main>
+  <div id="log"></div>
+</main>
+<div id="media" hidden>
+  <div id="media-head">
+    <span id="media-title"></span>
+    <button id="media-close">✕</button>
+  </div>
+  <audio id="music" controls playsinline></audio>
+</div>
+<footer>
+  <button id="stop" hidden>◼ Stop</button>
+  <button id="talk">Hold to talk</button>
+  <div id="attachment-preview" hidden>
+    <img id="attachment-image" alt="Selected photo preview">
+    <span id="attachment-name"></span>
+    <button id="attachment-remove" type="button">Remove</button>
+  </div>
+  <div class="row">
+    <button id="attach" type="button" aria-label="Choose a photo from camera or gallery">Photo</button>
+    <input id="attachment-input" type="file" accept="image/jpeg,image/png,image/webp,image/gif" hidden>
+    <input id="text" placeholder="…or type" autocomplete="off" enterkeyhint="send">
+    <button id="send">Send</button>
+  </div>
+</footer>
+<audio id="player" playsinline></audio>
+<!-- The shared voice queue (spec rule 44c): the same file the chess bridge
+     serves its page. Not deferred — the script below builds the queue at
+     parse time. -->
+<script src="browser_voice_queue.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const statusEl = $("status"), logEl = $("log"), player = $("player");
+const music = $("music");
+let recorder = null, chunks = [], stream = null, busy = false;
+let sttSid = null, sttChain = Promise.resolve(), sttFailed = false;
+let pendingAttachment = null, attachmentPreviewUrl = "";
+
+const MAX_IMAGE_BYTES = 12 * 1024 * 1024;
+const IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/webp", "image/gif"]);
+
+function clearAttachment() {
+  pendingAttachment = null;
+  if (attachmentPreviewUrl) URL.revokeObjectURL(attachmentPreviewUrl);
+  attachmentPreviewUrl = "";
+  $("attachment-input").value = "";
+  $("attachment-preview").hidden = true;
+  $("attachment-image").removeAttribute("src");
+  $("attachment-name").textContent = "";
+}
+
+function fileAttachment(file) {
+  return new Promise((resolve, reject) => {
+    if (!file || !IMAGE_TYPES.has(file.type))
+      return reject(new Error("choose a JPEG, PNG, WebP, or GIF image"));
+    if (!file.size || file.size > MAX_IMAGE_BYTES)
+      return reject(new Error("photo must be smaller than 12 MB"));
+    const reader = new FileReader();
+    reader.onerror = () => reject(new Error("could not read that photo"));
+    reader.onload = () => {
+      const raw = String(reader.result || ""), comma = raw.indexOf(",");
+      if (comma < 0) return reject(new Error("could not read that photo"));
+      resolve({ name: file.name || "photo", type: file.type,
+                data: raw.slice(comma + 1) });
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+function turnPayload(text, tid, loc, attachment) {
+  const doc = { text, turn: tid };
+  if (loc) doc.loc = loc;
+  if (attachment) doc.attachment = attachment;
+  return JSON.stringify(doc);
+}
+
+$("attach").addEventListener("click", () => $("attachment-input").click());
+$("attachment-remove").addEventListener("click", clearAttachment);
+$("attachment-input").addEventListener("change", async e => {
+  const file = e.target.files && e.target.files[0];
+  if (!file) return;
+  try {
+    const attachment = await fileAttachment(file);
+    clearAttachment();
+    pendingAttachment = attachment;
+    attachmentPreviewUrl = URL.createObjectURL(file);
+    $("attachment-image").src = attachmentPreviewUrl;
+    $("attachment-name").textContent = file.name || "photo";
+    $("attachment-preview").hidden = false;
+    setStatus("photo ready");
+  } catch (err) {
+    clearAttachment();
+    setStatus(String(err.message || err), "err");
+  }
+});
+
+function randomHex(n) {
+  const b = new Uint8Array(n / 2);
+  crypto.getRandomValues(b);
+  return [...b].map(x => x.toString(16).padStart(2, "0")).join("");
+}
+
+function setStatus(msg, cls) { statusEl.textContent = msg; statusEl.className = cls || ""; }
+
+function addTurn(you) {
+  const t = document.createElement("div");
+  t.className = "turn";
+  const y = document.createElement("div"); y.className = "you"; y.textContent = you;
+  const r = document.createElement("div"); r.className = "reply"; r.textContent = "…";
+  t.append(y, r); logEl.append(t);
+  t.scrollIntoView({ block: "end" });
+  return { you: y, reply: r };
+}
+
+// Autoplay is only reliably granted inside a user gesture, and the reply lands
+// seconds after the button is released — so the element is unlocked during the
+// gesture and merely re-pointed at the reply later. It must actually PLAY
+// something to count: play() on a src-less element rejects immediately and
+// earns no activation at all, which is why the reply used to arrive silent.
+const SILENCE = "data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEAgD4AAAB9AAACABAAZGF0YQAAAAA=";
+let unlocked = false;
+function unlockAudio() {
+  if (unlocked) return;
+  // A clip already loaded (a resumed turn's backlog): unlock by playing IT
+  // inside the gesture rather than clobbering its src — the silence clip's
+  // ended arrived wearing the loaded clip's meta and reported a completion
+  // nothing heard (spec rule 44b).
+  if (playerClip) {
+    const p = player.play();
+    if (p) p.then(() => { unlocked = true; }).catch(() => {});
+    return;
+  }
+  player.src = SILENCE;
+  const p = player.play();
+  if (p) p.then(() => { unlocked = true; }).catch(() => {});
+}
+
+// A failed source is failed for good (spec rule 44a): the dead state lives in
+// the shared queue module now (rule 44c), set from EITHER of a dead source's
+// two signals, whichever lands first. offerPlay consults it so a ▶ control is
+// never wired to a source that just failed to load, and reportPlay consults
+// clipErrorsReported so one failure is one report, whatever order the signals
+// came in.
+const clipErrorsReported = new Set();
+
+// If the browser still refuses, don't silently swallow it — give him a button.
+function offerPlay(src) {
+  if (voiceQ.isDead(src)) {
+    // A control wired to a source that cannot load is a control that does
+    // nothing (C16): refused silently, and this line is the witness.
+    console.warn("play control withheld — source already failed: " + src);
+    return;
+  }
+  setStatus("tap ▶ to hear it", "err");
+  let b = $("playnow");
+  if (!b) {
+    b = document.createElement("button");
+    b.id = "playnow"; b.textContent = "▶ Play reply";
+    b.addEventListener("click", () => {
+      // The tap resumes the held clip; the element's own playing event tells
+      // the queue it started (rule 44c) — no belief, only the truth.
+      const p = player.play();
+      if (p) p.catch(() => {});
+      setStatus("ready");
+    });
+    $("talk").parentNode.insertBefore(b, $("talk"));
+  }
+  b.hidden = false;
+  player.addEventListener("play", () => { b.hidden = true; }, { once: true });
+}
+
+// One collapsible card per turn, appended after that turn's reply.
+function attachDisplay(replyEl, html) {
+  const box = document.createElement("div");
+  box.className = "display";
+  const head = document.createElement("div");
+  head.className = "disp-head";
+  head.innerHTML = '<span class="caret">\u25be</span><span>details</span>';
+  const body = document.createElement("div");
+  body.className = "disp-body";
+  body.innerHTML = html;
+  head.addEventListener("click", () => box.classList.toggle("folded"));
+  box.append(head, body);
+  replyEl.parentNode.append(box);
+}
+
+// Clips arrive while the turn is still running (one per text block, exactly as
+// the desktop speaks them), so they queue and play back to back — never on top
+// of each other. The queue itself — order, the dead state, the started truth,
+// the give-up clock, the advance — is the shared module (spec rule 44c,
+// lib/browser_voice_queue.js, the same file the chess table's page loads);
+// this page supplies the POLICY: the one #player element, /played reporting,
+// the ▶ gesture recovery, the duck, and the chosen stop.
+
+// Playback truth (spec rules 44-46): this page is the only process that knows
+// whether a clip actually sounded, so it says so — queued, actually started
+// (the element's own playing/timeupdate, never merely play() returning),
+// completed, or error with the reason and the clip's index. Fire-and-forget:
+// a report that cannot be delivered, or a server too old to take one, must
+// never disturb the playback it describes.
+function reportPlay(meta, event, detail) {
+  if (!meta || (!meta.tid && !meta.faceCue)) return;
+  // One failure, one report (spec rule 44a): a dead source signals twice, and
+  // 8 of one day's 38 play-errors were the second report of a failure already
+  // counted. The first error a clip reports is the whole of its error story.
+  if (event === "error") {
+    const k = (meta.tid || meta.faceCue) + ":" + (meta.clip || "face");
+    if (clipErrorsReported.has(k)) return;
+    clipErrorsReported.add(k);
+  }
+  post("/played", JSON.stringify({ turn: meta.tid || "", clip: meta.clip || "",
+                                   face_cue: meta.faceCue || "",
+                                   event, detail: detail || "" }),
+       { "Content-Type": "application/json" }, 10000).catch(() => {});
+}
+
+// The give-up bound on a clip that neither sounds nor fails (spec rule 44b —
+// the 23:39 shape of 2026-08-23, turn 58d64fe9), and how long a
+// NotAllowedError rejection waits for the dead source's own error event
+// before it may be believed as a refusal (rule 44a): on the measured
+// rejection-first ordering the two signals land a beat apart. Both clocks
+// run inside the shared module now.
+const CLIP_START_GRACE_MS = 10000;
+const REFUSAL_GRACE_MS = 250;
+
+// The clip handle whose element events route to the queue — the module's
+// per-clip truth feed. Null between clips and after a stop.
+let playerClip = null;
+
+// Policy in, mechanics out (rule 44c). Everything the queue must NOT decide
+// for itself — what a failure is called on /played, what a refusal earns,
+// what a duck means — is handed in here; everything the two pages must agree
+// on lives in the module.
+function buildVoiceQueue() {
+  return BrowserVoiceQueue.createVoiceQueue({
+    startGraceMs: CLIP_START_GRACE_MS,
+    refusalGraceMs: REFUSAL_GRACE_MS,
+    isDucked: () => duckedVoice,
+    play: (item, clip) => {
+      playerClip = clip;
+      player.src = item.url;
+      player.load();
+      const p = player.play();
+      if (p) p.catch(err => clip.rejected(err));
+    },
+    unload: (item, outcome) => {
+      playerClip = null;
+      // A wedged or stopped element is unloaded (aborting its download); a
+      // clip that ended or errored needs nothing — the next src replaces it.
+      if (outcome === "gaveup" || outcome === "stopped") {
+        player.removeAttribute("src");
+        player.load();
+      }
+    },
+    onRequested: item => reportPlay(item.meta, "requested"),
+    onStarted: item => reportPlay(item.meta, "started"),
+    onCompleted: item => reportPlay(item.meta, "completed"),
+    onFailed: (item, why) => reportPlay(item.meta, "error", why),
+    onRefusal: item => {
+      // A genuine refusal (rules 44-44a): reported once, and the ▶ button is
+      // the remedy — the queue parks behind the waiting clip, because
+      // advancing without a gesture would only meet the same refusal.
+      reportPlay(item.meta, "error", "autoplay refused");
+      updateTalkBtn();
+      offerPlay(item.url);
+      return true;
+    },
+    onChange: () => updateTalkBtn(),
+  });
+}
+const voiceQ = buildVoiceQueue();
+
+// The one #player element's events, routed to the CURRENT clip's handle: the
+// element's own truth is the only source of started/completed (rule 44b).
+// Unloading (stopSpeech, a give-up) clears playerClip first, so a stray
+// event from the unload lands nowhere; a settled clip's late signals are
+// dropped by the module.
+function wirePlayerEvents() {
+  player.addEventListener("playing", () => {
+    if (playerClip) playerClip.playing();
+  });
+  player.addEventListener("timeupdate", () => {
+    if (playerClip) playerClip.timeupdate(player.currentTime);
+  });
+  player.addEventListener("progress", () => {
+    if (playerClip) playerClip.progress();
+  });
+  player.addEventListener("ended", () => {
+    if (playerClip) playerClip.ended();
+  });
+  player.addEventListener("error", () => {
+    const code = player.error && player.error.code;
+    if (playerClip) playerClip.error("media error" + (code ? " " + code : ""));
+  });
+}
+wirePlayerEvents();
+
+// The phone's SUPER+SHIFT+A, folded into the talk button itself: while speech
+// is playing (or queued) a short TAP on it stops the voice; press-and-hold
+// still records. Nothing floats over the conversation any more.
+// Stopping is not pausing: the queue is emptied, the current clip unloaded
+// (which aborts its download), and clips still streaming in for this turn are
+// dropped on arrival — otherwise the voice would fall silent only until the
+// next chunk landed and then carry on. A new turn, or a new wake, speaks again.
+let voiceMuted = false;
+const talk = $("talk");
+
+// One button, three looks. Recording owns the label outright; otherwise it
+// advertises tap-to-stop whenever anything is playing or queued — including
+// mid-turn, which is exactly when the voice is talking.
+function updateTalkBtn() {
+  if (talk.classList.contains("rec")) return;
+  const speaking = voiceQ.busy();
+  talk.classList.toggle("speaking", speaking);
+  talk.textContent = speaking ? "◼ Tap to stop · hold to talk" : "Hold to talk";
+}
+
+function stopSpeech() {
+  voiceMuted = true;
+  // A chosen stop is not a lost voice: reported so the silence alarm never
+  // pages anyone over it. One report covers the turn — the module's stop is
+  // silent by design, so this is the only witness.
+  const cur = voiceQ.currentItem() || voiceQ.firstQueued();
+  reportPlay(cur && cur.meta, "error", "stopped by hand");
+  voiceQ.stopAll();
+  player.pause();
+  updateTalkBtn();
+  setStatus("speech stopped");
+}
+
+function enqueueVoice(url, meta) {
+  if (voiceMuted) { reportPlay(meta, "error", "stopped: dropped on arrival"); return; }
+  // Everything else — the requested report, the phantom-playing adoption of
+  // rule 44b's tail, the play itself — is the module's (rule 44c).
+  voiceQ.enqueue({ url, meta });
+  updateTalkBtn();
+}
+
+// The mute, for a phone that fires in a public pocket. Persistent across
+// reloads, and it silences EVERYTHING the page can sound — the voice clips
+// through #player and a handed piece through #music. Silences, never
+// suppresses: clips still queue, cursors still advance, the transport still
+// appears, so unmuting never replays a backlog and never loses one either.
+// Element muted-ness survives src changes, so setting it once per toggle
+// covers every clip that follows.
+let muted = false;
+
+function applyMute(m) {
+  muted = !!m;
+  player.muted = muted;
+  music.muted = muted;
+  const b = $("mute");
+  b.textContent = muted ? "🔇" : "🔊";
+  b.classList.toggle("muted", muted);
+  b.title = muted ? "Muted — tap for sound" : "Sound on — tap to mute";
+  try { localStorage.setItem("crab-muted", muted ? "1" : "0"); } catch (_) {}
+}
+
+function initMute() {
+  let m = false;
+  try { m = localStorage.getItem("crab-muted") === "1"; } catch (_) {}
+  applyMute(m);
+}
+
+function toggleMute() {
+  applyMute(!muted);
+  setStatus(muted ? "muted — nothing will sound" : "sound on");
+}
+$("mute").addEventListener("click", toggleMute);
+initMute();
+
+// A handed piece (crab play) rides /watch beside the wake audio, with its own
+// cursor. It is music with a length, not a reply — so it plays through its own
+// element with a visible transport (name, play/pause, seek) rather than
+// through the voice queue, and stopping speech never stops it.
+let playSeen = "";
+
+function showMedia(play) {
+  $("media-title").textContent = play.title || "";
+  music.muted = muted;
+  music.src = play.url;
+  $("media").hidden = false;
+  const p = music.play();
+  // Autoplay refused (no gesture yet): the transport's own ▶ is right there.
+  if (p) p.catch(() => {});
+}
+
+function closeMedia() {
+  music.pause();
+  music.removeAttribute("src");
+  music.load();
+  $("media").hidden = true;
+}
+$("media-close").addEventListener("click", closeMedia);
+
+async function deliver(res, replyEl, meta) {
+  if (res.stopped) {
+    // The brake's completion (spec rule 47): a chosen stop, not a failure —
+    // no error styling, and the bubble says plainly what happened to it.
+    if (replyEl.textContent) {
+      const note = document.createElement("div");
+      note.className = "thought";
+      note.textContent = "◼ stopped";
+      replyEl.parentNode.append(note);
+    } else {
+      replyEl.textContent = "◼ stopped";
+    }
+    setStatus("stopped — ready");
+    return;
+  }
+  if (res.error) {
+    setStatus(res.error, "err");
+    // Never overwrite what she already said. A reply that streamed in full and
+    // then lost its connection used to have every word replaced by the error
+    // text — the reply was on the screen and the failure erased it. The error
+    // is a note under the answer when there is one, and the whole bubble only
+    // when there is not.
+    if (replyEl.textContent) {
+      const note = document.createElement("div");
+      note.className = "thought";
+      note.textContent = "(" + res.error + ")";
+      replyEl.parentNode.append(note);
+    } else {
+      replyEl.textContent = "(" + res.error + ")";
+    }
+    return;
+  }
+  // `spoken` is every text block of the turn joined — the SAME blocks already
+  // streamed in as `text` events. Appending it wholesale printed the entire
+  // reply a second time. Only the part that never streamed is added, which
+  // covers the non-streaming path where nothing arrived live at all.
+  addSaid(replyEl, residue(replyEl, res.spoken));
+  if (res.display_html) attachDisplay(replyEl, res.display_html);
+  // Silence is silence. A turn that produced no spoken text and nothing to
+  // show leaves NO bubble behind — printing a placeholder announced the
+  // emptiness, which reads as the assistant saying "no reply" out loud.
+  if (!replyEl.textContent && !replyEl.querySelector("*")) replyEl.remove();
+  setStatus("ready");
+  if (res.audio) enqueueVoice(res.audio,
+    Object.assign({}, meta, { faceCue: res.face_cue || "" }));
+  replyEl.scrollIntoView({ block: "end" });
+}
+
+// The turn arrives as a stream of events, not one reply: thinking and tool use
+// are shown as they happen, exactly like the desktop client, so a long answer
+// isn't a silent spinner. The last event carries the finished reply.
+//
+// The uplink is a phone hotspot, so this stream routinely dies mid-turn. The
+// turn keeps running on the laptop and every event is buffered there under a
+// client-chosen id — on any error we reconnect with backoff (1s, 2s, 4s …
+// capped at 30s) to /turn/<id>?from=<n> and pick up exactly where we left off.
+// A dropped network is a "reconnecting…" status, never a dead error page.
+// The server writes a `: ping` comment frame every ~15 s whenever the turn has
+// produced nothing, so bytes arriving is the liveness signal — and their
+// absence for this long means a socket that is open only in this end's
+// imagination (hotspot gone, laptop asleep), which TCP alone will sit on for
+// many minutes. Same shape as the 45 s guard on the /watch poll.
+const STREAM_IDLE_MS = 45000;
+
+// Where he is (spec rule 3a). Each outgoing message asks for the phone's own
+// fix and carries it beside the text when one can be had quickly; the laptop
+// turns a fresh fix into one line of turn context. Denied, unavailable, slow,
+// or stale means the message simply goes without — the send never waits past
+// the bound and no error of any kind reaches the page. The browser remembers
+// the permission answer, so its prompt is faced once, not per message; a
+// denial is cached here too, so a denied page never re-begs the API.
+const GEO_FIX_TIMEOUT_MS = 3000;   // the most a send will wait for a fix
+const GEO_MAX_AGE_MS = 120000;     // a browser-cached fix this fresh is fine
+const GEO_STALE_MS = 600000;       // older than this is not where he is
+let geoDenied = false;
+if (navigator.permissions && navigator.permissions.query) {
+  navigator.permissions.query({ name: "geolocation" }).then(st => {
+    geoDenied = st.state === "denied";
+    st.onchange = () => { geoDenied = st.state === "denied"; };
+  }).catch(() => {});
+}
+
+function geoFix() {
+  return new Promise(resolve => {
+    if (geoDenied || !navigator || !navigator.geolocation) return resolve(null);
+    // The API's own timeout option has a history of not firing on some
+    // browsers; the belt keeps this promise — and the send behind it —
+    // bounded regardless. Resolving twice is a no-op.
+    const belt = setTimeout(() => resolve(null), GEO_FIX_TIMEOUT_MS + 500);
+    const done = v => { clearTimeout(belt); resolve(v); };
+    try {
+      navigator.geolocation.getCurrentPosition(pos => {
+        const c = pos.coords || {};
+        if (typeof c.latitude !== "number" || typeof c.longitude !== "number"
+            || Date.now() - pos.timestamp > GEO_STALE_MS) return done(null);
+        done({ lat: c.latitude, lon: c.longitude,
+               acc: typeof c.accuracy === "number" ? c.accuracy : null,
+               ts: pos.timestamp });
+      }, err => {
+        if (err && err.code === 1) geoDenied = true;  // PERMISSION_DENIED
+        done(null);
+      }, { maximumAge: GEO_MAX_AGE_MS, timeout: GEO_FIX_TIMEOUT_MS,
+           enableHighAccuracy: false });
+    } catch (e) { done(null); }
+  });
+}
+
+async function streamTurn(text, turn, tid, resuming, seq, loc, attachment) {
+  tid = tid || randomHex(32);
+  let seen = 0, delay = 1000;
+  // Clip index within this turn, for the playback reports: a chunked reply
+  // that dies part-way names the chunk it died on. Replayed backlog clips are
+  // gated below and never counted — only what this page actually queues.
+  let clipIdx = 0;
+  // A re-attach after a reload replays the whole buffered backlog in a burst,
+  // voice events included — clips that were already playing when the page
+  // died. Re-sounding them reads as the reply starting over, so replayed
+  // clips are dropped and only clips arriving live after the re-attach play
+  // (spec rule 39). The boundary is a moment of wall clock because the
+  // stream itself does not mark it; the backlog lands in milliseconds.
+  let voiceGateUntil = resuming ? Date.now() + 1500 : 0;
+  // Progress, not wall clock: every event pushes the deadline forward, so a
+  // long turn that is visibly working is never cut off, while a turn that has
+  // gone silent on a link healthy enough to carry keepalives forever still
+  // ends here. Pings reset the idle timer below (the link is alive) but never
+  // this (the turn is not). Six minutes, down from fifteen: nothing
+  // legitimate on the remote profile is silent that long, the reply still
+  // arrives through /watch if the turn completes later, and a button held
+  // grey for tens of minutes was answered with a hand reload every time.
+  const GIVE_UP_MS = 6 * 60 * 1000;
+  let deadline = Date.now() + GIVE_UP_MS;
+  const giveUp = { error: "gave up: no progress in 6 minutes" };
+  // Hidden time is not silence (spec rule 41, C18): the deadline above is
+  // wall clock, and while the screen is locked the OS freezes the page's
+  // timers and rots its sockets, so no progress CAN arrive. Uncorrected, a
+  // lock longer than the window guaranteed the give-up on the first check
+  // after unlock — without one reconnect attempt — while the finished turn
+  // sat buffered on the laptop, one /turn/<id>?from=<n> fetch away
+  // (2026-08-11 09:17). So the clock is corrected before it is believed:
+  // every hidden span that ended since the deadline was last set is added
+  // back, and a resume the span accounting never saw is still granted one
+  // pass — at the loop top that pass IS the reconnect fetch — before any
+  // give-up can return. The 404 path above stays untouched on purpose: a
+  // server that genuinely restarted still says the reply was lost.
+  let hiddenSeen = hiddenTotal, resumeSeen = resumeCount;
+  const pastDeadline = () => {
+    if (hiddenTotal > hiddenSeen) {
+      deadline += hiddenTotal - hiddenSeen;
+      hiddenSeen = hiddenTotal;
+    }
+    if (Date.now() <= deadline) return false;
+    if (resumeCount > resumeSeen) { resumeSeen = resumeCount; return false; }
+    return true;
+  };
+  for (;;) {
+    // Ended from outside by the conversation watcher (rule 42): this loop's
+    // turn is over. Reconnecting would re-tail a buffer nobody is waiting on
+    // — and overwrite a newer turn's abort handle below.
+    if (releasedSeq === seq) return null;
+    // Checked HERE as well as in the catch. It used to be consulted only
+    // after a throw, so a fetch that never threw and never delivered another
+    // byte held `busy` forever: recording refused, the reset redraw refused,
+    // and nothing short of a manual reload got the page back. There were 74
+    // hand reloads in 28 hours.
+    if (pastDeadline())
+      return giveUp;
+    const ctl = new AbortController();
+    turnCtl = ctl;
+    let idle = setTimeout(() => ctl.abort(), STREAM_IDLE_MS);
+    const alive = () => {
+      clearTimeout(idle);
+      idle = setTimeout(() => ctl.abort(), STREAM_IDLE_MS);
+    };
+    try {
+      // While nothing has arrived we cannot know whether the POST ever landed,
+      // so retry the POST itself — the server treats a repeated id as "attach",
+      // never as a second run. Once events have arrived the turn provably
+      // exists, so reconnects go to /turn and only fetch what was missed.
+      const r = seen === 0
+        ? await fetch("/say", {
+            method: "POST", credentials: "same-origin",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(Object.assign(
+              { text, turn: tid }, loc ? { loc } : {},
+              attachment ? { attachment } : {})),
+            signal: ctl.signal,
+          })
+        : await fetch("/turn/" + tid + "?from=" + seen,
+                      { credentials: "same-origin", signal: ctl.signal });
+      if (r.status === 400) {
+        let bad = null;
+        try { bad = await r.json(); } catch (_) {}
+        return { error: (bad && bad.error) || "the photo was refused" };
+      }
+      if (r.status === 404 && seen > 0)
+        return { error: "the server restarted mid-turn; the reply was lost" };
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      const reader = r.body.getReader(), dec = new TextDecoder();
+      let buf = "";
+      while (true) {
+        const { value, done: eof } = await reader.read();
+        if (eof) break;
+        alive();
+        buf += dec.decode(value, { stream: true });
+        let cut;
+        while ((cut = buf.indexOf("\n\n")) !== -1) {
+          const frame = buf.slice(0, cut); buf = buf.slice(cut + 2);
+          if (!frame.startsWith("data:")) continue;
+          let ev; try { ev = JSON.parse(frame.slice(5).trim()); } catch (e) { continue; }
+          seen++; delay = 1000;
+          lastTurnProgress = Date.now();
+          deadline = lastTurnProgress + GIVE_UP_MS;
+          // The deadline was just rebuilt from now, so hidden spans already
+          // ended are inside it — forgiving them again would double-count.
+          // A resume that led to progress owes no grace either.
+          hiddenSeen = hiddenTotal; resumeSeen = resumeCount;
+          if (ev.kind === "done") return ev;
+          if (ev.kind === "voice") {
+            // Every voice event consumes a clip index, played or skipped, so
+            // playback reports keep naming the right clip across a resume.
+            // A replayed clip carries the server's own playback truth (spec
+            // rule 39): played means someone heard it start, skip it; unplayed
+            // means the tail died with the last page and is still owed its
+            // voice — the 00:40 loss was dropping these by wall clock. The
+            // wall-clock gate survives only as the fallback for a server too
+            // old to annotate.
+            const idx = String(clipIdx++);
+            const skip = ev.played === true ||
+                         (ev.played === undefined && Date.now() < voiceGateUntil);
+            if (!skip) enqueueVoice(ev.audio, {
+              tid, clip: idx, faceCue: ev.face_cue || ""
+            });
+            continue;
+          }
+          showThought(turn, ev);
+        }
+        // Pings land here as bytes that parse to nothing. A turn whose done
+        // event will never come, on a healthy link, therefore never throws,
+        // never EOFs, and never returns — the surviving half of C10: the
+        // permanent "thinking…", ended by a hand reload. So the deadline is
+        // consulted on every read as well, which also holds where a
+        // backgrounded tab throttles every timer.
+        if (pastDeadline()) return giveUp;
+      }
+      // Stream ended without a done event: the connection was cut, not the
+      // turn. Fall through to reconnect.
+      throw new Error("stream cut");
+    } catch (e) {
+      if (releasedSeq === seq) return null;
+      // An abort lands here like any other cut: the turn is still running on
+      // the laptop, buffered under its id, and the reconnect below picks it
+      // up from exactly where this socket stopped.
+      setStatus("reconnecting…", "busy");
+      if (turnKicked) {
+        // The page just came back to the foreground and cut a stale attempt
+        // itself (spec rule 41). Backoff exists for a link that keeps
+        // failing, not for a socket the OS froze — reconnect now.
+        turnKicked = false;
+        delay = 1000;
+        await new Promise(res => setTimeout(res, 250));
+      } else {
+        await new Promise(res => setTimeout(res, delay));
+        delay = Math.min(delay * 2, 30000);
+      }
+    } finally {
+      clearTimeout(idle);
+      if (turnCtl === ctl) turnCtl = null;
+    }
+  }
+}
+
+function headText(box) {
+  const n = box.children.length;
+  return (box.classList.contains("folded") ? "▸ " : "▾ ") + n +
+         (n === 1 ? " step" : " steps");
+}
+
+function foldThoughts(turn) {
+  if (!turn.thoughts) return;
+  turn.thoughts.classList.add("folded");
+  turn.thHead.textContent = headText(turn.thoughts);
+}
+
+// The reply accumulates on the element itself, so the final `done` event can
+// tell whether crab's spoken text is a block already shown or a new one.
+function norm(s) { return (s || "").replace(/\s+/g, " ").trim(); }
+
+// What of `text` has NOT already been shown. crab's final `spoken` is the whole
+// turn's blocks joined, so after streaming it is normally entirely redundant;
+// when nothing streamed it is entirely new. Both are the same subtraction.
+function residue(replyEl, text) {
+  const said = replyEl._said || [];
+  if (!said.length) return text;
+  let rest = norm(text);
+  for (const block of said) {
+    const b = norm(block);
+    if (b && rest.startsWith(b)) rest = rest.slice(b.length).trim();
+  }
+  return rest;
+}
+
+function addSaid(replyEl, text) {
+  const said = replyEl._said || (replyEl._said = []);
+  if (!norm(text)) return;
+  if (norm(said[said.length - 1]) === norm(text)) return;
+  said.push(text);
+  // The stored Assistant: line is exactly these blocks joined, and it lands
+  // in the convo file seconds BEFORE the done event — conversation compaction
+  // and voice synthesis both run between the append and the JSON that becomes
+  // done. The own-turn filter must therefore be kept current block by block:
+  // waiting for done meant the watcher echoed every reply back as a turn
+  // "at the laptop" during that gap.
+  pendingReply = norm(said.join(" "));
+  replyEl.textContent = said.join("\n\n");
+  replyEl.scrollIntoView({ block: "end" });
+}
+
+function showThought(turn, ev) {
+  if (ev.kind === "transcript") return;
+  // Every text block is part of the answer, not a status line — append it in
+  // order so the transcript grows as the turn runs, exactly as it's spoken.
+  if (ev.kind === "text") { addSaid(turn.reply, ev.text); return; }
+  let box = turn.thoughts;
+  if (!box) {
+    const head = document.createElement("div");
+    head.className = "th-head";
+    box = document.createElement("div");
+    box.className = "thoughts";
+    head.onclick = () => {
+      box.classList.toggle("folded");
+      head.textContent = headText(box);
+    };
+    turn.reply.parentNode.insertBefore(head, turn.reply);
+    turn.reply.parentNode.insertBefore(box, turn.reply);
+    turn.thoughts = box; turn.thHead = head;
+  }
+  if (ev.kind === "wait") {
+    // Rule 43: one line, updated in place. These arrive every half-minute for
+    // as long as the turn is queued behind the lock, and a growing pile of
+    // near-identical rows would read as thinking happening when none is.
+    let wline = turn.waitLine;
+    if (!wline) {
+      wline = document.createElement("div");
+      wline.className = "thought wait";
+      box.append(wline);
+      turn.waitLine = wline;
+      turn.thHead.textContent = headText(box);
+      wline.scrollIntoView({ block: "end" });
+    }
+    wline.textContent = "⏳ " + ev.text;
+    setStatus(ev.text, "busy");
+    return;
+  }
+  const line = document.createElement("div");
+  line.className = "thought " + ev.kind;
+  line.textContent = (ev.kind === "tool" ? "⚙ " : "… ") + ev.text;
+  box.append(line);
+  turn.thHead.textContent = headText(box);
+  setStatus(ev.kind === "tool" ? "working…" : "thinking…", "busy");
+  // Tool lines don't steal the viewport: a thought followed by a tool call
+  // would otherwise yank the screen past the thought before it can be read.
+  if (ev.kind !== "tool") line.scrollIntoView({ block: "end" });
+}
+
+// Every request the turn path makes is bounded (spec rule 40): a fetch that
+// hangs on a half-dead link never rejects on its own, and an unbounded await
+// anywhere in runTurn holds `busy` — a grey button — until the watchdog,
+// which from a phone is indistinguishable from forever.
+function post(url, body, headers, timeoutMs) {
+  const ctl = new AbortController();
+  const guard = setTimeout(() => ctl.abort(), timeoutMs || 30000);
+  return fetch(url, { method: "POST", body, headers,
+                      credentials: "same-origin", signal: ctl.signal })
+    .then(r => { if (!r.ok) throw new Error("HTTP " + r.status); return r.json(); })
+    .finally(() => clearTimeout(guard));
+}
+
+// One take's transcription, shared by the live path (runTurn) and the mid-turn
+// queue path (queueRecorded). Nearly all of the audio is already on the laptop
+// and decoded, so finishing usually only leaves the last slice to transcribe;
+// if any slice failed to upload the session is incomplete and this falls back
+// to sending the whole recording the old way. Every wait is bounded (spec rule
+// 40): a slice upload stuck on a half-dead link used to hold this await — and
+// the button — until the watchdog. `take` carries the stt session captured at
+// release: the globals reset on the next press, and a stale sttFailed at worst
+// forces the whole-blob fallback, which still transcribes.
+async function transcribeBlob(blob, ctype, take) {
+  let t;
+  const sid = take ? take.sid : sttSid;
+  const chain = take ? take.chain : sttChain;
+  const settled = await Promise.race([
+    chain.then(() => true, () => false),
+    new Promise(res => setTimeout(() => res(false), 8000)),
+  ]);
+  if (!settled) sttFailed = true;
+  if (sid && !sttFailed) {
+    t = await post("/stt/finish?s=" + sid, null, { "X-Audio-Type": ctype }, 30000)
+          .catch(() => ({ error: "stream lost" }));
+    if (t.error) t = null;
+  }
+  if (!t) t = await post("/transcribe", blob, { "X-Audio-Type": ctype }, 75000);
+  return t;
+}
+
+// A turn is two requests, not one: transcription comes back in a second or two
+// and is shown immediately, so a mis-heard sentence is visible during the long
+// wait for the answer rather than after it.
+async function runTurn(blob, ctype, typed, resumeTid, resumeAt, take, attachment) {
+  if (busy) return;
+  // Hinted, never disabled: a disabled button gets no pointer events, and the
+  // reply's clips play while the turn is still running — tap-to-stop must
+  // keep working exactly then, and so must hold-to-talk (spec rule 5): a
+  // recording made while this flag is set queues instead of running.
+  busy = true; talk.classList.add("busy");
+  showStop(true);
+  lastTurnProgress = Date.now();
+  const seq = ++turnSeq;
+  const disarmWatchdog = armTurnWatchdog(seq);
+  // Where he is (spec rule 3a): the fix is asked for NOW so it resolves
+  // while the transcription runs, and awaited only at the send — bounded
+  // inside geoFix itself, null on any failure, never a word to the page. A
+  // resume skips it: the turn already exists on the laptop and an attach
+  // never re-injects. The typeof guard keeps the function liftable into the
+  // test harness, where the helper is not always supplied.
+  const locP = (resumeTid || typeof geoFix !== "function") ? null : geoFix();
+  // Asking again means wanting the answer aloud again.
+  voiceMuted = false;
+  const turn = addTurn(typed || "🎤 …");
+  // Held where the watcher can reach it: the reply can arrive through the
+  // conversation instead of this turn's stream (rule 42), and it must land in
+  // this bubble, not beside it.
+  liveTurn = turn;
+  try {
+    let text = typed;
+    if (!text) {
+      setStatus("transcribing…", "busy");
+      const t = await transcribeBlob(blob, ctype, take);
+      if (t.error) { turn.reply.textContent = "(" + t.error + ")"; setStatus(t.error, "err"); return; }
+      text = t.transcript;
+      turn.you.textContent = text;
+      turn.you.scrollIntoView({ block: "end" });
+    }
+    setStatus(resumeTid ? "picking the turn back up…" : "thinking…", "busy");
+    // This turn is about to land in the convo file too; the watcher filters
+    // it by text rather than skipping everything in the window, so a wake or
+    // laptop turn landing mid-flight still renders instead of vanishing.
+    pendingUser = norm(text);
+    pendingReply = null;
+    awaitedUserSeen = false;
+    // Transcription may have taken a while; the watchdog measures the stream
+    // from here, not from the press of the button.
+    lastTurnProgress = Date.now();
+    // Remembered so a reload mid-turn re-attaches instead of orphaning the
+    // turn behind the lock (spec rule 39); forgotten the moment it ends. A
+    // resume carries the ORIGINAL clock forward: restamping it here made the
+    // ten-minute bound measure from the latest reload, so a reload storm
+    // could pick a dead turn back up forever.
+    const tid = resumeTid || randomHex(32);
+    activeTid = tid;   // what ◼ Stop reaches (spec rule 47)
+    rememberTurn(tid, text, resumeAt);
+    const res = await streamTurn(text, turn, tid, !!resumeTid, seq,
+                                 locP ? await locP : null, attachment || null);
+    // Null means the watcher ended this turn first (rule 42): the bubble,
+    // the button, and the status were all settled there.
+    if (res && releasedSeq !== seq) {
+      foldThoughts(turn);
+      if (res.spoken) pendingReply = norm(res.spoken);
+      await deliver(res, turn.reply, { tid, clip: "done" });
+    } else if (res && res.audio) {
+      // The voice tail of a released turn (rule 42): the words were already
+      // reconciled to the record, and the stream stayed open for the sound.
+      // Streamed clips played above as they arrived; a completion clip here
+      // means nothing streamed and this is the only sound the turn will ever
+      // make. Play it; touch nothing else.
+      enqueueVoice(res.audio, {
+        tid, clip: "done", faceCue: res.face_cue || ""
+      });
+    }
+  } catch (e) {
+    setStatus(String(e.message || e), "err");
+    turn.reply.textContent = "(failed)";
+  } finally {
+    disarmWatchdog();
+    // If the watchdog fired, the page is already idle and a NEW turn may be
+    // running — that turn's state is not this one's to clear.
+    if (turnSeq === seq) {
+      forgetTurn();
+      liveTurn = null;
+      activeTid = null;
+      busy = false; talk.classList.remove("busy");
+      showStop(false);
+      updateTalkBtn();
+      // A message queued while this turn ran attaches now — within a beat of
+      // the end, so its run (which only takes the lock when this one's run
+      // exits) cannot have voiced anything before the page is listening.
+      pumpQueue();
+    }
+  }
+}
+
+// The memory that survives a reload: which turn was in flight, what was asked,
+// and when. Rule 1 makes re-posting the same identifier an attach, so a page
+// that comes back re-joins its own turn rather than leaving it running
+// invisibly — holding the lock — while the re-asked question queues behind it.
+function rememberTurn(tid, text, at) {
+  try {
+    localStorage.setItem("crab-turn",
+                         JSON.stringify({ tid, text, at: at || Date.now() }));
+  } catch (_) {}
+}
+
+function forgetTurn() {
+  try { localStorage.removeItem("crab-turn"); } catch (_) {}
+}
+
+// Ten minutes: past the give-up, past the watchdog, and past any run a phone
+// turn is allowed — a memory older than this is a page nobody reloaded, and
+// re-posting it could START a turn (the buffer TTL-swept, rule 1 creates).
+const RESUME_MAX_AGE_MS = 10 * 60 * 1000;
+
+function resumePending(ctx) {
+  let rec = null;
+  try { rec = JSON.parse(localStorage.getItem("crab-turn") || "null"); } catch (_) {}
+  if (!rec || !rec.tid || !rec.text) return;
+  if (Date.now() - (rec.at || 0) > RESUME_MAX_AGE_MS) { forgetTurn(); return; }
+  // Already answered and already on screen: the seed carries the exchange, so
+  // there is nothing to re-attach to — re-drawing it would double the bubble.
+  const turns = (ctx && ctx.turns) || [];
+  for (let i = turns.length - 1; i >= 0; i--)
+    if (turns[i].role === "user" && norm(turns[i].text) === norm(rec.text)) {
+      forgetTurn();
+      return;
+    }
+  runTurn(null, null, rec.text, rec.tid, rec.at);
+}
+
+// The last line of defence against C10: if `busy` is still set long after
+// anything last happened — the stream given up on and some later await never
+// settling, or a path nobody has imagined yet — the page is returned to idle
+// by force. It should never fire while streamTurn's own deadline works; it
+// exists so no single missed path can cost a hand reload again. Deliberately
+// longer than the stream's give-up, so the polite path always gets to answer
+// first.
+let lastTurnProgress = 0;
+let turnCtl = null;
+let turnSeq = 0;
+// The turn the conversation watcher ended (rule 42). streamTurn compares its
+// own sequence against this and returns quietly instead of reconnecting to a
+// turn the page no longer owns.
+let releasedSeq = 0;
+// The in-flight turn's bubbles, so a watcher-delivered reply lands in them
+// rather than beside them.
+let liveTurn = null;
+// Set by the foreground kick just before it aborts a stale attempt, read by
+// streamTurn's catch: this cut asks for an immediate reconnect, not backoff.
+let turnKicked = false;
+// Hidden time is not silence (spec rule 41, C18). While the screen is off no
+// event CAN arrive, so lastTurnProgress stops moving while Date.now() does
+// not — and a lock longer than the give-up window used to guarantee "gave
+// up: no progress in 6 minutes" on the first check after unlock, without one
+// reconnect attempt (2026-08-11 09:17). hiddenAt marks the span in progress;
+// hiddenTotal accumulates, monotonically, every span that has ended, so each
+// running stream can add the hidden time back to its own deadline; and
+// resumeCount rises on every return to the foreground, so a resume whose
+// hidden span was never observed is still worth one reconnect.
+let hiddenAt = 0, hiddenTotal = 0, resumeCount = 0;
+
+function armTurnWatchdog(seq) {
+  // Seven minutes, one past the stream's own give-up so the polite path
+  // always answers first — and polled every five seconds, because a watchdog
+  // that fires up to half a minute late is half a minute of a dead grey
+  // button. Seventeen minutes was not a defence anyone lived to see.
+  const limit = 7 * 60 * 1000, poll = 5 * 1000;
+  const timer = setInterval(() => {
+    if (!busy || turnSeq !== seq) { clearInterval(timer); return; }
+    // While the page is hidden the silence clock reads the moment the screen
+    // went dark, not now: a tick on a throttled-but-not-frozen background
+    // tab must not count the lock as stall (rule 41's hidden-time clause).
+    // On resume the reference itself is pushed forward by the span, so only
+    // awake silence ever accumulates.
+    if ((hiddenAt || Date.now()) - lastTurnProgress < limit) return;
+    clearInterval(timer);
+    if (turnCtl) turnCtl.abort();
+    busy = false;
+    activeTid = null;
+    talk.classList.remove("busy");
+    showStop(false);
+    updateTalkBtn();
+    setStatus("the turn stalled — ready again", "err");
+    pumpQueue();
+  }, poll);
+  return () => clearInterval(timer);
+}
+
+// The foreground kick (spec rule 41). While the page is hidden the OS freezes
+// its timers and lets its sockets rot, so a turn that was streaming when the
+// screen locked comes back to a fetch that will never deliver and an idle
+// timer that has not been allowed to fire. Coming back to the foreground is
+// the moment to notice: cut the stale attempt so the reconnect happens NOW,
+// and if the whole turn is past saving, let the watchdog's own check run
+// rather than waiting out a throttled interval.
+function kickStaleTurn() {
+  if (!busy) return;
+  if (Date.now() - lastTurnProgress < STREAM_IDLE_MS) return;
+  if (turnCtl) { turnKicked = true; turnCtl.abort(); }
+}
+// The visibility watcher (rule 41). Going dark stamps the span's start;
+// coming back closes it and forgives it: the kick first — it judges
+// staleness on the RAW clock, because a socket that carried nothing across
+// a lock has rotted and must be cut now, not at the idle timer's leisure —
+// then the hidden span lands in hiddenTotal for the stream's deadline, the
+// watchdog's reference moves forward by the same span (clamped: it never
+// lands in the future), and resumeCount rises so a resume whose hidden span
+// was never observed still buys one reconnect before any give-up.
+function onVisibility() {
+  if (document.hidden) { hiddenAt = Date.now(); return; }
+  const span = hiddenAt ? Date.now() - hiddenAt : 0;
+  hiddenAt = 0;
+  kickStaleTurn();
+  if (span > 0) {
+    hiddenTotal += span;
+    if (busy)
+      lastTurnProgress = Math.min(lastTurnProgress + span, Date.now());
+  }
+  resumeCount++;
+}
+document.addEventListener("visibilitychange", onVisibility);
+
+// Set on press (past the hold threshold), cleared on release. getUserMedia can
+// resolve after a very quick release — without this check the recorder would
+// start with nothing left to stop it.
+let recWanted = false;
+
+// While the microphone is open the page's own sound is paused (spec rule 5):
+// the mic would eat her clips, which was the old rule's whole reason to refuse
+// recording mid-turn — the refusal is gone and the pause is the microphone's.
+// Resumed on release exactly where it stopped: pausing is not stopping, the
+// voice queue neither advances nor drops, and the mute is untouched.
+let duckedVoice = false, duckedMusic = false;
+function duckPlayback() {
+  duckedVoice = !!playerClip && !player.paused;
+  if (duckedVoice) player.pause();
+  duckedMusic = !music.paused && !music.ended;
+  if (duckedMusic) music.pause();
+}
+function unduckPlayback() {
+  // A stop pressed while recording cleared the queue: playerClip gone means
+  // there is nothing to resume, and resuming would replay a chosen silence.
+  if (duckedVoice && playerClip) { const p = player.play(); if (p) p.catch(() => {}); }
+  if (duckedMusic && music.src) { const p = music.play(); if (p) p.catch(() => {}); }
+  duckedVoice = duckedMusic = false;
+}
+
+async function startRec() {
+  // No busy guard (spec rule 5): the microphone is never refused. A take
+  // recorded while a turn runs is transcribed and queued by rec.onstop.
+  recWanted = true;
+  // The cached stream can die while the page is away — the browser revokes
+  // the microphone on a locked screen — and a dead stream records nothing:
+  // every hold after that came back "too short" until a reload (spec rule
+  // 41). A track that has ended is not a microphone; take a fresh one.
+  if (stream && stream.getTracks().some(t => t.readyState === "ended")) {
+    stream.getTracks().forEach(t => t.stop());
+    stream = null;
+  }
+  try {
+    if (!stream) stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  } catch (e) { setStatus("no microphone: " + e.name, "err"); return; }
+  if (!recWanted) return;
+  // No mimeType is specified on purpose: Chrome gives webm/opus, iOS Safari
+  // gives mp4/aac, and ffmpeg decodes either. Hardcoding one breaks the other.
+  chunks = [];
+  // Held in a local as well: stopRec() clears the global immediately, and
+  // onstop fires afterwards — reading the global there would be reading null.
+  const rec = new MediaRecorder(stream);
+  recorder = rec;
+  // Audio goes up while you are still talking, not after you let go: by the
+  // time the button is released the laptop has already decoded and largely
+  // transcribed everything but the tail. Slices are chained rather than fired
+  // in parallel because after the first they carry no container header and
+  // only mean anything appended in order.
+  sttSid = randomHex(24);
+  sttChain = Promise.resolve();
+  sttFailed = false;
+  rec.ondataavailable = e => {
+    if (!e.data.size) return;
+    chunks.push(e.data);
+    const ctype = rec.mimeType || "audio/webm";
+    sttChain = sttChain.then(() =>
+      post("/stt/chunk?s=" + sttSid, e.data, { "X-Audio-Type": ctype })
+    ).catch(() => { sttFailed = true; });
+  };
+  rec.onstop = () => {
+    const blob = new Blob(chunks, { type: rec.mimeType || "audio/webm" });
+    if (blob.size < 1200) { setStatus("too short", "err"); return; }
+    // The stt session is captured at release: a second recording resets the
+    // globals, and this take's transcription must finish against its own.
+    const take = { sid: sttSid, chain: sttChain };
+    // Mid-turn the take queues (spec rules 5, 49) exactly as a typed send
+    // does; idle it runs as it always did.
+    if (busy) queueRecorded(blob, blob.type || "audio/webm", take);
+    else runTurn(blob, blob.type || "audio/webm", null, undefined, undefined, take);
+  };
+  recorder.start(2000);
+  duckPlayback();
+  talk.classList.remove("speaking");
+  talk.classList.add("rec");
+  talk.textContent = "Release to send";
+  setStatus("listening…", "busy");
+}
+
+function stopRec() {
+  recWanted = false;
+  if (recorder && recorder.state === "recording") recorder.stop();
+  recorder = null;
+  unduckPlayback();
+  talk.classList.remove("rec");
+  updateTalkBtn();
+}
+
+// Tap vs hold: the mic only opens once the finger has stayed down past TAP_MS
+// without wandering. A shorter press is a tap — it stops any speech in flight
+// and records nothing, so it can never send an empty turn. Pointer events
+// cover mouse and touch alike.
+const TAP_MS = 250, TAP_SLOP = 12;
+let pressTimer = null, pressX = 0, pressY = 0, pressMoved = false;
+talk.addEventListener("pointerdown", e => {
+  e.preventDefault();
+  // The unlock must happen here: by the time the hold timer fires the user
+  // gesture may no longer count for autoplay.
+  unlockAudio();
+  pressX = e.clientX; pressY = e.clientY; pressMoved = false;
+  clearTimeout(pressTimer);
+  pressTimer = setTimeout(() => { pressTimer = null; startRec(); }, TAP_MS);
+});
+talk.addEventListener("pointermove", e => {
+  if (Math.hypot(e.clientX - pressX, e.clientY - pressY) > TAP_SLOP) pressMoved = true;
+});
+["pointerup", "pointercancel", "pointerleave"].forEach(ev =>
+  talk.addEventListener(ev, e => {
+    e.preventDefault();
+    if (pressTimer !== null) {
+      clearTimeout(pressTimer);
+      pressTimer = null;
+      if (ev === "pointerup" && !pressMoved && voiceQ.busy())
+        stopSpeech();
+      return;
+    }
+    stopRec();
+  }));
+
+// --- The brake, and the queue that means a send never blocks -----------------
+// (spec rules 47-50). Two controls, and he holds both. Send freely: a message
+// typed while a turn runs is queued and posted at once, never refused and
+// never dropped — the old guard cleared the input and threw the text away,
+// worse than blocking. Stop explicitly: ◼ Stop kills the turn in flight on
+// the laptop — processes, synthesis, and the one-mind lock with them — and
+// takes the queue with it. A new message is deliberately NOT an interrupt:
+// only pushback supersedes a reply in flight (the pipeline's own doctrine),
+// and a destructive task deserves a deliberate brake, not an accidental one.
+const sendQueue = [];
+let activeTid = null;
+const stopBtn = $("stop");
+
+function showStop(on) { stopBtn.hidden = !on; }
+
+function seedTurn(text, tid, attachment) {
+  // The message reaches the laptop NOW, under the id the later attach will
+  // re-use — rule 1 makes the re-post an attach, never a second run — so a
+  // page that dies with a queue never loses a word: the turn still runs and
+  // the reply lands in the record. The stream is hung up as soon as the
+  // server answers; the buffer holds the turn, and a failure here costs
+  // nothing because the attach re-posts the same id anyway.
+  // This post is the one that CREATES the queued turn, so it is the one
+  // that carries the fix (spec rule 3a) — bounded inside geoFix, null on
+  // any failure, so the seed is delayed by at most that bound and never by
+  // an error. A promise chain rather than an async function on purpose:
+  // the harness lifts this by its plain-function name.
+  const locP = typeof geoFix === "function" ? geoFix() : Promise.resolve(null);
+  locP.then(loc => {
+    const ctl = new AbortController();
+    const guard = setTimeout(() => ctl.abort(), 8000);
+    fetch("/say", { method: "POST", credentials: "same-origin",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify(Object.assign(
+                      { text, turn: tid }, loc ? { loc } : {},
+                      attachment ? { attachment } : {})),
+                    signal: ctl.signal })
+      .then(() => ctl.abort())
+      .catch(() => {})
+      .finally(() => clearTimeout(guard));
+  });
+}
+
+function queueTurn(text, attachment) {
+  const tid = randomHex(32);
+  const bubble = addTurn(text);
+  bubble.reply.classList.add("queued");
+  bubble.reply.textContent = "⏳ queued — she's still on the last one";
+  sendQueue.push({ text, tid, at: Date.now(), el: bubble.reply.parentNode,
+                   attachment: attachment || null });
+  seedTurn(text, tid, attachment || null);
+  setStatus("queued — ◼ Stop cuts in", "busy");
+}
+
+// A recording made while a turn runs (spec rules 5, 49): never refused, never
+// dropped. The take transcribes exactly as a live one and the text joins the
+// same queue a typed send does — drawn where the user can see it, posted at
+// once under its own id (seedTurn), attached when the slot frees. A failed
+// transcription says so in its own bubble rather than dying silently.
+async function queueRecorded(blob, ctype, take) {
+  const bubble = addTurn("🎤 …");
+  bubble.reply.classList.add("queued");
+  bubble.reply.textContent = "⏳ transcribing…";
+  let t;
+  try {
+    t = await transcribeBlob(blob, ctype, take);
+  } catch (e) {
+    t = { error: String(e.message || e) };
+  }
+  if (t.error || !norm(t.transcript || "")) {
+    bubble.reply.textContent = "(" + (t.error || "heard nothing") + ")";
+    setStatus(t.error || "heard nothing", "err");
+    return;
+  }
+  bubble.you.textContent = t.transcript;
+  bubble.reply.textContent = "⏳ queued — she's still on the last one";
+  const tid = randomHex(32);
+  sendQueue.push({ text: t.transcript, tid, at: Date.now(), el: bubble.reply.parentNode });
+  seedTurn(t.transcript, tid);
+  setStatus("queued — ◼ Stop cuts in", "busy");
+  // The turn may have ended while the transcription ran, and its own pump saw
+  // an empty queue: pump again now so this take never waits for a next turn.
+  pumpQueue();
+}
+
+function pumpQueue() {
+  if (busy || !sendQueue.length) return;
+  const m = sendQueue.shift();
+  // runTurn draws the live bubble; the queued placeholder goes first. The
+  // attach happens within a beat of the previous turn's end, so the queued
+  // run — which only takes the lock when the previous run exits — cannot
+  // have voiced anything yet.
+  if (m.el) m.el.remove();
+  runTurn(null, null, m.text, m.tid, m.at, undefined, m.attachment || null);
+}
+
+async function stopTurn() {
+  if (!busy && !sendQueue.length) return;
+  // The brake silences in the same gesture: a killed reply's clips playing
+  // on would be the stream outliving the stop.
+  stopSpeech();
+  const tids = [];
+  if (activeTid) tids.push(activeTid);
+  for (const m of sendQueue) { tids.push(m.tid); if (m.el) m.el.remove(); }
+  sendQueue.length = 0;
+  setStatus("stopping…", "busy");
+  const results = await Promise.all(tids.map(tid =>
+    post("/stop", JSON.stringify({ turn: tid }),
+         { "Content-Type": "application/json" }, 15000)
+      .then(() => true).catch(() => false)));
+  if (results.some(r => !r))
+    setStatus("stop did not reach the server", "err");
+  // The stopped turn's own stream delivers its done event (marked stopped),
+  // which hands the button back through the ordinary path.
+}
+stopBtn.addEventListener("click", stopTurn);
+
+function sendTyped() {
+  const v = $("text").value.trim();
+  const attachment = typeof pendingAttachment === "undefined" ? null : pendingAttachment;
+  if (!v && !attachment) return;
+  const text = v || "[Photo attached]";
+  $("text").value = "";
+  if (typeof clearAttachment === "function") clearAttachment();
+  unlockAudio();
+  if (busy) { queueTurn(text, attachment); return; }
+  runTurn(null, null, text, undefined, undefined, undefined, attachment);
+}
+$("send").addEventListener("click", sendTyped);
+$("text").addEventListener("keydown", e => { if (e.key === "Enter") sendTyped(); });
+
+fetch("/health").then(r => r.json()).then(h => {
+  if (h.name) { $("name").textContent = h.name; document.title = h.name; }
+}).catch(() => {});
+
+// Seed a freshly loaded page with where the conversation currently stands, so
+// picking the phone up mid-thread doesn't start from a blank screen. Nothing
+// stored yet means nothing shown — no empty scaffolding. The same rendering
+// serves a RESEED: when /watch reports the conversation file was rewritten
+// under the cursor (compaction, archival), the page redraws from a fresh
+// /context exactly as a manual refresh would — that refresh used to be his
+// hand's job.
+// Turns into bubbles, in one place, for all three callers (the page-load seed,
+// the watcher, and the redraw after a rewrite). The convo file stores one line
+// per turn, so a user turn and the reply that follows it are paired back up
+// here into the same shape a live turn takes. An assistant turn with no user
+// turn before it — an autonomous wake — is rendered on its own: skipping
+// non-user turns here silently erased every wake exchange from a reloaded page.
+// `skip` is consulted per turn before anything is built; `after` is handed each
+// finished block.
+function appendTurns(parent, turns, cls, skip, after) {
+  for (let i = 0; i < turns.length; i++) {
+    // A turn holding nothing is not drawn. The server filters these too; this
+    // is the second belt, for a page cached against an older one.
+    if (!norm(turns[i].text) && !turns[i].display_html) continue;
+    if (skip && skip(turns[i])) continue;
+    const t = document.createElement("div");
+    t.className = cls;
+    if (turns[i].role === "user") {
+      const y = document.createElement("div");
+      y.className = "you"; y.textContent = turns[i].text;
+      t.append(y);
+      const next = turns[i + 1];
+      if (next && next.role === "assistant") {
+        const r = document.createElement("div");
+        r.className = "reply"; r.textContent = next.text;
+        t.append(r);
+        if (next.display_html) attachDisplay(r, next.display_html);
+        i++;
+      }
+    } else {
+      const r = document.createElement("div");
+      r.className = "reply"; r.textContent = turns[i].text;
+      t.append(r);
+      if (turns[i].display_html) attachDisplay(r, turns[i].display_html);
+    }
+    parent.append(t);
+    if (after) after(t);
+  }
+}
+
+function renderSeed(ctx) {
+  const turns = ctx.turns || [];
+  if (!ctx.summary && !turns.length) return;
+
+  const seed = document.createElement("div");
+  seed.id = "seed";
+  const label = document.createElement("div");
+  label.className = "seed-label";
+  label.textContent = "where we were";
+  seed.append(label);
+
+  if (ctx.summary) {
+    const s = document.createElement("div");
+    s.className = "seed-summary";
+    s.textContent = ctx.summary;
+    seed.append(s);
+  }
+
+  appendTurns(seed, turns, "turn");
+
+  logEl.prepend(seed);
+  seed.scrollIntoView({ block: "end" });
+}
+
+fetch("/context", { credentials: "same-origin" }).then(r => r.json()).then(ctx => {
+  // Any wake audio already pending was routed before this page existed —
+  // mark it heard so loading the app never blares an old clip. A pending
+  // media hand-off is seeded the same way and for the same reason.
+  wakeSeen = ctx.wake_id || "";
+  playSeen = ctx.play_id || "";
+  cursor = ctx.n;
+  gen = ctx.gen || "";
+  renderSeed(ctx);
+  // After the seed, deliberately: whether the remembered turn already
+  // answered is read off the seed itself (spec rule 39).
+  resumePending(ctx);
+}).then(startWatch).catch(startWatch);
+
+// Two turns are the same turn when the same speaker said the same words. The
+// record carries no turn ids, so this is the whole of identity here — and it is
+// already what the own-turn filter matches on, so the two agree by
+// construction.
+function turnKey(role, text) {
+  return role + " " + norm(text);
+}
+
+// What the page is showing right now, counted by identity. The DOM is
+// deliberately the source of truth: it is exactly what he can see, and a
+// parallel list of "what we drew" could only drift away from it. Counting
+// rather than set membership keeps a sentence said twice from collapsing into
+// one when the file is re-read.
+function renderedKeys() {
+  const m = new Map();
+  const bubbles = logEl.querySelectorAll(".you, .reply");
+  for (let i = 0; i < bubbles.length; i++) {
+    const el = bubbles[i];
+    const role = /(^|\s)you(\s|$)/.test(el.className) ? "user" : "assistant";
+    const k = turnKey(role, el.textContent);
+    m.set(k, (m.get(k) || 0) + 1);
+  }
+  return m;
+}
+
+// Draw what the rewritten file holds that is NOT already on the page, under a
+// rule saying the record was rewritten here. The summary is deliberately not
+// drawn: it condenses turns that are still sitting above the rule, in full.
+function renderCarried(ctx, shown) {
+  const fresh = [];
+  const turns = ctx.turns || [];
+  for (let i = 0; i < turns.length; i++) {
+    const t = turns[i];
+    if (!norm(t.text) && !t.display_html) continue;
+    const k = turnKey(t.role, t.text);
+    const n = shown.get(k) || 0;
+    if (n > 0) { shown.set(k, n - 1); continue; }
+    fresh.push(t);
+  }
+  // Nothing arrived that he cannot already see: no rule, no noise. This is the
+  // common case for an archival rotation, where the fresh file holds only the
+  // exchange that has just been drawn live.
+  if (!fresh.length) return;
+  const rule = document.createElement("div");
+  rule.className = "rewound";
+  rule.textContent = "earlier conversation";
+  logEl.append(rule);
+  appendTurns(logEl, fresh, "turn", null, t => t.scrollIntoView({ block: "end" }));
+}
+
+// The conversation file was rewritten under our cursor (compaction, or the
+// archival rotation that starts a fresh one). The cursor means nothing against
+// the new file, so the page re-reads /context — but WHAT IS ALREADY ON SCREEN
+// IS NOT THROWN AWAY.
+//
+// It used to be. This called logEl.replaceChildren() and redrew from the new
+// file alone, which is survivable after a compaction (the file still holds most
+// of the conversation) and ruinous after a rotation (it holds none of it).
+// Live, 2026-08-07: the conversation had been idle since 22:18, the turn at
+// 23:40 rotated it to the archive and started a fresh file, /watch said reset,
+// and the phone's whole visible conversation vanished mid-session — leaving the
+// one sentence just spoken. Nothing was lost from disk; it was lost from in
+// front of him, which is the only place he was reading it.
+//
+// So: the rendered turns stay, a divider marks where the record was rewritten,
+// and only the parts of the new context not already on the page are drawn under
+// it. A deliberate reload still starts clean — that is the escape hatch, and
+// the reason this only has to hold within one session.
+async function reseed() {
+  const ctx = await (await fetch("/context", { credentials: "same-origin" })).json();
+  // The rewrite folded whatever the pending filters were guarding into the
+  // file itself; a match against some future identical turn would eat it.
+  pendingUser = pendingReply = null;
+  awaitedUserSeen = false;
+  const shown = renderedKeys();
+  if (shown.size) {
+    renderCarried(ctx, shown);
+  } else {
+    // An empty page has no scrollback to protect, so this is the plain redraw,
+    // summary and all — the same thing a fresh load does.
+    logEl.replaceChildren();
+    renderSeed(ctx);
+  }
+  cursor = ctx.n;
+  gen = ctx.gen || "";
+}
+
+// Follow the conversation while it happens somewhere else. Turns spoken at the
+// laptop go into the same file, so the phone long-polls for anything past its
+// cursor and shows it arriving rather than only on the next page load.
+let cursor = null;
+// Which incarnation of the conversation file the cursor was read from — the
+// server's rewrite detector. Compaction and archival invalidate every
+// position-based cursor; when this token stops matching, /watch says `reset`
+// instead of silently swallowing the turns that rode in with the rewrite.
+let gen = "";
+let watching = false;
+
+// The last wake-audio clip this page played (or was told predates it). Sent
+// with every poll: its presence tells the server this client can play wake
+// audio at all — and so counts as "connected" when a wake picks a speaker.
+let wakeSeen = "";
+
+// The turn taken on this phone also lands in the convo file, and the watcher
+// must not echo it back as a duplicate bubble. It used to handle that by not
+// rendering at all while busy and snapping the cursor forward afterwards —
+// which silently swallowed any OTHER turn (an autonomous wake, a turn spoken
+// at the laptop) that landed in the same window: consumed by the cursor,
+// never rendered, unrecoverable. Instead the own turn is remembered by its
+// text and filtered out individually; everything else always renders.
+let pendingUser = null;
+let pendingReply = null;
+// This turn's own User block has come back through the watcher; the next
+// unmarked assistant block is its answer (rule 42) unless another User block
+// breaks the adjacency first.
+let awaitedUserSeen = false;
+
+// A /watch reset that arrived while a turn was in flight. The redraw would
+// wipe the exchange being spoken, so it waits here until `busy` clears.
+let needReseed = false;
+
+// The reply this page is waiting on arrived through the conversation watcher
+// instead of the turn's own stream (rule 42). That is an ordinary arrival,
+// not a broken one: the mirror pass can rewrite the draft after its raw text
+// streamed, and compaction — a whole model run — sits between the
+// conversation append and the exit that emits the done event, so the record
+// can carry the answer a minute before the stream does. The arrival IS the
+// turn's end: the bubble is reconciled to the record and the button handed
+// back — but the stream is NEVER cut. The watcher carries no audio of its
+// own, and the append runs ahead of the synthesiser: under sentence
+// streaming the record regularly lands while the reply's tail sentences are
+// still becoming clips. This release used to abort the stream once any clip
+// had sounded, and on 2026-08-09 that cut three replies off mid-thought —
+// every clip past the second synthesised, emitted, and never fetched (C14).
+// So only the UI is released here; the stream runs on as a voice tail that
+// plays whatever clips it still owes and ends at its own done event, which
+// every turn emits exactly once. Nothing sounds twice: a clip rides the live
+// stream once, and the done event offers audio only when nothing streamed.
+function releaseTurn(t) {
+  if (!busy) return;
+  const seq = turnSeq;
+  releasedSeq = seq;
+  const r = liveTurn && liveTurn.reply;
+  if (r) {
+    // Nothing streamed: the record holds the only copy of the answer.
+    if (!(r._said || []).length) r.textContent = t.text;
+    // The display card never rides the stream's text events; without this it
+    // would be lost with the done event.
+    if (t.display_html && !r.parentNode.querySelector(".display"))
+      attachDisplay(r, t.display_html);
+    foldThoughts(liveTurn);
+    r.scrollIntoView({ block: "end" });
+  }
+  forgetTurn();
+  pendingReply = null;
+  activeTid = null;
+  busy = false;
+  talk.classList.remove("busy");
+  showStop(false);
+  updateTalkBtn();
+  setStatus("the reply arrived through the conversation — ready");
+  pumpQueue();
+}
+
+// One filter for every block the watcher delivers. It holds the own-turn
+// suppression that keeps this phone's exchange from echoing back as a
+// duplicate bubble, and the recognition that ends a turn whose answer arrived
+// through the record rather than the stream (rule 42). Identity is text for
+// the User block; for the reply it is text when the streamed blocks match,
+// and adjacency when they do not — the mirror can rewrite the draft between
+// the stream and the record, so the first unmarked assistant block after this
+// turn's own question is its answer even worded differently. A User block
+// that is not this turn's question breaks the adjacency: whatever follows it
+// answers it, not this turn. A marked block (an autonomous wake) is never a
+// candidate, and never consumes the wait either — a wake landing mid-turn
+// must not cost this turn its release.
+function watchFilter(t) {
+  if (t.role === "user") {
+    if (pendingUser && norm(t.text) === pendingUser) {
+      pendingUser = null;
+      awaitedUserSeen = true;
+      return true;
+    }
+    awaitedUserSeen = false;
+    return false;
+  }
+  if (!t.mark) {
+    if (pendingReply && norm(t.text) === pendingReply) {
+      pendingReply = null;
+      awaitedUserSeen = false;
+      if (busy) releaseTurn(t);
+      return true;
+    }
+    if (awaitedUserSeen) {
+      awaitedUserSeen = false;
+      // Idle with a reply that matched nothing shown: a late answer to a
+      // given-up turn. It must stay visible, so it draws as ever.
+      if (busy) { releaseTurn(t); return true; }
+    }
+  }
+  return false;
+}
+
+function renderRemote(turns) {
+  // Same rule as the seed: an empty block is not a bubble — appendTurns holds
+  // that line. What is extra here is the filter above: this phone's own
+  // exchange comes back around through the file and must not be drawn twice.
+  appendTurns(logEl, turns, "turn elsewhere", watchFilter,
+              t => t.scrollIntoView({ block: "end" }));
+}
+
+async function startWatch() {
+  if (watching) return;
+  watching = true;
+  let retry = 1000;
+  for (;;) {
+    try {
+      // A rewrite that arrived while a turn was in flight: redraw now that
+      // the turn has landed. This is the only place it can happen, because
+      // it is the only loop that runs after `busy` clears.
+      if (needReseed && !busy) { await reseed(); needReseed = false; }
+      const q = "/watch?wait=1&wakeseen=" + encodeURIComponent(wakeSeen)
+              + "&playseen=" + encodeURIComponent(playSeen)
+              + (cursor === null ? "" : "&since=" + cursor)
+              + "&gen=" + encodeURIComponent(gen);
+      // The server answers every poll within its ~25 s window even when
+      // nothing happened — that answer is the heartbeat. A fetch still
+      // hanging well past it is a dead link (tailnet gone, laptop asleep)
+      // that TCP alone might sit on for many minutes; cut it and retry.
+      const ctl = new AbortController();
+      const guard = setTimeout(() => ctl.abort(), 45000);
+      let data;
+      try {
+        const res = await fetch(q, { credentials: "same-origin", signal: ctl.signal });
+        if (!res.ok) throw new Error("HTTP " + res.status);
+        data = await res.json();
+      } finally { clearTimeout(guard); }
+      retry = 1000;
+      // A wake routed its voice here because this phone was the live device.
+      // Played through the same queue as reply clips, acknowledged so the
+      // next poll doesn't repeat it.
+      if (data.wake && data.wake.id !== wakeSeen) {
+        wakeSeen = data.wake.id;
+        // A stop applies to the speech it interrupted, not to a wake that
+        // hasn't spoken yet.
+        voiceMuted = false;
+        enqueueVoice(data.wake.audio, { faceCue: data.wake.face_cue || "" });
+      }
+      // A handed piece. Not gated on voiceMuted — the stop-tap is about
+      // speech — and the persistent mute silences rather than suppresses,
+      // so the id is acknowledged either way and never replays later.
+      if (data.play && data.play.id !== playSeen) {
+        playSeen = data.play.id;
+        showMedia(data.play);
+      }
+      if (data.reset) {
+        // The conversation file was rewritten under the cursor (compaction,
+        // archival) — a slice against it would be the wrong turns, so redraw
+        // from scratch instead.
+        //
+        // Mid-turn the redraw would wipe the exchange in flight, so it is
+        // DEFERRED, not skipped: the new incarnation is adopted right here so
+        // the poll goes back to waiting (the cursor and gen used to sit below
+        // the `continue`, so the next poll re-asked with the same stale gen,
+        // the server answered it instantly, and the loop span at 2 s for the
+        // whole turn and drew nothing — twelve identical polls in 23 seconds
+        // in the live log). Nothing is lost by consuming the cursor here,
+        // because the queued reseed redraws the whole conversation.
+        //
+        // The trigger is structural, not rare: compact_convo runs inside
+        // every phone turn, and compaction is exactly what changes the gen.
+        cursor = data.n;
+        if (data.gen !== undefined) gen = data.gen;
+        if (busy) {
+          // The answer this page is waiting on can ride the reset itself —
+          // compaction is what changes the gen, and compaction runs inside
+          // the very turn being waited on. The payload is scanned, never
+          // drawn (the queued reseed redraws everything), so rule 42's
+          // release is not lost with the deferral.
+          (data.turns || []).forEach(watchFilter);
+          needReseed = true;
+          continue;
+        }
+        await reseed();
+        needReseed = false;
+        continue;
+      }
+      cursor = data.n;
+      if (data.gen !== undefined) gen = data.gen;
+      if (data.turns.length) renderRemote(data.turns);
+    } catch (e) {
+      // Phone asleep, laptop rebooting, tailnet blipping — try again, backing
+      // off so a long outage isn't hammered, snapping back on any success.
+      await new Promise(r => setTimeout(r, retry));
+      retry = Math.min(retry * 2, 30000);
+    }
+  }
+}
+
+
+// --- Web Push: reaching this phone with the page CLOSED ----------------------
+// Subscribing is a deliberate act (the bell) because it pops the browser's
+// permission prompt, and that prompt is only granted inside a user gesture.
+// Everything after that is idempotent: every page load re-posts the existing
+// subscription, so the server's store survives reloads and endpoint rotation.
+const bell = $("bell");
+const pushOk = "serviceWorker" in navigator && "PushManager" in window
+            && "Notification" in window;
+
+function b64uToBytes(s) {
+  const raw = atob(s.replace(/-/g, "+").replace(/_/g, "/"));
+  return Uint8Array.from(raw, c => c.charCodeAt(0));
+}
+
+function setBell(on) {
+  bell.classList.toggle("on", !!on);
+  bell.title = on ? "Notifications on — tap to disable" : "Enable notifications";
+}
+
+async function pushSync() {
+  // On iOS the Push API only exists once the page is installed to the home
+  // screen — until then the bell simply stays hidden.
+  if (!pushOk) return;
+  bell.hidden = false;
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    const sub = await reg.pushManager.getSubscription();
+    if (sub && Notification.permission === "granted") {
+      await post("/push/subscribe", JSON.stringify(sub),
+                 { "Content-Type": "application/json" });
+      setBell(true);
+      return;
+    }
+  } catch (_) {}
+  setBell(false);
+}
+
+async function pushToggle() {
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    let sub = await reg.pushManager.getSubscription();
+    if (sub) {
+      // Off means off on both sides: a subscription dropped only in the
+      // browser would linger in the store and fail forever at send time.
+      await sub.unsubscribe().catch(() => {});
+      await post("/push/unsubscribe", JSON.stringify({ endpoint: sub.endpoint }),
+                 { "Content-Type": "application/json" }).catch(() => {});
+      setBell(false);
+      setStatus("notifications off");
+      return;
+    }
+    if (Notification.permission === "denied") {
+      setStatus("notifications blocked in browser settings", "err");
+      return;
+    }
+    if ((await Notification.requestPermission()) !== "granted") {
+      setStatus("notifications not allowed", "err");
+      return;
+    }
+    const key = await fetch("/push/key", { credentials: "same-origin" })
+      .then(r => {
+        if (!r.ok) throw new Error(r.status === 501
+          ? "server is missing python-cryptography" : "HTTP " + r.status);
+        return r.json();
+      });
+    sub = await reg.pushManager.subscribe({
+      userVisibleOnly: true,
+      applicationServerKey: b64uToBytes(key.key),
+    });
+    await post("/push/subscribe", JSON.stringify(sub),
+               { "Content-Type": "application/json" });
+    setBell(true);
+    setStatus("notifications on");
+  } catch (e) {
+    setStatus("push: " + (e.message || e), "err");
+  }
+}
+if (pushOk) bell.addEventListener("click", pushToggle);
+
+if ("serviceWorker" in navigator)
+  navigator.serviceWorker.register("/sw.js").then(pushSync).catch(() => {});
+</script>
+</body>
+</html>

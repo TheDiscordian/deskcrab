@@ -1,0 +1,5 @@
+#!/bin/bash
+# The player. Consumes the audio, makes no sound.
+cat > /dev/null
+printf 'PLAYED\n' >> "${SANDBOX_PLAYED_LOG:-/dev/null}"
+exit 0

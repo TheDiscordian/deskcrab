@@ -1,0 +1,3 @@
+User [2026-08-07 15:57]: Show me, in an editor, the whole context you are working from. We are on the third subscription and burning tokens, so I want to look at what is actually being sent.
+Assistant [2026-08-07 15:57]: Here is a table of what your context weighs, section by section.
+

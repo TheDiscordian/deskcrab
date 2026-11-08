@@ -1,0 +1,5 @@
+#!/bin/bash
+# Asked whether anything on this machine holds the microphone. In a sandbox
+# the answer is always no: a real app recording while the suite runs would
+# mute a wake for a legitimate reason and read as a regression.
+exit 0

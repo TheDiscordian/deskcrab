@@ -1,14 +1,79 @@
 #!/usr/bin/env python3
-"""Extract the final response text from DeskCrab's debug log."""
+"""Extract the response text from DeskCrab's debug log.
+
+A turn can produce SEVERAL assistant text blocks — Beatrice narrates while she
+works, and the TTS streamer speaks every one of them. Keeping only the last
+block meant everything she said mid-turn was spoken and then thrown away: the
+conversation file, the phone transcript, and her own memory of the turn all
+showed a single closing thought. Every block is kept now, in order — with two
+exceptions (specs/speech-output.md rules 5a and 5b), both cut on 2026-08-22
+when the 00:33 phone reply and the 00:36 wake each went out with their body
+doubled:
+
+- A draft the CLI's own Stop hook rejected is not the reply. The rejection
+  arrives as a user event whose text opens "Stop hook feedback:", and the
+  model's next message is the rewrite that answers it; the rejected message's
+  text blocks are dropped whenever any real block follows the rejection.
+  Narration from earlier messages survives, and a rejection nothing follows
+  keeps its draft — never-silent outranks the hook.
+- Consecutive near-duplicate spoken blocks, and consecutive near-duplicate
+  paragraphs of the joined reply, supersede: the earlier is dropped, the
+  later kept. The test is the blended lexical similarity in
+  lib/sentence_stream.py at the memory store's 0.92 near-duplicate
+  convention — the belt under the rule above, judging the text alone
+  whatever the cause upstream.
+
+Each block may carry its own ---DISPLAY--- section; the spoken halves are
+joined into the reply and the display halves are concatenated after a single
+delimiter, so the turn still has exactly one display channel. The collapse
+above touches only the spoken halves — a display half rides whole.
+
+DESKCRAB_INCLUDE_PARTIAL=1 also folds in the text a run got out as streamed
+deltas and never finished — the reply a cut-off turn was mid-writing
+(specs/turn-pipeline.md rule 15f: the turn that cut it reads this to know
+what was being said). The deltas are walked through the SAME shared registry
+both live voices are built on (lib/sentence_stream.py, its replay cursors
+and all), never through a second parser, and a delta block whose text a
+completed event already carries is dropped — the completed block IS that
+text, finished. Off by default: a completed log reads identically either
+way, and no existing caller changes.
+"""
 
 import json
 import os
+import re
 import sys
 
 LOG = os.environ["DESKCRAB_DEBUGLOG"]
+DELIM = "---DISPLAY---"
+CAPACITY_RE = os.environ.get(
+    "DESKCRAB_CODEX_CAPACITY_RE",
+    r"selected model (is )?at capacity|server.?overloaded",
+).strip()
+try:
+    CAPACITY_RX = re.compile(CAPACITY_RE, re.I) if CAPACITY_RE else None
+except re.error:
+    CAPACITY_RX = None
+
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from sentence_stream import QUIET_RE, QUIET_STRIP_RE, near_duplicate
+
+partials = None
+if os.environ.get("DESKCRAB_INCLUDE_PARTIAL") == "1":
+    from sentence_stream import BlockRegistry
+    partials = BlockRegistry(lambda chunk: None)
 
 result_text = ""
-last_assistant_text = ""
+error_text = ""
+capacity_messages = set()
+blocks = []      # {"text", "synthetic", "key"} — synthetic = the CLI's own
+                 # error dressed as a reply ("model":"<synthetic>",
+                 # is_api_error_message); key names the message the block
+                 # belongs to, so a stop-hook rejection can point at exactly
+                 # the message it rejected
+rejected = set()  # indexes into blocks of stop-hook-rejected draft blocks
+last_key = None   # the message the NEXT rejection would be rejecting
+anon = 0
 for line in open(LOG):
     line = line.strip()
     if not line:
@@ -17,10 +82,178 @@ for line in open(LOG):
         d = json.loads(line)
     except json.JSONDecodeError:
         continue
-    if d.get("type") == "result" and d.get("result"):
-        result_text = d["result"]
+    if d.get("method") == "error":
+        error = (d.get("params") or {}).get("error") or {}
+        message = str(error.get("message") or "") if isinstance(error, dict) else ""
+        info = error.get("codexErrorInfo") if isinstance(error, dict) else None
+        if info == "serverOverloaded" or (CAPACITY_RX and CAPACITY_RX.search(message)):
+            capacity_messages.add(message)
+    elif d.get("type") == "error" and CAPACITY_RX \
+            and CAPACITY_RX.search(str(d.get("message") or "")):
+        capacity_messages.add(str(d.get("message") or ""))
+    elif d.get("type") == "result" and d.get("result"):
+        if d.get("is_error"):
+            message = str(d["result"])
+            if d.get("engine") == "codex" and (
+                    message in capacity_messages
+                    or (CAPACITY_RX and CAPACITY_RX.search(message))):
+                capacity_messages.add(message)
+            else:
+                error_text = message
+        else:
+            result_text = d["result"]
     elif d.get("type") == "assistant":
+        synthetic = bool(d.get("is_api_error_message")
+                         or d.get("message", {}).get("model") == "<synthetic>")
+        key = d.get("message", {}).get("id")
+        if not key:
+            anon += 1
+            key = "anon-%d" % anon
         for block in d.get("message", {}).get("content", []):
             if block.get("type") == "text" and block.get("text", "").strip():
-                last_assistant_text = block["text"].strip()
-print(result_text or last_assistant_text)
+                blocks.append({"text": block["text"].strip(),
+                               "synthetic": synthetic, "key": key})
+                last_key = key
+    elif d.get("type") == "user":
+        # The Stop hook's rejection (specs/speech-output.md rule 5a): the CLI
+        # frames the hook's refusal as a user message opening with a fixed
+        # prefix, and the model's next message is the rewrite. The message
+        # standing immediately before the rejection is the rejected draft.
+        content = d.get("message", {}).get("content")
+        texts = []
+        if isinstance(content, str):
+            texts = [content]
+        elif isinstance(content, list):
+            texts = [b.get("text", "") for b in content
+                     if isinstance(b, dict) and b.get("type") == "text"]
+        if last_key is not None and any(
+                t.startswith("Stop hook feedback:") for t in texts):
+            for i, blk in enumerate(blocks):
+                if blk["key"] == last_key:
+                    rejected.add(i)
+    elif d.get("type") == "stream_event" and partials is not None:
+        partials.stream_event(d.get("event") or {})
+
+if partials is not None:
+    # Whatever the deltas accumulated that no completed event owns. Judged by
+    # whitespace-collapsed content, the registry's own fingerprint discipline:
+    # a delta run is a PREFIX of its completed block, so a block that finished
+    # is dropped here and rides above as the completed text it became.
+    done = [" ".join(blk["text"].split()) for blk in blocks]
+    if result_text:
+        done.append(" ".join(result_text.split()))
+    maps = list(partials.messages.values())
+    if not any(m is partials.blocks for m in maps):
+        maps.append(partials.blocks)       # deltas that arrived before any
+                                           # message_start live only here
+    for mb in maps:
+        for b in mb.values():
+            raw = b.raw.strip()
+            if not raw:
+                continue
+            fp = " ".join(raw.split())
+            if any(c.startswith(fp) or fp.startswith(c) for c in done):
+                continue
+            blocks.append({"text": raw, "synthetic": False, "key": None})
+
+# The wake's voice (specs/wake-queue.md rule 27e): with the flag set, only
+# the blocks of the LAST real message stand — the reply that ends the run —
+# so a caller can voice the final message while the full join above still
+# feeds the conversation and the journal. Applied before the rejection drop
+# so a rejected-and-rewritten final message keeps only its rewrite.
+if os.environ.get("DESKCRAB_FINAL_MESSAGE") == "1":
+    last_key = None
+    for blk in blocks:
+        if not blk["synthetic"]:
+            last_key = blk["key"]
+    if last_key is not None:
+        kept = [i for i, blk in enumerate(blocks) if blk["key"] == last_key]
+        rejected = {kept.index(i) for i in rejected if i in kept}
+        blocks = [blocks[i] for i in kept]
+
+# The stop-hook drop (rule 5a): a rejected draft goes only when something real
+# stands after the last rejection — delivering a rejection with no rewrite as
+# silence would be the never-silent failure, so that draft stands.
+if rejected:
+    last_rej = max(rejected)
+    if any(i > last_rej and i not in rejected and not blk["synthetic"]
+           for i, blk in enumerate(blocks)):
+        blocks = [blk for i, blk in enumerate(blocks) if i not in rejected]
+
+# A usage-limit fallback retry APPENDS a second run to the same log, so a
+# refusal and a genuine reply can share the stream. When anything real was
+# said, the refusal (synthetic events, error results) is dropped — the outage
+# is plumbing, not her words. When the stream holds ONLY the refusal, its text
+# still stands in as the reply, so a run with no fallback reports why it has
+# no answer exactly as before — a MAIN turn's shape. A subcall whose output is
+# spliced into a reply already written must never receive the CLI's error text
+# as content (specs/speech-output.md rule 7a): DESKCRAB_DROP_SYNTHETIC=1 makes
+# an error-only stream print nothing instead, and every such caller reads
+# nothing as "keep what was already written". On 2026-08-20 the claudism
+# mirror's resay hit an OAuth failure and this fallback handed the auth error
+# back as her rewritten sentence.
+real = [blk["text"] for blk in blocks if not blk["synthetic"]]
+if real:
+    texts = real
+elif os.environ.get("DESKCRAB_DROP_SYNTHETIC") == "1":
+    # Only the CLI's own voice in the stream. A genuine result event (the
+    # sessions that emit a result and no assistant events at all) still
+    # prints below; the error result never stands in.
+    texts = []
+else:
+    texts = [blk["text"] for blk in blocks]
+    result_text = result_text or error_text
+
+# The result event repeats the final block verbatim; only keep it if it is
+# genuinely new (some sessions emit a result and no assistant events at all).
+if result_text and (not texts or texts[-1] != result_text.strip()):
+    texts.append(result_text.strip())
+
+spoken, display = [], []
+for b in texts:
+    head, sep, tail = b.partition(DELIM)
+    head = head.strip()
+    if head:
+        # Rule 5c: a quiet block joins as its normalised one-line bubble form,
+        # so the split's line-based readers hold the whole thought and the
+        # voiced half never inherits its tail.
+        if QUIET_RE.match(head):
+            head = "(quiet) " + " ".join(QUIET_STRIP_RE.sub("", head).split())
+        spoken.append(head)
+    if sep and tail.strip():
+        display.append(tail.strip())
+
+# The near-duplicate supersede (rule 5b), spoken halves only: consecutive
+# blocks first, then consecutive paragraphs of the join — the 00:33 doubling
+# was two two-paragraph messages (only the block view sees the pair), the
+# 00:36 doubling two one-paragraph messages, and a draft-and-rewrite written
+# inside ONE block is only visible to the paragraph view. The later copy
+# supersedes the earlier, never the other way around.
+collapsed = []
+for s in spoken:
+    if collapsed and near_duplicate(collapsed[-1], s):
+        collapsed[-1] = s
+    else:
+        collapsed.append(s)
+paras = []
+for p in "\n\n".join(collapsed).split("\n\n"):
+    if not p.strip():
+        continue
+    if paras and near_duplicate(paras[-1], p):
+        paras[-1] = p
+    else:
+        paras.append(p)
+out = "\n\n".join(paras)
+if display:
+    # No leading blank line when the spoken half is empty. A display-only
+    # reply used to come back as "\n\n---DISPLAY---\n…", which every caller
+    # reads as a non-empty response — so a turn with nothing to SAY looked
+    # exactly like a turn with something to say, and what reached the phone
+    # was an empty speech bubble with a details card hanging off it.
+    out = (out + "\n\n" if out else "") + DELIM + "\n" + "\n\n".join(display)
+# A stream with nothing in it prints nothing at all — not a blank line. The
+# callers test this output with `[ -n "$RESPONSE" ]`, and a lone newline is
+# not empty to that test; it is the difference between "she said nothing" and
+# "she said something unprintable".
+if out:
+    print(out)

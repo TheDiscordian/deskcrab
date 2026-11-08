@@ -1,0 +1,12 @@
+[Unit]
+Description=DeskCrab nightly sleep — ingest the day into long-term memory
+
+[Timer]
+# After the nightly tidy has settled the shelf, before anyone is awake to
+# notice. Persistent is the point: a machine that was off at 03:10 sleeps at
+# boot — a missed night is caught up, never skipped.
+OnCalendar=*-*-* 03:10:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

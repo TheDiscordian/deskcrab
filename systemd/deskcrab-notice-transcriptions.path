@@ -1,0 +1,12 @@
+[Unit]
+Description=DeskCrab: notice new meeting transcripts
+Documentation=man:systemd.path(5)
+
+[Path]
+# systemd watches this with the kernel's own inotify, so a transcript landing
+# here starts a wake with no polling and no extra daemon. Adjust the path if
+# your transcriber writes somewhere else.
+PathChanged=%h/Documents/Transcriptions
+
+[Install]
+WantedBy=paths.target

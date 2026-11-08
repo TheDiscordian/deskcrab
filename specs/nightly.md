@@ -1,0 +1,1481 @@
+# Spec: nightly
+
+## PURPOSE
+
+Four scheduled processes that keep her from rotting: sleep, which ingests the day into long-term
+memory and then reviews her prompt and memories for whatever made her sound like a generic
+assistant instead of herself; tidy, which
+maintains the shelves; the self-change watcher, which tells her when a hand that was not hers
+changed the files that constitute her; and the canary, which proves the watcher is
+still alive. This spec owns their schedules, their guarantees, and the rule that a scheduled process
+which fails silently is worse than one that does not exist.
+
+## CONTRACT
+
+### General
+
+1. Every scheduled process MUST be defined by a unit file **in the repository**. A process that
+   exists only as an installed unit has no test, no review path, and is lost on any reinstall.
+2. Every scheduled process MUST be persistent across a machine being off, so a missed night is
+   caught up at boot rather than skipped.
+3. Every scheduled process MUST leave a durable record of when it last succeeded.
+4. Every rot check MUST have a caller. A stamp nobody reads is a wish, not a habit.
+5. A rot condition MUST surface where she will see it: `crab status` and the state block.
+6. Every scheduled process that writes files she is watched for MUST declare its writes, or it
+   reports its own hand to her as an intruder's.
+
+6a. Deployment is by symlink — every unit and every phase invokes the deployed path
+    (`~/.local/lib/deskcrab`, a directory symlink into the checkout's `lib/`) — so every script
+    that locates the checkout from its own path MUST resolve that path through `readlink -f`
+    before taking `dirname`. A `cd ..` from the symlink's logical path walks into `~/.local/lib`,
+    not out of the checkout, and the script sources a `lib/common.sh` that does not exist; both
+    post-stamp nightly phases ran exactly that way in production — dead, and the night stamping
+    green over them — until 2026-08-11. The suite MUST invoke at least one script through a
+    symlinked directory and assert it sources the library and runs.
+
+6b. Repository `systemd/` files automatically refresh their **already installed** counterparts
+    under `${XDG_CONFIG_HOME:-~/.config}/systemd/user/`, including already installed drop-in
+    files. Missing counterparts MUST NOT be created; installed-only files MUST NOT be removed.
+    Masks and links outside the matching repository file MUST remain untouched. A link to the
+    matching repository file MUST retain its link and still trigger a reload when its bytes
+    change. Replacements are atomic, preserve installed permissions, and reload the user manager
+    once per changed batch. Sync MUST NEVER start, stop, restart, enable or disable a unit.
+    Running jobs finish with their current settings; new settings apply on their next start.
+    Where a unit needs a local-tool PATH, its repository definition MUST carry the portable
+    `%h/.local/bin` setting, so refresh preserves access to the deployed tools.
+    The existing self-change watcher reconciles before any attribution, seeding or deferral
+    exit and again on exit, so declared own writes and edits made during its session still
+    deploy. Its existing daily canary independently reconciles even when the watcher is busy
+    or unavailable. No manual installation step or additional enabled unit is required.
+    Concurrent reconciliations share a lock. A pending reload is recorded durably before any
+    replacement, retained after a failed reload, and retried automatically on the next caller,
+    even when installed bytes already match. Sync never runs on a turn; failures MUST NOT abort
+    the watcher or canary. Failures remain in a durable sync log, a concise `crab status` line,
+    and the prompt's state block
+    until reconciliation succeeds. The prompt reads a plain attention file without launching
+    a sync process. A damaged deployment journal recovers automatically with a manager reload,
+    retaining the damaged bytes for diagnosis rather than requiring a manual clear.
+    No-op runs retain the last actual refresh evidence and do not reload the manager. Status
+    reads evidence without performing an installation or a manager call.
+
+### Sleep — the nightly ingest
+
+7. Sleep runs the ingest and then stamps the last-slept record.
+8. A failed ingest MUST NOT stamp. The stamp means the night happened.
+9. "Nothing new since the last cursor" still counts as a night. There was nothing to learn and she
+   did look.
+10. The exit status that matters is the ingest's own, never a pipeline's last stage.
+
+10a. A failed ingest cancels the stamp and sets the night's exit — nothing else. On a non-zero
+    ingest, sleep MUST NOT stamp (rule 8) and the service's exit stays the ingest's own rc
+    (rule 10), but the post-ingest phases — the key backfill, the claudism review, the promise
+    sweep, the twin-merge pass, the want reflection, the night's work — still run, in their
+    order, through the same phase
+    wrapper as on a good night. None of them reads the ingest's output: the review, the
+    sweep and the reflection read the day's journal, the merge pass and the night's work read
+    the record drawer
+    and the job queue, and a judge-backed phase that cannot reach its own model fails loudly on
+    its own line (rule 14b) without taking the night with it. The cost of the old early return
+    was measured 2026-09-02: one codex usage-limit refusal at the top of sleep, refused until
+    Sep 6 by its own text, cancelled what would have been four consecutive nights of promise
+    sweeps, claudism reviews and queued builder work that had nothing to do with memory — and
+    the queued fix for the refusal itself sat behind the very phase the refusal was killing.
+    Before the first phase, the night log MUST say plainly, on its own line, that the rest of
+    the night is running on a FAILED ingest, and the night's last line MUST repeat it beside
+    the rc it is about to return, so no reader of either end of the log mistakes a partial
+    night for a whole one. The absent stamp stays the only machine-readable "slept": everything
+    that infers sleep — `status`, the tiredness score — reads the stamp and never the phases'
+    traces, so a failed-ingest night still reads as not slept everywhere, however much work its
+    phases did.
+11. Sleep MUST NOT touch the shelves. It is separate from tidy on purpose.
+12. Ingest MUST NOT tail-clamp its input. See [memory-recall.md](memory-recall.md) rule 29.
+13. Sleep MUST run its model calls under the account chain wherever they run the Claude engine. A
+    codex-named call has one login and no chain: it honours and records the codex cooldown instead
+    ([model-backends.md](model-backends.md) rules 12-13), and never walks accounts codex does not
+    have.
+14. The rot threshold is two nights. Past it, the status command reports rot and exits non-zero, and
+    something MUST read that.
+
+14a. The stamp records coverage beside yield. Yield alone can hide a truncated night — "added=8"
+    reads the same whether the ingest weighed the whole day or died after its first pass — so the
+    stamp's third line carries, beside `added=`, whatever the night's log states of its own size:
+    `chunks=` and `chars=` from the ingest header, and `passes=` from the header's pass count,
+    counted from the per-pass lines where the header predates stating it. All on ONE
+    space-separated line, so every reader of the third line keeps working and a legacy added-only
+    stamp still reads fine. Coverage is evidence, never a gate: a field the log does not state is
+    omitted, not invented, and a log with no header at all still stamps and still counts as slept
+    (rule 9) — the stamp MUST NOT be stricter than the night it records.
+
+14b. A phase that cannot start MUST NOT look like a phase with nothing to do. Each post-ingest
+    phase — the key backfill, the memory source-watch pass, the claudism review, the promise sweep, the twin-merge pass, the
+    want reflection, the night's work — owes
+    the night log at least one line opening with its own name (`backfill-keys:`, `watch:`, `claudism-review:`,
+    `promise-check:`, `eng-merge:`, `want-reflect:`,
+    `night-work:`); sleep watches each phase's stretch of the log, and when a phase exits
+    leaving no such line there, sleep MUST say so loudly — `PHASE SILENT`, naming the phase and
+    its exit status — in the night log itself as well as on stderr. A phase's non-zero exit is
+    likewise named in the log, not on stderr alone, where only the journal would carry it. The
+    complaint is evidence, never a gate: the stamp and the night's exit stay the ingest's own
+    (rules 8 and 10) — a night is not unmade by a phase that could not speak, it is only never
+    silent about one.
+
+### The night's judge — every sleep judgment is one mind's
+
+14c. The night is dream-shaped on purpose — form long-term memory from the day's material, then
+    reconcile and deduplicate the records and the owed work, then spend the idle hours on at most
+    two concurrent builders until the cutoff — and every JUDGMENT inside that shape is made by ONE
+    judge. Every retention call (what the day's material earns as a record), every deduplication
+    call (which two records are one complaint), every reconciliation call (which promises
+    genuinely died), and every work-selection call (what the night buys) runs on the night-judge
+    model at its own reasoning effort, routed to its engine by the model name alone
+    ([model-backends.md](model-backends.md)). The shell-side walk is ONE implementation,
+    `lib/nightly-judge`, sourced by every judging phase; nothing on the sleep path re-implements
+    it, and the ingest's python side mirrors the same routing rather than inventing a second
+    engine rule. (The user's correction of 2026-08-25, the record
+    `sleep-should-be-orchestrated-and-judged-by-sol-h`.)
+14c-i. ONE judge means ONE knob. `NIGHT_JUDGE_MODEL`/`NIGHT_JUDGE_EFFORT` — `gpt-5.6-sol` at
+    `high` by default — is what every role above resolves from, and moving the night's judge MUST
+    be that one pair changed in one place. The four role pairs
+    (`MEMORY_INGEST_MODEL`/`MEMORY_INGEST_EFFORT`, `ENG_MERGE_MODEL`/`ENG_MERGE_EFFORT`,
+    `PROMISE_SWEEP_MODEL`/`PROMISE_SWEEP_EFFORT`, `NIGHT_WORK_MODEL`/`NIGHT_WORK_EFFORT`) remain,
+    each overriding the shared pair for its own role, and each MUST take its DEFAULT from the
+    shared pair rather than naming a model itself. A role that repeats the literal is the defect
+    this rule exists to prevent: the policy was already "one judge", but it was written as four
+    independent literals across two languages and named in no config, so on 2026-09-02 — the
+    judge's account out of credits, every knob the config knew about already moved — the night
+    still could not run. She could not sleep, and the switch that was supposed to move her looked
+    complete. The shared pair is exported, so the ingest's python side reads the same value the
+    shell phases do.
+14d. Sonnet summarises; it never judges. The summariser tier's only place in the night is
+    producing summaries handed TO the judge — the ingest's stage 1
+    ([memory-recall.md](memory-recall.md) rules 27 and 29a) — and a summariser-tier model MUST
+    NOT decide what survives, what merges, what died, or what work runs. Opus holds no sleep
+    judgment role either: the 2026-08-06 phase-2 line ("what is a duplicate … Opus, always") is
+    superseded on this path by the 2026-08-25 ruling, and rule 53c carries the new default. The
+    claudism review (rules 39-44) is a judgment role and runs on the judge. The post-turn
+    reinforcement judge (`MEMORY_JUDGE_MODEL`) is a live-turn role, not a sleep one, and does not
+    move under this section.
+14e. No cheaper model may judge in the judge's place. A judgment the judge cannot make tonight —
+    the codex engine cooling, a refusal, an unparseable answer — is NOT made: the pair stands,
+    the day is not swept, the round selects nothing, and the walk says so in its own name on the
+    night log. A model fallback on a sleep judgment call is exactly the substitution this
+    section forbids (`NIGHT_WORK_FALLBACK_MODEL` is retired; the sweep no longer borrows the
+    live checker's model pair). The ingest's judge failing fails the ingest itself, so a night
+    that could not judge is never stamped as a night that happened (rule 8). A codex-named
+    judge has one login: a refusal records the cooldown and ends the walk
+    ([model-backends.md](model-backends.md) rules 12-13), falling back to no one; a
+    Claude-named judge override still walks the flat account list (rule 13) on its one model,
+    at the classify profile's own default effort — the effort knob binds on the codex engine,
+    where the mandated judge lives.
+
+### Tidy — shelf maintenance
+
+15. Tidy is the one process that moves lines between the wants shelf, conduct, and the engineering
+    threads, and that deletes orphaned want documents. **It MUST be in the repository**, with its
+    prompt under version control and a test that exercises it. A shelf line that is engineering
+    work moves to the live engineering records ([engineering-records.md](engineering-records.md)),
+    where the night's work can see it (rule 58c): when `crab eng search` finds an open record
+    already holding the same work, the line is added to that record with `crab eng touch`, so
+    filing never makes a twin; otherwise it becomes a new record through `crab eng new`, its body
+    naming the concrete ask and how to verify it. The shelf line is removed only once the record
+    holds it. Nothing is ever filed into the frozen pre-records archive (`engineering.md`,
+    `OPEN.md`, `INDEX.md`), which nothing reads and nothing can close, so work filed there is
+    lost. A shelf line that is a rule to keep becomes conduct through `crab conduct add`, and a
+    conduct rule that has gone obsolete leaves through `crab conduct retire`
+    ([memory-recall.md](memory-recall.md) rule 28a); tidy never edits `CONDUCT.md` or a rule body
+    by hand, because a hand edit writes one half of a rule and orphans the other.
+16. Tidy MUST NOT touch the memory store.
+17. Tidy MUST declare its writes before it makes them.
+18. Anything tidy writes MUST be reachable from the index block. See
+    [prompt-assembly.md](prompt-assembly.md) rule 23.
+19. Tidy MUST NOT be asked to write prose into a machine-written record. Its own dated summary needs
+    a destination that a reader will actually read; a prose line appended to the journal is skipped
+    by the journal reader and dropped by the ingest, so tidy's own record never survives.
+20. Tidy MUST NOT create a second namespace beside an existing one. A stray file with the same name
+    as a directory is unreachable by every reader and still trips the watcher.
+21. Tidy MUST run its model call under the account chain.
+
+21a. The shelf-line check. Before tidy's model job is dispatched, the tidy unit runs the machine
+    check `lib/shelf-check` over the wants shelf; and the tidy brief's own LAST step runs the
+    same check again — `crab shelf-check`, the by-hand door of rule 21b — after every edit the
+    tidy made has landed, so the record that survives the night describes the shelf the tidy
+    LEAVES BEHIND, never only the one it inherited. The re-check MUST live in the brief, not on
+    the unit: `ExecStart` is `crab job`, which dispatches the builder into its own transient
+    unit and returns at dispatch, so an `ExecStartPost` would fire while the builder is still
+    running — or before it has started — and re-measure the same pre-tidy shelf the
+    `ExecStartPre` just did. A shelf entry is ONE line — the discipline the
+    shelf's own header claimed when the record behind this rule was written (2026-08-07: "a
+    shelf line is a line, the history lives in `wants/<slug>.md`"; the header has since been
+    rebuilt after a clobber, but the claim is the shelf's design and this rule holds it): the
+    line is the title and at most a short status clause, and the history lives in the want's
+    own `wants/<slug>.md` document. The
+    check measures every entry line (selected by the one shelf reader's pattern,
+    [prompt-assembly.md](prompt-assembly.md) rule 20) against the shelf-line budget:
+    `WANTS_SHELF_LINE_BUDGET`, default 500 bytes — the number this spec states as the
+    operationalisation of "a line", sized so a title with a status clause passes (the live
+    shelf's longest honest line measured 305 bytes on 2026-08-16) and a line carrying its
+    nightly findings does not (the 2026-08-07 shelf averaged 2.6 KB per line exactly that way).
+    The check REPORTS and NEVER rewrites: deciding which sentences are topic and which are
+    history is her judgement, never a machine's, so the check MUST NOT edit, move, or reorder a
+    byte of the shelf or of any want document. An entry over the budget is named with its title,
+    its measured size in bytes, the budget, and the `wants/<slug>.md` document its history
+    belongs in — the document the line itself points at, or the plain statement that the line
+    names none.
+21b. The check's finding is never silent, and never a gate. A check that found over-budget
+    entries prints them in its own name (`shelf-check:`) to its caller's log, writes
+    `${STATE_PREFIX}-shelf-overruns.txt` — the same shape as the assembler's rule 36/40a
+    records ([prompt-assembly.md](prompt-assembly.md)) — and exits non-zero; the state block
+    renders the record while it stands, which puts the fact in `crab status` and in every
+    speaking prompt until a later check finds the shelf clean and removes it. A clean shelf, a
+    missing shelf, or an unset `WANTS_FILE` prints one line, removes the record, and exits
+    zero. The check's exit status MUST NOT block the tidy job behind it — moving the flagged
+    history into the want's document is exactly the judgement work tidy's own brief names, and
+    a shelf that needs tidying is the last reason to skip the tidy. By hand the same check is
+    `crab shelf-check` — its own dispatch case, never the catch-all's speech
+    ([turn-pipeline.md](turn-pipeline.md) rule 6a). The tidy's own closing run (rule 21a) is
+    normally the later check that removes the record, the SAME night: before it existed the
+    only later check was the next night's `ExecStartPre`, and at 03:25 on 2026-09-06 the state
+    block led with a shelf line named at 530 bytes that the 02:30 tidy had already trimmed to
+    114 — a cured finding standing a full day, indistinguishable from a live one, whose first
+    invitation was a second cut at a line already correct.
+
+21c. The undestinated-claims check. Beside the shelf-line check, the tidy unit runs the machine
+    check `lib/tidy-claims run` over the day just ended — the journal day before the night the
+    tidy runs in, her voice only: rows whose kind is not `job` (a builder's entry is a log, not
+    her speech — rule 40's own line), the display half stripped the anchored way of
+    [speech-output.md](speech-output.md) rules 3 and 4. The check looks for the sentences that
+    vouch their own durability and cannot point at anything. A sentence is a candidate when all
+    three hold at once: it reports a thing as put into writing (written down, wrote down,
+    written up, jotted down, noted down, set down, filed, on the record); it vouches the thing
+    is therefore SAFE ("where it will hold", "so it survives the night", "so it can't crawl
+    back out", "so it binds", "pinned"); and it names no destination — none of want, Library,
+    conduct, record, thread, moments, shelf, commit, memory, spec, or list anywhere in the
+    sentence. For each candidate the check then looks for the artefact that could be the thing
+    claimed: a file under its roots — the state dir and this repository's tree by default;
+    `TIDY_CLAIMS_ROOTS` replaces the set, and the personal drawers live data adds are never
+    named in this repository — touched inside the claim's own window (the claiming turn,
+    widened by `TIDY_CLAIMS_LEAD` before and `TIDY_CLAIMS_SLACK` after, defaults 600 and 120
+    seconds), whose text shares a PHRASE — a consecutive word pair, never a lone word — with
+    the claim's own paragraph. The pair test and the paragraph scope are both measured, not
+    taste: single shared words cleared the known-false claim of rule 21d with a neighbouring
+    record's machinery vocabulary, and whole-turn scope cleared it again with the vocabulary
+    of the OTHER subject the same turn discussed. Machine plumbing — the journal, the jobs and
+    wakes ledgers, databases, logs, metrics, caches — is never an artefact: the claim is that
+    SHE wrote a thing down, and only something a reader reads can hold that. A claim with an
+    artefact behind it is cleared, the artefact named; only the claims with nothing behind
+    them are findings.
+21d. Why the vouch, why the night, and what this check may never become. The measured fortnight
+    (2026-08-25, the 42nd mark of the why-i-believe-myself audit): 259 durability claims in
+    the spoken halves, of which NINE vouch the thing is therefore safe, and only FOUR of those
+    name no drawer — and one of the four was provably false at the moment of speaking
+    (2026-08-15 01:55, "Taken, and written down where it will hold", while that night's tidy
+    grepped conduct/ for the rule and found nothing newer than four days old, then made the
+    missing file itself). The fault is a LATENCY, not an absence: the artefact exists by
+    morning exactly because the night went and made it, so no audit reading a later day's disk
+    can ever see the gap — only a check run on the night, over the day just ending, against
+    that day's own mtimes. Hence this check lives in the nightly tidy and nowhere else, and a
+    replay over old days OVERCOUNTS by design (notes since consumed, mtimes since moved) —
+    replay is calibration, never a verdict on a past day. And the check MUST NOT become a
+    claudism-style pattern: a bare regex on "written down" fires on 259 sentences to catch 9 —
+    the seventh-net mistake the want has refused six times — so the narrowing is the vouch,
+    the destination-absent test and the same-day artefact lookup, never a wider phrase list,
+    and the expected steady-state load is about four sentences a FORTNIGHT. A night that
+    reports dozens is a broken check, not a broken journal. Findings are never silent and
+    never a gate (rule 21b's bargain): they print in the check's own name (`tidy-claims:`),
+    land in the day's report under the data dir, and are filed — as the 03:25 tidy of
+    2026-08-15 filed by hand — as ONE open engineering record for the day, through `crab eng`
+    and only through it ([engineering-records.md](engineering-records.md) rule 4), created
+    once: a re-run of the same day names the standing record and never files twice, and a
+    clean day files nothing at all. The check's own writes are the report and that record,
+    both declared where declaration is owed (rule 6; `lib/eng` declares its own), and its
+    exit status MUST NOT block the tidy job behind it.
+
+21e. How the check's knobs resolve, and why the unit carries no `EnvironmentFile`. Every knob
+    the check reads (`TIDY_CLAIMS_ROOTS`, `TIDY_CLAIMS_DIR`, `TIDY_CLAIMS_LEAD`,
+    `TIDY_CLAIMS_SLACK`, `DAY_JOURNAL_DIR`) resolves environment first, conf second, shipped
+    default last. The tidy unit sources nothing on the check's execution path, so an
+    environment-only read left the conf's `TIDY_CLAIMS_ROOTS` invisible to the one run that
+    matters — the nightly one — and the personal drawers the conf names went unscanned every
+    night the setting stood (found 2026-08-25). The conf read lives in the SCRIPT, not the
+    unit: when a knob is absent from the environment, `lib/tidy-claims` asks a bash that
+    sources `common.sh` — and through it the live conf, with every conf convention including
+    `$HOME` expansion — from the script's own realpath-resolved directory (rule 6a: the
+    deployed path is a symlink, and an unresolved dirname can name a directory with no
+    `common.sh` in it). An explicit environment variable MUST still win over the conf, and a
+    missing, broken or slow `common.sh` MUST degrade silently to the shipped defaults — the
+    check never raises over configuration. The unit MUST NOT gain an `EnvironmentFile`:
+    `common.sh` does not blanket-export conf values, and most conf values lean on `$HOME`,
+    which systemd's parser would import unexpanded for every neighbour the file carries.
+
+21f. The tidy is single-flight. The unit dispatches its brief with `--slug nightly-tidy
+    --daily 02:30` ([jobs.md](jobs.md) rules 42-45), so two tidies can never hold wants.md at
+    once — on 2026-09-03 the 02:30 tidy and a tidy queued behind an account limit since 22:21
+    dispatched in the same instant the moment the limit lifted, two hands on the identical
+    brief against a file with no git behind it, caught only because the first noticed and
+    stopped the second while its log still held the account banner — and a queued tidy that
+    missed its night is dropped at the door once the next 02:30 occurrence has taken its
+    place, rather than run late into it. The 02:30 timer remains the tidy's one owner; the
+    slug adds no second scheduler, only the guarantee that whichever hand reaches the door
+    second stands down.
+
+21g. The conduct-orphan check. Before the shelf measure, in the same `lib/shelf-check` pass the
+    tidy already runs, the conduct drawer beside the shelf (`<deskcrab home>/conduct/`, the same
+    resolution the assembler's L4 uses) is read in the index's reverse direction: every body
+    `*.md` in the drawer other than `CONDUCT.md` itself MUST be named by a backticked reference
+    in `CONDUCT.md`. The forward direction was already held — every named body exists,
+    `tests/test_conduct_index.sh` — and nothing held this one, so a committed body no index line
+    named was assembled into no prompt and could never act: `spoken-intent-goes-in-the-plan.md`
+    sat exactly that way for about thirteen and a half hours from 2026-09-03 14:02, and
+    `facts-before-claims.md` and `no-unasked-music-playback.md` had stood the same. ONE reader,
+    `conduct_orphans` in `lib/common.sh`, is the drawer's judge for the check and the suite
+    alike (rule 20 of [prompt-assembly.md](prompt-assembly.md) — two readers with different
+    patterns is how an auditor gets handed an empty list). An orphan is reported by filename in
+    the check's own name (`shelf-check:`) to the caller's log and the check exits non-zero; like
+    the shelf measure it REPORTS and never rewrites — naming the rule in the index, or
+    withdrawing the body, is her judgement — and its finding MUST NOT skip the shelf measure
+    beside it nor gate the tidy job behind it (the unit's `ExecStartPre=-` bargain, rule 21b). A
+    clean drawer, an empty drawer, and no drawer at all add not a line.
+
+21h. The brief declares its drawer paths before its first edit. The tidy job dispatches with a
+    workdir that is NOT the drawer it edits — everything the brief touches lives under
+    `~/.local/share/deskcrab/`, outside the job's workdir — so rule 25c's job-window claim can
+    never cover the tidy's writes, and for as long as nothing else covered them every file the
+    tidy moved was reported back to her as an intruder's hand, night after night (the 03:12
+    wants.md alarm of 2026-09-16 the latest). The brief's FIRST step, before any other, MUST run
+    the write declaration of rules 26/27 — `crab touching` — naming every drawer path the brief
+    may edit: `wants.md`, the `wants/` document drawer, `conduct/`, `engineering/`, and
+    `journal/`. The declaration's window MUST comfortably outlast a queued dispatch, not merely
+    a busy minute: the brief travels through `crab job` and rule 21f's single-flight door, and
+    the distance from booking to the last edit landing runs to the better part of an hour on
+    this machine — on 2026-09-16 the job queued at 02:30 and only started at 03:10 — so the
+    window is 3600 seconds, matched to the unit's own `TimeoutStartSec`, and never the
+    900-second `TOUCH_WINDOW` default, which expires mid-tidy and hands the later steps' edits
+    straight back to the alarm the declaration exists to silence.
+
+### The self-change watcher
+
+22. The watcher is driven by a path unit using the kernel's own change notification. No polling
+    daemon.
+23. The watcher MUST seed silently on first run, so an existing tree never fires.
+24. The watcher MUST settle a burst of changes into one wake.
+
+24a. One pending re-check, never a chain per trigger. The settle is a single named unit, so a burst
+    leaves ONE re-check armed however many triggers arrive; a trigger that finds it armed is already
+    covered by it and leaves. Minting a unit per trigger instead does not merely waste units: each
+    chain re-defers on its own counter, so a busy minute leaves dozens alive at once — 82 on
+    2026-09-01 — every one of them landing at the same moment to run the whole tree scan and
+    attribution walk in parallel, on a laptop, over the same changes.
+24b. Judgement is single-threaded. Between reading the tree and advancing the snapshot the watcher
+    does the entire attribution walk, and two runs inside that window read the SAME change set and
+    each book their own wake — rule 24's one wake per burst broken by concurrency rather than by
+    counting, which is how one change woke her twice on 2026-08-28 20:30:00 and again twice on
+    2026-08-30. A run that finds another judging MUST NOT judge beside it: it books the one re-check
+    and leaves. Where it cannot book, it waits for the lock and then re-reads the tree against the
+    snapshot the other run advanced, so what it judges is only what is genuinely still new.
+25. Her own writes MUST NEVER wake her. A change is dropped when a write declaration covers it, or a
+    live session's claim names it, or its mtime falls inside one of her own run windows (rule 25b),
+    or it lands under a detached job's workdir inside that job's window (rule 25c), or it is a
+    plumbing path only her own machinery writes (rule 25d), or it is the memory database and one of
+    her sessions ran recently.
+
+25a. The watched drawers exclude `.git` internals. Several of them are git repositories of their
+    own — conduct is, and any personal directory in the extra watch set may be — and there the
+    commits are the record while the plumbing that records them (`refs/heads/*`, `logs/HEAD`,
+    `COMMIT_EDITMSG`, the index, the object store) is noise: a change of substance always shows in
+    the working tree beside it. The snapshot MUST NOT descend into `.git`, exactly as the code
+    repository's internals are invisible by construction through `git ls-files`. Without this, a
+    conduct commit made by her own hand at 00:37 woke her at 00:50 about its refs and logs
+    (2026-08-11).
+25b. The run window. A creation or modification whose mtime falls inside the run window of one of
+    her own sessions — start to end, widened by a small grace either side (90 seconds by default,
+    `NOTICE_SELF_RUNWIN_GRACE`) — is her own hand and MUST stay quiet with no declaration at all.
+    The windows come from the live registrations (a session still running extends to now) and from
+    the finished-sessions log, including its reaped lines; the ledger records when a session ran
+    and never which paths its tools touched, so the window match alone is the rule. Two costs are
+    accepted by name: an outside edit made while she happens to be awake is silenced, and a file
+    arriving with an old mtime that lands inside some past window is silenced too — both judged
+    cheaper than the class this closes, a session writing its own drawers right up to its final
+    second and being reported to herself as an intruder (four times on 2026-08-14 alone, wants and
+    Library both). A deletion is NEVER excused by a run window — rule 28's discipline holds.
+    Detached builder jobs are not sessions and get no window from this rule; their claim is
+    rule 25c's.
+25c. The job window. A detached builder job she dispatched is her own hand at one remove. The
+    watcher reads the jobs ledger it already sits beside — each sidecar's workdir, dispatch time,
+    state, finish time, and collection time — and a creation or modification whose path lies
+    under a job's workdir and whose mtime falls inside that job's window is that job's write and
+    MUST stay quiet. The window follows the state, because only the state says whether the hand
+    could still be moving. `dispatched` and `running` claim from dispatch to now, capped at a
+    ceiling past dispatch (24 hours by default, `NOTICE_SELF_JOBWIN_CEILING`): the longest run
+    the ledger has ever recorded is 3.2 hours, so a day cuts no real builder short, while a
+    sidecar orphaned in `running` by a crashed runner stops claiming a tree after a day instead
+    of for ever — a byte from inside the ceiling is still the orphan's own, a byte after it
+    reports. `finished` claims from dispatch until its recorded finish plus a short collection
+    grace (600 seconds by default, `NOTICE_SELF_JOBWIN_GRACE`): collection runs in the runner's
+    own process moments after the finish is written, so ten minutes covers a loaded machine and
+    the collector's own hand in the tree, and nothing more. It is NOT true of this ledger that
+    collection closes every claim — 45 sidecars measured 2026-08-24 predate the collector, sit
+    in `finished` with no collection time at all, and will never collect, because the
+    collector's terminal state is `collected`, not `finished`; while `finished` ran open-ended,
+    each claimed its workdir for ever, every write in the deskcrab tree was attributed to the
+    oldest of them, thirteen days dead, and the report called it "running" (05:49, 2026-08-24).
+    A collected job's claim still ends at collection, no grace; `failed`, `stopped` and `died`
+    still close at their recorded finish. When several windows cover one byte — two jobs
+    sharing a workdir — the MOST RECENTLY STARTED job wins the attribution, never the first
+    found in ledger order, so a live job always outranks a stale one over the same tree. The
+    wording follows the state wherever a claim is named: a job MUST NOT be described as running
+    unless its state is `dispatched` or `running` — the quiet line and the report quote the
+    state they matched. The claim is per job-window, not per event: every save the
+    job makes, for the job's whole life, is the one claim, so repeated saves to one file never
+    re-fire per mtime (two alarms four minutes apart from one builder, five in one night,
+    2026-08-22 through 2026-08-24). A change the job has already committed is claimed exactly as
+    a mid-edit one — a clean commit naming the file is not evidence of an outside hand (919b167
+    was flagged so). Several jobs each claim their own workdir independently and
+    simultaneously; a byte from before dispatch or after a window's close belongs to nobody and
+    fires. A deletion is NEVER excused by a job window — rule 28's discipline holds — and a
+    claimed path that surfaces anyway, in the log or in a report, MUST name the claiming job id,
+    so the claim over a tree is traceable rather than invisible. The accepted cost mirrors
+    rule 25b's: an outside edit inside a job's window is silenced, judged
+    cheaper than the class this closes — eleven-plus false alarms in three nights, every one an
+    authorised builder's own brief-named work.
+25d. The plumbing list. The day journal drawer and the wakes ledger are written by exactly one
+    hand each — the journaller and the wake machinery — so a creation or modification there
+    never reports, by path, unconditionally: no declaration, session window, or job is involved
+    (`journal/2026-08-23.jsonl` was reported at 03:26 although the journaller is the only writer
+    on the machine). A deletion there still surfaces — a vanished day of the journal is exactly
+    the kind of news rule 28 exists for.
+25e. The private shadow diff. `deskcrab.conf` is not git-tracked, so an outside edit to the file
+    that sets her model, effort, voice and accounts woke her with "no diff available" and nothing
+    else (2026-08-28 10:15, and again blind at 12:31 — the record
+    `the-watcher-cannot-diff-the-file-that-configures`). For every watched constituent that is a
+    TEXT file no git repository tracks — the live conf, the persona sheet, anything
+    `SELF_WATCH_EXTRA` names outside a repo, an untracked file inside the code repo — the watcher
+    keeps a persistent private shadow copy under the data dir
+    (`~/.local/share/deskcrab/self-shadows/<absolute path>`, override
+    `NOTICE_SELF_SHADOW_DIR`), and the report renders a unified diff from the shadow when such a
+    file surfaces. The shadow is refreshed ONLY after the report has landed at its final name, so
+    a burst of edits between reports shows the whole distance travelled, and a report that could
+    not be written leaves the old shadow — and the unshown distance — intact for the next
+    attempt; a change judged her own advances the shadow at judgement, with no report, so her own
+    hand is never billed to the next outside diff. Bounded and explicit, never silently partial:
+    a file over the cap (`NOTICE_SELF_SHADOW_MAX`, default 1 MiB) is named too large with its
+    size, and never copied; a binary file is named binary; an unreadable one unreadable; a file
+    already gone again says so; a deletion names the retained shadow — kept, never dropped, so
+    the last-seen content stays recoverable — and never inlines it; a diff past
+    `NOTICE_SELF_SHADOW_DIFF_LINES` (default 400) is cut with the cut named. The conf holds
+    secrets (`SERVE_SECRET`), so the shadow tree is 0700, its copies and every report 0600, and a
+    diff reaches the report file and nowhere else — never the wake text, the log, stdout, or a
+    notification. Git-tracked files in the code repo keep their git diffs exactly as before, and
+    a file tracked by a git repository of its own (a conduct file) keeps its commits as the
+    record and gets no shadow. The manual baselines the 2026-08-28 stopgap left under
+    `self-baselines/` are incorporated, never silently discarded: the first shadow of a conf-dir
+    file with a same-named manual baseline seeds FROM the baseline, so the first report after
+    this rule lands still diffs from the last state a hand recorded.
+25f. A deletion's recovery line answers to HEAD, not only to the index. A staged deletion
+    (`git rm`) takes the path out of the index, so an index membership test answers "untracked"
+    for a file HEAD still holds whole — and the report then reached for a shadow that was never
+    kept, because the file was tracked when it was last seen, and declared the content not
+    recoverable (2026-09-28: ten staged deletions reported lost in one alarm, the record
+    `a-staged-deletion-is-reported-to-me-as-unrecover`; `git show HEAD:<path>` printed each one
+    whole). When the index does not know a deleted path in the code repo, the watcher MUST ask
+    HEAD before it declares loss: a blob at `HEAD:<path>` is reported as a staged deletion, never
+    as untracked, with the command that prints it as the recovery route. A shadow kept for the
+    same path — the file left the index while it stayed on disk, and was seen untracked since —
+    is named beside the HEAD blob, because either may be the later state. Only a deleted path
+    that neither the index, nor HEAD, nor a shadow holds is reported as not recoverable here. A
+    recovery line that errs toward loss is the expensive error: it invites panic-copying of
+    content that was never in danger.
+26. Write declarations come in two tiers. A **strong** declaration means the path was in a provable
+    write position and excuses anything, including a subtree. A **weak** declaration means the path
+    merely appeared in a command she ran, and excuses exact paths only, never a deletion.
+27. A declaration counts if it was alive at any point since judgement last ran, not merely at this
+    instant. The difference covers the whole interval, and the interval can outlast a declaration's
+    window.
+28. A deletion is never excused by a fuzzy claim match. A deleted want must always surface unless the
+    deleter declared it.
+29. Whatever survives is written to a report and handed to an ordinary event wake, which brings its
+    own quiet-hours and single-wake discipline.
+30. The watcher MUST NOT speak, and the wake's agenda MUST offer awareness, never an instruction.
+31. Each judgement MUST archive the stream it read and append one line naming the strong and weak
+    sets it produced. Both are evidence only: nothing reads them but her, after an alarm, and
+    neither may alter a declaration. **The forensics must never become the bug.**
+
+### The canary
+
+32. The canary proves the whole path: change notification, then the path unit, then the service,
+    then the emitter's own code. Proving that a unit file exists is not proving the watcher works.
+33. The emitter MUST stamp a heartbeat before any early exit, and the canary waits for that number
+    to move.
+34. The sentinel MUST be invisible to the emitter's own snapshot, so the directory change fires the
+    unit, the emitter finds nothing of substance, and no report or wake is produced.
+35. **The poke MUST repeat** inside the wait window. A path unit does not queue: a change arriving
+    while its service is still running is lost, and the unit re-arms only once that service goes
+    inactive. A single-poke design called a healthy watcher dead within a minute of the emitter
+    merely being busy.
+36. There are three outcomes and only one is an alarm. An inactive path unit is started and she is
+    told it had stopped — whatever changed during the gap was never judged. An already-busy emitter
+    is inconclusive, never an alarm. A heartbeat that will not move fires an event wake naming what
+    is unguarded.
+37. When the canary finds the path unit disabled rather than merely stopped, starting it in-session
+    is not the fix — it will not come back after a reboot. The canary MUST say so in terms that name
+    the durable repair.
+38. One line per check MUST land in the canary log.
+
+### The claudism review — part of sleep
+
+39. After the ingest and the key backfill, sleep reviews the day for claudisms: the moments she
+    sounded like a generic assistant instead of herself. The review is part of sleep's work on her
+    prompt and her memories, and the only things it changes are those, so she wakes with the
+    change already made. It writes no report file, books no wake, and never speaks. It keeps no
+    counts: the score of rule 40a is recomputed from the journals each night, stated, and stored
+    nowhere.
+40. The review reads the day's journal in two series that are never pooled. Her SPEECH is every
+    reply the user could hear — desk, phone, wake — its spoken half beside the user's words. Her
+    HOUSEKEEPING is the tidy's own prose (`kind=tidy`): she wrote it, so it is reviewed rather
+    than dropped, but it is a note to no listener, never spoken and read by no one (`MIN-31`),
+    and it MUST reach the judge under its own heading, labelled as housekeeping, never as
+    something she said aloud. A job's entry is a builder's log, not her voice, and is in neither
+    series. A day that holds housekeeping and no speech is still reviewed. Beside the journal the
+    review reads the day's flag log ([turn-pipeline.md](turn-pipeline.md) rules 30-32) as
+    pointers to moments worth a look and, night over night, as the held series of rule 40b;
+    and her persona sheet, her conduct files, and the active memory
+    records recall puts in front of her for the day's turns. It looks for the material that
+    pulled her voice toward the assistant register — a record written about her in the third
+    person or in procedure-speak, a conduct body that reads like a policy document, a persona
+    line that invites the move — and fixes that material. Her own lines are evidence; they are
+    never rewritten. The judge is told what housekeeping is: a slip there is evidence about how
+    she writes to herself, traced like any other to the material that shaped the note, and never
+    evidence about how she speaks — nothing that governs her speech is to be changed on
+    housekeeping evidence alone. Unlabelled, the note was judged as speech: on 2026-10-03 the
+    judge took the 03:18 tidy line for a report given to the user and edited the conduct index,
+    which sits in every prompt she speaks from, on that evidence.
+40a. The review scores the two series apart, and neither series' rate may depend on how much of
+    the other was written. A USE is a listed move found in a sentence of the journal's prose,
+    read by the phrase list's one parser and one mention test (the capture's rules 32a and 32b
+    in [turn-pipeline.md](turn-pipeline.md)): every entry counts, the `live: no` wide net
+    included; a function counts once per sentence however many sibling patterns name it; a
+    mention is set aside; an entry that declares no function scores under its own short name. A
+    series' rate for a function is its uses per 1,000 of THAT series' words — spoken halves
+    only, fences out — and the denominator is printed under the rates it divides: the series'
+    words on each night, and the rate a single use prints there, because on a short night one
+    use reads as a spike. The curve runs over the last `CLAUDISM_REVIEW_TREND_NIGHTS` journal
+    days (default 7) ending at the reviewed day, every night re-scored from its own journal
+    against tonight's list, so one ruler measures the whole curve and nothing is kept between
+    nights (rule 39). A night with no words in a series is a gap in that series' curve, never a
+    zero. Every table carries the same function rows — every function caught in either series,
+    or held at the gate (rule 40b), on any night shown — so a move that lives in only one of
+    them reads 0.00 (or 0) in the others instead of vanishing from them; the held table's
+    `unknown` row is its own. Entries the parser could not read are counted on the score's own line: a
+    pattern that never ran MUST NOT read as a move that never happened. The score reaches the
+    judge as a section of its material and the night log as `claudism-review:` lines, and
+    `claudism-review score [day]` prints it alone, with no model call and no write. It is a
+    pointer, like the flags, and a score that cannot be computed costs only itself: the review
+    runs without it and says so.
+    The pooled rate this replaces was wrong about both registers at once. On 2026-08-18 the day
+    held 724 words and two proof-of-work uses, 2.76 per 1,000 — the highest single-function
+    figure the old table had carried. By series, the 546 spoken words carried neither (0.00) and
+    the tidy's 178 carried both (11.24). The blend moved with how much the user happened to say
+    to her that day, and on a quiet day it silently changed what it was measuring.
+40b. Beside the two, a third series, never pooled with either: HELD AT THE GATE — what the live
+    mirror caught in her draft and she never said ([speech-output.md](speech-output.md) rules
+    41, 45 and 49). Its source is each night's flag log, and only a row whose outcome is
+    `rewrite` or `table-swap` counts: the capture's flag-only rows, mentions, and fires that
+    failed open are not holds. It is reported as counts — events, rewrites, table-swaps, and
+    the count under each function the flag names, a row naming no function counted under
+    `unknown` and never dropped — and as one rate, events per 1,000 of the night's SPOKEN
+    words: the spoken series' own ruler from the journal, so the denominator is the one rule
+    40a already keeps apart from housekeeping, and never a count read back from an old
+    report. A night with no flag log is a gap, not a zero: the log is written only when the
+    mirror fires, so its absence cannot tell a night of restraint from a night the gate never
+    ran; a log on which nothing was held is a true zero. A night with a flag log and no
+    journal is still a night on the curve: its count stands, no rate is printed, and it is
+    not a clean night. The series reaches the judge with the score and the night log as
+    `claudism-review:` lines, and the judge is told what it is: her reaching, not her
+    speech — a held sentence was never heard and is no slip he heard. It says which kind of
+    clean a clean night was.
+    The report this fixes could not. On 2026-08-16 the spoken sheet read 2,478 words and
+    nothing caught, while the gate had held 14 sentences — 11 rewrites, 3 table-swaps; 8
+    vouching, 3 promising, 3 naming no function — 5.65 per 1,000 spoken words, the highest
+    reach of any night measured, under the cleanest sheet. The two curves are inverted, which
+    is what a working gate looks like; a report reading the spoken side alone scored a night
+    of restraint and a night of fourteen catches alike. (The 5.40 the record first figured
+    divided by the old report header's 2,592, which pooled the tidy's 114 words into the
+    spoken count — the blend rule 40a took out.) And 2026-08-11, a night no review ran on,
+    holds 22 held sentences on its flag log and was never a clean night either.
+41. An edit takes one of three routes and no other:
+    - a directive or note record rewritten in her voice through `crab memory rewrite`
+      ([memory-recall.md](memory-recall.md) rule 28e); the old record is superseded, never
+      deleted;
+    - a record retired through `crab memory forget`;
+    - an exact-text replacement in the persona sheet or in one file of the conduct drawer. The old
+      text MUST occur exactly once in that file, or the edit is refused;
+    - a `- replace:` line in the phrase list revised or revoked, for an entry whose replacement
+      fired that day: the night is where the table's automatic swaps are reviewed
+      ([speech-output.md](speech-output.md) rule 49). An edit there may touch `- replace:` lines
+      only, and never adds an entry.
+    Only records and files the judge was shown can be edited, and only directives and notes among
+    the records. No other file is touched. Instructions that live in this repository's code are
+    outside the review's reach.
+42. Most nights change nothing, and a night that changes nothing is a normal answer, never a
+    failure. A night applies at most `CLAUDISM_REVIEW_MAX_EDITS` edits (default 6); any beyond
+    the cap are named on the night log and not applied.
+43. Before its first edit the review declares its writes (rule 6) and copies every file it is
+    about to edit to `sleep/claudism-review/<date>/`, so any edit can be undone by hand. Every
+    applied or refused edit is one line on the night log opening `claudism-review:`, carrying
+    the judge's reason. `CLAUDISM_REVIEW_DRY_RUN=1` runs the whole review and prints the edits it
+    would make, making none.
+44. The judgment is the night judge's (rules 14c-14e): one call, no fallback, never re-asked; a
+    judge that cannot answer changes nothing. The review's failure never unstamps or fails the
+    night (rules 8 and 10).
+
+### The promise sweep — part of sleep
+
+The promise checker's live pass ([turn-pipeline.md](turn-pipeline.md) rules 32a-32d) is
+deliberately cheap: a pattern pre-check gates the model, so a commitment phrased outside the
+patterns is never judged, and a wake the checker booked may itself have come to nothing. The
+night is where the day's promises are settled honestly, from the whole record at once.
+
+51. After the ingest — succeeded or loudly failed (rule 10a) — and BEFORE the night's
+    work, sleep runs the promise
+    sweep (`lib/promise-check sweep`) over the day that just ended: the day's journal, every
+    channel's replies with the outcome and work trace each session left, beside the day's
+    promise ledger. One model call, and it is the night judge's (rules 14c-14e):
+    `PROMISE_SWEEP_MODEL` at `PROMISE_SWEEP_EFFORT`, default `gpt-5.6-sol` at `high`, with no
+    fallback model — never the live checker's model pair, which stays a live-turn role
+    (`PROMISE_CHECK_MODEL`/`PROMISE_CHECK_FALLBACK_MODEL`, untouched). Rule 13 applies as
+    written on either engine. Every channel's outcome carries its turn's own tool trace — the
+    desk and phone rows exactly as the wake's ([turn-pipeline.md](turn-pipeline.md) rule 32e)
+    — so a completed-work claim that slipped the live pre-check is refuted here from the day's
+    own record, or shown done by it: a claim whose day carries no matching trace surfaces as a
+    miss, and one whose trace names the work is dropped.
+51a. The sweep reads the journal in the review's two series (rule 40) and sweeps her SPEECH
+    alone: the desk, phone and wake rows, each a reply beside its own outcome and trace. The
+    tidy's row (`kind=tidy`) is her HOUSEKEEPING — a note to no listener, never spoken — and no
+    commitment is read from it: it enters neither the day digest the judge is handed nor the
+    named-files scan of rule 52a, exactly as a job's row (a builder's log, not her voice) enters
+    neither. The exclusion is those two kinds alone, never a row's wording: a note she left in
+    her own wake (`kind=note`) was said in her voice and is swept as speech, and the standard of
+    rule 52 is not loosened for anything that is. On 2026-10-28 the sweep of 10-27 quoted the
+    tidy's 03:20 line — "Filed an engineering record naming the volume-control window …" — as a
+    spoken commitment with "no outcome or work trace", and booked the 09:45 wake over a record
+    that had stood on disk since 03:20:19, three seconds before the line was written (the record
+    `the-promise-sweep-reads-the-tidy-s-housekeeping`); the review had carried the same defect
+    and kept the two series apart since 2026-10-04 (rule 40a), and the sweep never received the
+    separation.
+52. The sweep surfaces only genuine end-of-day misses. A commitment fulfilled later in the day
+    — promised at noon, visibly done by a later session's record — is reconciled and dropped,
+    whether or not the live checker caught it; a commitment never caught during the day and
+    never performed is a miss exactly as a caught one is. The journal is the sweep's whole
+    evidence, so it errs toward surfacing: a fulfilment the record cannot show is a miss the
+    morning can dismiss in a sentence, where a miss the night dropped is a promise that died
+    twice. Erring toward surfacing has one hard exception, shared with the live judge
+    ([turn-pipeline.md](turn-pipeline.md) rule 32b): a NEGATIVE commitment — one to refrain
+    from acting ("I'm leaving X alone", "I won't touch Y", "nothing further from me on Z")
+    — is never a miss, however empty the day's record stands on it. Absence of action is
+    the keeping of it, so an abstention has no fulfilment the record could ever show; the
+    sweep's judge classifies each commitment's polarity before fulfilment and drops the
+    negative unjudged.
+52a. The sweep's judge reads more than the day's own turns, because the day's work is wider
+    than its speech. Three further records ride the sweep's prompt as their own labelled
+    sections, all gathered mechanically and model-free: every path-shaped token the day's
+    replies name, statted from the disk itself — exists, with its modification time, or NOT
+    found — because a dated artefact whose mtime is consistent with the claim is the claim's
+    own witness, whoever's hand wrote it and however compressed the speaking turn's outcome
+    line reads; and the resident game player's outcome record for the swept day (the outcome
+    stream `outcome-queue.jsonl` under the game dir, `~/.local/share/deskcrab/game`, override
+    `DESKCRAB_GAME_DIR`), digested and bounded, because the resident player works outside
+    every speaking turn by design — its acts land on the game's own record and on no journal
+    row, so a commitment about the game is judged against that record, never against the
+    turns' silence; and the day's commits across her repositories
+    ([turn-pipeline.md](turn-pipeline.md) rule 32bb), because a day's code work exists as
+    commits and the mtime record cannot see them. The 2026-08-28 sweep called fifty commitments missing and direct
+    verification found forty-five fulfilled in exactly these records (the record
+    `the-end-of-day-promise-sweep-calls-existing-arte`): a blank instrument was promoted into
+    a fact about the world. Either section failing to gather is presented AS unreadable and
+    named on the run trace, never silently omitted — and neither section loosens rule 52: a
+    claim no artefact, game record, or journal trace backs surfaces exactly as before.
+53. Every miss lands as a sweep record on the durable ledger — each row carrying the run's
+    durable identity beside its content: `sweep_time`, one timestamp the run stamps once
+    before its first append and repeats verbatim on every row however the wall clock ticks
+    between them, and `item`, the miss's 1-based ordinal within the run — and the day's misses
+    are surfaced together as ONE morning event wake through the queue's one door, in the
+    checker's own identity (`promise-check`), quoting the missed promises numbered by their
+    `item` and naming rule 53f's resolution door beside them. A clean day books nothing —
+    the sweep is a debt collector, not an exercise, and its run-trace line is its record. The
+    sweep's failure MUST NOT unstamp or fail the night: the stamp and the exit stay the
+    ingest's own (rules 8 and 10), exactly as the claudism review's failure must not.
+53a. The sweep owes the night log its closing line. Every path out of the sweep — no journal, no
+    replies, no verdict, clean, or misses booked — prints one line in the checker's own name
+    (`promise-check: sweep <day>: …`) to stdout beside the run-trace record of rule 53, so the
+    night log shows the sweep reached its own end and rule 14b's detector can tell a sweep that
+    ran from one that never started. The guards ahead of the mode dispatch (no CLI, no python)
+    still exit silently on purpose: a sweep that cannot start is exactly what rule 14b flags.
+53f. A sweep record is debt, and debt has a settlement shape. A later `type: sweep-resolution`
+    row on the same ledger — `day`, `sweep_time` and `item` naming exactly one sweep row, a
+    `decision` of `fulfilled`, `struck` or `booked`, and the `evidence` in a sentence —
+    resolves that row durably: the night's work MUST NOT redispatch a resolved miss (rule
+    58b), whatever the miss's age. Before this rule the drain read every recent raw
+    `type: sweep` row forever, so reconciled debt stayed eligible for redispatch until it aged
+    out (the record `the-end-of-day-promise-sweep-calls-existing-arte`).
+    `lib/promise_ledger.py` is the ONE reader of this identity — the grouping of raw sweep
+    rows into runs and the matching of resolutions against them live there and nowhere else,
+    as do the due rows of rule 53k, their outcomes, and the due-day arithmetic. A
+    stamped run matches its `sweep_time` exactly, never by nearness, and a resolution carrying
+    any decision outside the three named above settles nothing. A sweep row from before the
+    identity landed (no `sweep_time`, no `item`) is identified by
+    its run — same day, write times within moments of each other, in ledger order — and by
+    its ordinal within that run, the resolution's `sweep_time` matched to the run's first
+    write within slack: the fifty reconciliation rows of 2026-08-29 name `03:23:05` while the
+    run's later rows landed at `03:23:06`, and they MUST resolve.
+    `lib/promise-check resolve <day> <item> <decision> <evidence>` is the writing door: it
+    finds the day's newest sweep run on the ledger, refuses an item the run never surfaced,
+    and appends the resolution row. Resolution is per item and evidence-bearing, never a
+    blanket: a decision settles the one row it names, and an unresolved miss stays owed
+    however many of its neighbours resolved.
+53k. A commitment made for a LATER DAY is not an end-of-day miss, because the day it is
+    judged against has not happened yet — and it is not nothing, because the turn that made
+    it will lie outside every later sweep's journal by construction. "I'll re-seat the heater
+    tomorrow", "I'll write it up on Friday", "next week I'll move the timer": before this
+    rule the night either called such a line missed on the evening it was said (a miss the
+    morning dismissed in a sentence, eight times over — the record
+    `the-tidy-could-check-that-a-named-artefact-exist`) or dropped it as a plan and never
+    looked again, and nothing followed a promise made about tomorrow at all. The sweep's
+    judge classifies TIME beside polarity (rule 52): a commitment stated for a day after the
+    swept day is a LATER verdict, never a MISS, quoted verbatim with the time it was said and
+    the moment AS SHE STATED IT. The sweep retains it durably as a `type: due` row on the
+    promise ledger — the origin `day`, `said_at`, the `promise`, the stated `when`, and the
+    `due` day — and books nothing for it tonight. The due day is resolved MECHANICALLY from
+    the ORIGIN day, never from the wall clock: the sweep runs after midnight, and "tomorrow"
+    counted from the clock would land a day late. "tomorrow" in any dress is the origin day
+    plus one, "in N days" plus N, a weekday the next such day after the origin, "next week"
+    plus seven, a dated day itself; a moment the resolver cannot read falls to the next day,
+    the stated words kept on the row so the morning can read what she meant, and a LATER
+    whose moment resolves within the swept day is the day's own commitment and the day is
+    over — it is a miss exactly as rule 52 says. A negative later-day commitment is dropped
+    unjudged, as rule 52's. Each due row carries a `due_id` derived from the origin day and
+    the promise's words, and a sweep that finds a LATER already retained under that id
+    retains nothing twice: a day swept again (rule 53f's 2026-08-26 was swept twice) leaves
+    one row, not two.
+53l. Every sweep follows the due rows that have FALLEN DUE — `due` on or before the swept
+    day, no `type: due-outcome` row yet — as their own labelled, numbered section of the
+    judge's prompt, each beside the paths its own sentence names statted from the disk
+    (rule 52a's stat; "the sentence names the file — stat it"), and, when the due day is not
+    the swept day (a night the sweep did not run), beside the due day's own journal digest
+    and commits as well. The item is judged against the DUE day's record — the swept day's
+    sections when they are the same day — never against the origin turn, which is not in
+    evidence and owes nothing. A day with no journal but with fallen-due rows is still swept
+    for them. The judge answers each numbered item, and only in one of two shapes: DUE-KEPT
+    with the evidence in a sentence, or DUE-MISSED with why it reads unfulfilled. KEPT lands as
+    a `due-outcome` row carrying the evidence and books nothing. MISSED lands as a `type: sweep`
+    row of THAT night's run — the run's `sweep_time`, the next `item` after the day's own
+    misses, `day` the swept day — carrying `origin_day`, `due` and `due_id` beside the promise,
+    so it rides the same morning wake (quoted with the day and time it was said and the day it
+    fell due), answers to the same resolve door (rule 53f), and reaches the night's owed shelf
+    (rule 58b) exactly as any miss does; and a `due-outcome` row of `missed` naming that sweep
+    row settles the due row. A MISS the judge quotes in the words of a fallen-due item is read
+    as that item's DUE-MISSED, never as a second debt. Never before the due day, never twice:
+    a due row standing for a later day is not asked about, and a due row with an outcome is
+    asked no more.
+53m. An item the judge leaves unanswered on a night it answered stays pending and is asked
+    again the next night against the same due day's record, the trace naming it; a pending
+    row more than `PROMISE_DUE_GRACE_DAYS` (default 7) days past due is surfaced on the next
+    sweep as a miss unjudged, its `why` saying no night since could judge it — erring toward
+    surfacing as rule 52 does, so no commitment waits forever. A night with no verdict at
+    all (rules 14c-14e) changes nothing here either: nothing is retained, no outcome lands,
+    every pending row stays pending. This remains the retrospective nightly check and the
+    next-morning report that rules 51-53 describe — a gate on nothing she says; the live
+    auditor's deferred-promise wake ([wake-queue.md](wake-queue.md) rule 43a) stays the
+    daytime catch, and the two never read each other.
+
+### The twin-merge pass — part of sleep, before the night's work
+
+The drawer accumulates the same complaint written on different nights. The memory store has had a
+merge-identical-ideas discipline from the start ([memory-recall.md](memory-recall.md) rules 28, 39,
+51); the engineering records had none, and the night's-work "dedupe" (rules 56a and 59) is only the
+state machine refusing to dispatch one record twice — nothing ever read two records and noticed
+they are the same complaint. After a fortnight of the drain running blind over 60+ open threads,
+near-twins are a certainty, not a risk (the record
+`merge-twin-threads-before-the-drain-picks-work-r`, 2026-08-23).
+
+53b. After the promise sweep and BEFORE the night's work, sleep runs the twin-merge pass
+    (`lib/eng-merge run`) over the LIVE open records — the same drawer rule 58c hands the
+    selector, and only its `state: open` records: a settled or dead record is already out of the
+    drain's sight and is never scored. The pass normalises each record (title and body, the entry
+    headings stripped) and embeds it through the memory store's own embedder
+    (`MEMORY_EMBED_URL` / `MEMORY_EMBED_MODEL`), scores every open pair by cosine, and hands
+    pairs at or above the candidate threshold (`ENG_MERGE_THRESHOLD`, default 0.80) to a
+    judgement call, highest first, bounded by `ENG_MERGE_MAX_JUDGED` (default 8) — and a bound
+    that bites is announced with the count it dropped, never silent (rule 58a's discipline). The
+    threshold is a CANDIDATE GATE, measured, and deliberately NOT a merge line: measured
+    2026-08-24 over the live drawer (56 open records, 1540 pairs), known-distinct same-area pairs
+    score up to 0.8784 — one of them a record whose own title declares it distinct from its
+    neighbour — while true twins were observed at 0.8548 and 0.8630. The distinct-pair ceiling
+    sits ABOVE the twin floor, so no embedding threshold can decide a merge; every candidate goes
+    to judgement. 0.80 is that distribution's p98, ~0.05 under the lowest observed twin. An
+    embedder that does not answer scores nothing, says so, and ends the pass — never a guessed
+    score.
+53c. The judgement is deciding what is a duplicate, which is taste, and taste on the sleep path
+    is the night judge's (rules 14c-14e): `ENG_MERGE_MODEL` at `ENG_MERGE_EFFORT`, default
+    `gpt-5.6-sol` at `high` — the 2026-08-25 ruling supersedes the 2026-08-06 phase-2 line
+    (design-memory-store.md, 22:49: "what is a duplicate … Opus, always") on this path — under
+    rule 13's engine discipline, with NO model fallback — a pair the model never answers is
+    skipped, never guessed at by a cheaper model. The rule the judge enforces, encoded in its prompt:
+    same-COMPLAINT merges only, never same-AREA — two records about chess are not a merge; two
+    records about the same collapse are. The verdict carries the judge's own confidence in its
+    leading tokens — `MERGE CERTAIN` (the two records state one complaint and no reading
+    separates them), `MERGE LIKELY` (probably one complaint, but a reading exists in which they
+    are distinct), or `DISTINCT` — and a person's ruling on the pair outranks the judge's: the
+    prompt tells it that a record stating it is distinct from the other, or that a previous fold
+    between them was wrong, is answered DISTINCT. Every non-answer is conservative: a refusal, an
+    unparseable verdict, and DISTINCT all mean both records stand — and so does a verdict line
+    that carries BOTH tokens: on the first live run (2026-08-24) the judge twice changed its mind
+    mid-line ("MERGE — no, wait: DISTINCT — …"), and a leading-token parse proposed the two folds
+    the judge's own sentence retracts. A MERGE is accepted only when its line never says
+    DISTINCT.
+53d. The nightly pass FOLDS what the judge is certain about and proposes the rest: sleep runs
+    `lib/eng-merge run --apply`, and under `--apply` only a verdict at or above the fold gate is
+    folded. The gate is `ENG_MERGE_FOLD_CONFIDENCE` (environment or `deskcrab.conf`; it lives in
+    `lib/eng-merge`'s knob block), default `certain` and deliberately conservative: only
+    `MERGE CERTAIN` folds. `MERGE LIKELY`, and a bare `MERGE` that states no confidence — a
+    judge that ignored the asked-for form — stay dry-run proposals on the night log exactly as
+    before: winner, loser, score, confidence and the judge's reason named, for a hand to fold or
+    discard. An unrecognised gate value reads as `certain`, never wider, and `run` without
+    `--apply` stays the pure dry run — proposals only, nothing written — for running the pass by
+    hand. An applied fold goes through `crab eng` and only through it
+    ([engineering-records.md](engineering-records.md) rule 4), never a hand edit of a record
+    file: the WINNER is the record with the earlier `opened` — which it keeps by construction,
+    since the tool never rewrites `opened` — the loser's whole body is appended to the winner as
+    one dated entry (`eng touch`) whose note names the fold, the loser, the score and the judge's
+    confidence, and the loser is killed with `settled_by` pointing at the winner's id
+    (`eng kill`). No body is ever lost: a fold appends, never truncates or rewrites the winner's
+    entries, and the dead loser keeps its own body whole. A pair whose records are no longer both
+    open by the time the fold reaches them is skipped, with a line. A WRONGLY-FOLDED thread is
+    recovered through `crab eng` alone, because nothing was destroyed: `crab eng show <loser>`
+    reads the grave whole, `crab eng new <title> --body … --opened <its original opened>` reopens
+    the complaint as its own open record (the dead file keeps its name; the tool suffixes the new
+    id), and the reopened body MUST state that the fold was wrong and what separates the pair —
+    that written ruling is what rule 53c's judge reads on the next pass, so the same wrong fold
+    is not made again — with a `crab eng touch` on the winner recording the reversal.
+53e. This pass and the dispatch dedupe MUST NOT be confused for each other: rule 56a's state
+    machine and rule 59's ledger stop the same RECORD being bought twice; this pass is the one
+    thing that reads two records and notices they are the same complaint written twice. Its
+    failure never unstamps or fails the night (rules 8 and 10, the same bargain as every phase),
+    and it owes the night log a line in its own name (rule 14b, `eng-merge:`).
+
+### The want reflection — part of sleep, after the records are reconciled
+
+The wants drawer grew only by hand: a want existed when she or the user sat down and named one,
+and nothing ever held the day she actually lived up against the shelf. The record
+`let-wants-emerge-from-lived-experience-during-sl` (2026-09-09) named what that misses: hearing
+about the user's day and her own accumulated experience should give her more life to react to,
+and sleep may let new wants arise naturally from what she has actually lived. The same record
+drew the line this section holds: this is NOT a prompt to invent wants, generate homework, force
+an output, or spend repair time chasing novelty — a sound implementation exposes experience and
+unfinished attraction to reflection, leaves room for no new want to form, and records something
+only when it is an appetite she would actually choose.
+
+53g. After the twin-merge pass and BEFORE the night's work, sleep runs the want reflection
+    (`lib/want-reflect run [day]`, default the day just ended; `WANT_REFLECT_ENABLED=0`
+    switches it off with one line in its own name). The reflection reads TWO things and judges
+    from nothing else: the swept day's journal — her turns and the user's words as lived, a
+    builder's `kind: job` entry excluded exactly as rule 40 excludes it from her voice, because
+    a builder's log is not her lived day — and the wants drawer's standing in every state, so
+    what is already live, resting, grown or retired is visible and an existing attraction is
+    never re-invented. Each rides the judge's prompt as its own labelled section under rule
+    58a's discipline: bounded by bytes, cut on character boundaries through `utf8_head`, a cut
+    that happens announced with the section's true size and its budget, never silent. A day
+    with no journal, and a journal holding no turn of her own, each end the phase with one line
+    in its own name and NO judge call — a day that was not lived has nothing to reflect on.
+53h. The reflection is taste on the sleep path, so it is the night judge's (rules 14c-14e):
+    `WANT_REFLECT_MODEL` at `WANT_REFLECT_EFFORT`, defaulting from the shared pair (rule
+    14c-i), no model fallback, ONE call per night, never re-asked. The question is whether the
+    day's own material shows a NEW appetite she would genuinely choose to keep — a thing she
+    kept returning to, an attraction left unfinished, a thread she visibly enjoyed and left
+    open — and the answer form carries the honest default in its first token: `NOTHING — <the
+    honest reading of the day>`, or `WANT — <a short title>` followed by her first-person
+    reasons. MOST NIGHTS FORM NO NEW WANT: the prompt says so in those words, NOTHING is the
+    expected answer and never a failure, and the phase MUST NOT retry, widen, or re-put the
+    question to get a want out of a night. The prompt forbids by name: manufacturing a want to
+    have something to show, turning the day's chores, defects or errands into one (work has
+    its own drawers, and rest is not a backlog), proposing novelty for its own sake, and
+    restating a want the drawer already carries live or dormant.
+53i. On NOTHING — and on every non-answer: a refusal, no verdict, an unparseable or ambiguous
+    verdict (a WANT line that also says NOTHING, the eng-merge lesson of rule 53c), a title
+    that is not a title — the phase writes NOT ONE BYTE: no want document, no shelf line, no
+    file of its own, nothing beyond its lines on the night log. On WANT, at most ONE want is
+    recorded a night, through the wants tool and only through it (`lib/eng --kind want new`,
+    [wants.md](wants.md) rules 6-7 — the tool declares the writes, resolves the slug, and
+    appends the shelf line where a shelf is configured; this phase never touches the drawer or
+    the shelf by hand): the judge's title, the first-person sentences as the opening body with
+    the reflection's provenance named in it, and a one-line summary naming the day it rose
+    from. A title the drawer already carries, matched casefolded in any state, is NOT
+    re-recorded — the standing want is named on the log and nothing is written; wanting again
+    what was retired stays a NEW want linked to the old one, and that judgement is hers by
+    hand, never this phase's ([wants.md](wants.md) rule 4).
+53j. The reflection MUST NOT speak, notify, book a wake, or dispatch a builder — the mechanism
+    spends no detached builder at all, and any builder-shaped extension of it belongs inside
+    this sleep phase, never on ordinary wakes or live turns (the record's own line). It needs
+    no morning wake either: a formed want IS its surface — one new line on the shelf and one
+    document in the drawer, read exactly as every want is — and a night that formed nothing
+    has nothing to surface. Its failure never unstamps or fails the night (rules 8 and 10, the
+    same bargain as every phase), and it owes the night log a line in its own name (rule 14b,
+    `want-reflect:`).
+
+### The night's work — part of sleep, and the night's owed-work sweep
+
+The engineering threads accumulate faster than waking hours spend them, and the stretch between
+sleep's stamp and the morning is machine time nobody is using. The night's work turns that idle stretch
+into builders: the night's owed work — the queued backlog the daytime dispatch policy shelved
+([jobs.md](jobs.md) rules 30-34), the LIVE open engineering records (rule 58c — the records
+drawer `crab eng` keeps, never the frozen pre-records archive), the promises the sweep found genuinely missed,
+the work already sitting on the wake queue's books — becomes dispatched jobs, round after
+round, for hours, until a wall-clock cutoff — and then the night finishes normally, so the
+assistant ends it idle and available. Sleeping is an ACTIVE activity, the user's own design
+(2026-08-11 00:26 and 09:40): a night that only reads the day and then sits idle is not the sleep
+that was asked for, and promised work must stop waiting for a live turn to personally remember it.
+
+54. After the ingest — succeeded or loudly failed (rule 10a) — and AFTER the promise sweep,
+    as the night's last phase, sleep runs the night's work (`lib/night-work run`) over the
+    open owed work. The sweep runs first on purpose: its reconciled end-of-day misses are part of
+    the night's material (rule 58b), and the night's work is the phase that holds the night open until
+    the cutoff, so everything else finishes before it starts. Its
+    failure MUST NOT unstamp or fail the night: the stamp and the exit stay the ingest's own
+    (rules 8 and 10), exactly as the review's and the sweep's must not.
+55. The night's work dispatches only through the job door (`crab job`), never around it, so every builder
+    it starts carries the whole jobs contract — sidecar, live log, completion wake, the
+    blocked-versus-failed distinction, the null-brief guard. The night's work itself MUST NOT speak, book
+    wakes, or open windows; its record is its ledger and the night's log.
+56. Dispatch stops at a hard wall-clock cutoff (`NIGHT_WORK_CUTOFF`, default 06:00 local, the
+    user's named line): no NEW dispatch at or past it, ever; builders already in flight are left
+    to finish. The cutoff MUST be re-checked immediately before every dispatch, not only at a
+    round's start — a selection call can take minutes, and a dispatch a minute past the line is a
+    dispatch past the line. The default gives the 03:10 night nearly three hours of builders —
+    sleeping through the night is doing, not idling — and ends well clear of the morning, so she
+    meets it idle and available. (The first cut defaulted to 04:00, fifty minutes after the
+    timer: an active night that was structurally a nap. The second defaulted to 08:00 and ran
+    builders into the morning; 06:00 is the user's stated hard line.) A run
+    that begins when the next cutoff is further away than the window cap
+    (`NIGHT_WORK_WINDOW_MAX`, default six hours) MUST NOT dispatch at all — a missed night
+    caught up at noon (rule 2) still sleeps, but it does not fill the daylight with builders.
+56a. The queued backlog goes first. Each round, before any selection call, the night's work dispatches
+    the records the daytime policy shelved ([jobs.md](jobs.md) rule 30) — oldest first, through
+    `crab job dispatch <id>`, never around the door — against the same cap and the same cutoff.
+    Queued briefs are already-written work: they cost no model call and no judgement, so they
+    spend the night's slots before the selector is asked to invent anything. The queue is the
+    night's FIRST material, and it is taken up even when no engineering threads exist at all: missing
+    selection material switches off the selector, never the queue, and such a queue-only night
+    ends when the queue is dry and nothing of the night's is still in flight. The night's work sets
+    `DESKCRAB_JOB_NIGHT=1` on every job-door call it makes, which is how the door knows the
+    night window is open (jobs.md rule 31); nothing else ever sets it. A queued dispatch the
+    door refuses for any reason but the block marker is skipped for the rest of the night and
+    named in the night log — never retried in a loop — and the block marker ends dispatch for
+    the night exactly as rule 60 says, because the wall in front of one builder stands in front
+    of them all. The dry run of rule 61 names each queued brief it would have dispatched and
+    starts none. The state machine is the dedupe — of DISPATCH: a
+    dispatched record leaves `queued`, so the ledger of rule 59 tracks only the selector's picks.
+    Two records that ARE the same complaint are a different problem, and the twin-merge pass
+    (rule 53e) is what notices those.
+57. Concurrent jobs are capped (`NIGHT_WORK_CAP`, default 2), counting EVERY job standing
+    `dispatched` or `running` and not only the night's own: a builder between the dispatch call
+    and its worker's first write already holds a slot and an account, so a count blind to
+    `dispatched` overshot the cap in exactly the window where one round's dispatches had not yet
+    spoken as the next round counted. The cap protects the machine and the accounts, not the
+    feature. A full slate is waited out, never overridden. Two is the user's standing overnight ceiling — eight
+    builders at once burned through two logins inside an hour (2026-08-11 00:51), and he asked
+    for two at a time, queued, never parallel swarms while she sleeps.
+58. Selection is judgement — calls to the night judge (rules 14c-14e:
+    `NIGHT_WORK_MODEL` at `NIGHT_WORK_EFFORT`, default `gpt-5.6-sol` at `high`, no fallback
+    model, rule 13's engine discipline) —
+    and a thread is dispatched only when it is genuinely actionable engineering work: never a note
+    or an incident record with no work left in it, never work the threads record as done, never a
+    duplicate of a running, queued, or recently finished job (a queued brief dispatches tonight on
+    its own — selecting its subject again buys the same work twice), never a thread rule 59
+    excludes, never a decision that is the user's to make, and never a thread that names a hand
+    already on it. The whole eligible shelf is judged every night: the open records are walked in
+    batches that fit rule 58a's budgets, one judge call per batch, newest-touched first, and the
+    night remembers which records it has already judged tonight so no record is judged twice
+    while another waits unjudged. A batch that buys nothing is followed by the next unjudged
+    batch at once; the night waits between rounds only after a dispatch or while the slate is
+    full. A whole pass that bought work is followed by a fresh pass over the shelf as it now
+    stands.
+    When every eligible record has been judged tonight, the last pass picked nothing, and nothing
+    the night's work dispatched tonight is still running, the night's work ends; it MUST NOT poll
+    an empty backlog to the cutoff, and it MUST NOT call the backlog dry while an eligible record
+    is still unjudged. The selection's other sections (rule 58b) ride every batch's call.
+58a. The material the selector reads — each open record, the overflow list of records whose
+    bodies did not fit, the job list — is
+    bounded by bytes, and every one of those cuts MUST fall on a character boundary, through
+    `utf8_head`, the document-shaped counterpart of the one shared trim
+    ([wake-queue.md](wake-queue.md) DATA): a bare `head -c` on prose people wrote splits whatever
+    multibyte character straddles the budget, and the lone lead byte it leaves lands in the
+    selector's prompt and the night's stream log as invalid UTF-8 — the same defect that made grep
+    read the entire wake ledger as binary. The partial character is dropped whole, characters
+    clear of the boundary are content and survive, and the prompt handed to the selector MUST be
+    valid UTF-8 whatever lands on any of its budgets. And a cut that actually happens is
+    announced: a section that outgrew its budget MUST be named on the night log at the moment it
+    is bounded — which section, its true size in bytes, and the budget it was cut to — because
+    the bound itself is design, but a trim nobody can see is silent truncation, the thing the
+    standing rule forbids everywhere ([prompt-assembly.md](prompt-assembly.md) rule 36 is the
+    same rule at the prompt's own scale; there nothing is ever cut, here the cut is the design
+    and the announcement is what keeps it honest). A section inside its budget passes without a
+    word, and a section whose file is missing is an empty section, not an over-run.
+58b. The night's material is the whole owed-work shelf, not the threads alone. Beside the thread
+    log, the open list and the index, the selector MUST be handed, each as its own labelled and
+    bounded section: the promise sweep's genuine end-of-day misses from the recent nights (the
+    `type: sweep` records of the durable ledger — the honest pass's verdicts, never the live
+    checker's raw catches, which run heavily false — and among them only the UNRESOLVED: a
+    sweep row a `sweep-resolution` row has answered, fulfilled, struck, or booked alike (rule
+    53f), is settled debt and MUST NOT ride the shelf, while the count of resolved rows so
+    excluded is stated in the section itself, never silently dropped — rule 58a's discipline
+    at the row's scale), and the wake queue's pending bookings (fire
+    time, booker, reason — the reasons are where owed work waits for a live turn, and a live
+    turn cannot commit to the repository at all, so builder-shaped work parked on a wake is work
+    the night should hand to a builder that can). A pick from any source lands on the same
+    ledger under its own key and dedupes the same way. The judgement of rule 58 extends over the
+    new material unchanged, with one line drawn hard: dispatch ONLY what needs no conversation —
+    never work that waits on the user's decision or his voice in the room, and never a wake
+    whose reason is speaking, awareness, reflection, chess, or a reminder rather than buildable
+    work. A section that cannot be read is presented as unreadable and named in the night log,
+    never silently omitted — the selector must know it is judging from less than the whole
+    shelf.
+58c. The thread material is the LIVE open engineering records and nothing else: the records
+    drawer `crab eng` keeps (`~/.local/share/deskcrab/engineering/records/`, override
+    `NIGHT_WORK_RECORDS_DIR`, default `$NIGHT_WORK_THREADS_DIR/records`), filtered to
+    `state: open` and ordered newest-touched first — the order `crab eng list --state open`
+    already produces. Each open record rides as it CURRENTLY instructs — `lib/eng current`
+    ([engineering-records.md](engineering-records.md) rule 9a): front matter and body whole,
+    so the selector reads the state field with its own eyes, every entry newest first, and a
+    one-line stub standing wherever an amendment retired a paragraph (rule 7a there), so the
+    retired words never enter the prompt at all; a record with nothing superseded rides byte
+    for byte as its file — under a per-record budget and a batch total
+    (rule 58a applies to both, cuts announced); a record that no longer fits what is left of a
+    batch waits whole for the next batch, so only a batch's first record is ever cut to fit.
+    The selector is told, in so many words, to compose each brief from the record's current
+    instructions as a whole: the opening entry is the original ask, never by itself the plan;
+    a later entry amends an earlier one only where the record marks the amendment; and
+    nothing an amendment retired may be asked of the builder. The view the selector was
+    handed is kept, per record, for rule 60b's check at the door. A record the tool cannot
+    render (not a record at all) rides as its raw file, exactly as before.
+    A record outside the current batch is never
+    silently dropped: it rides its `eng list` one-liner in a labelled section that names it as
+    waiting for a later batch tonight, and its body is judged in that batch (rule 58). A record
+    with an earlier night's dispatch carries, above its body, each such dispatch — night, job
+    id, and that job's state now (from its sidecar, or `missing`) — so the judge sees what was
+    already tried and can brief revised work instead of the same work again. The frozen pre-records archive (`engineering.md`, `OPEN.md`, `INDEX.md`
+    — read-only history, frozen at the records migration) MUST NOT reach the selector at all:
+    everything in it is closed by construction, nothing can ever mark it done, and shopping
+    from it bought already-finished work on four separate nights (2026-08-15 to 08-17, the
+    record `the-nightly-drain-shops-from-the-frozen-archive`) before this rule. Closed means
+    closed — not "demoted to background", which still trusts the model to obey a negative
+    instruction; the archive's text simply never enters the prompt. An archive item a hand
+    judges still owed is migrated to a live record (`crab eng new` or `crab eng migrate`),
+    never re-fed to the drain. A records directory that does not exist switches selection off
+    (the queue still runs, rule 56a); a directory that exists but cannot be read, or holds no
+    open record, is presented to the selector as exactly that, in rule 58b's own words.
+59. Every dispatch lands on a durable ledger — night, thread key, job id, title — and the ledger is
+    read back into every later round and every later night. For an open engineering record the
+    ledger excludes it from the material, mechanically, before the judge is called, and only
+    while the work it bought can still land: when the record was dispatched tonight (by this
+    run, or on the ledger under tonight's date, so a restarted night never buys it twice), when
+    a job the ledger names for it stands `queued`, `dispatched`, or `running`, or when any job
+    standing so carries the record ([jobs.md](jobs.md) rule 7b), however it was sent. A record whose
+    ledgered jobs are all finished, failed, blocked, or missing is still open work, and is
+    judged again on any later night with no hand needed to release it; rule 58c hands the judge
+    those earlier attempts. Nothing about a record's exclusion is ever left for the judge to
+    infer from the ledger: an excluded record does not reach the prompt at all. A pick from the
+    other sources (rule 58b) is a key the judge makes up; for those the whole ledger is the
+    dedupe, every such key on it — or picked earlier this run, dry run included — is excluded,
+    and the selector is handed the full distinct list of those keys, never a tail of the
+    ledger that hides older rows. The
+    ledger is the night's one write and MUST be declared
+    (rule 6). A ledger still standing under the mechanism's former name is moved to the new
+    path once, at the next run's start, declared on the night log — the record of what past
+    nights dispatched is what keeps this rule honest across the rename.
+60. A brief MUST be self-contained: the builder arrives knowing only the brief's text, so it names
+    the working directory by absolute path, the thread it came from, the concrete work, and the
+    verification owed before reporting done — a brief that only waits on or watches other work is
+    the job that "finished" having done nothing. A brief that fails validation (empty,
+    null-shaped, too thin to act on) is skipped and logged, never dispatched; a refusal from the
+    job door's block marker ends dispatch for the night, because the wall in front of one builder
+    stands in front of them all.
+60a. Every selection dispatch carries an explicit workdir, resolved and verified — the `-C`
+    flag rides EVERY job-door call the selector's picks make, and a dispatch path without it
+    MUST NOT exist. A dispatch with no `-C` inherits the nightly process's own cwd — whatever
+    room sleep happened to be standing in, not a git checkout at all: every selector dispatch
+    of 2026-08-15 (035653, 041817, 043954, 050112) went out that way, 20260903-040620 went out
+    that way again, and three of the four builders survived only by walking to the real repo
+    by hand — luck, not design — while collection judged the declared non-checkout and called
+    the work uncollectable. When the selector supplies no workdir (an empty field, the literal
+    `-`, or whitespace alone), the night resolves the deskcrab checkout itself: the parent
+    directory of `readlink -f ~/.local/lib/deskcrab` (the deployed symlink of rule 6a —
+    exactly the walk a builder had to perform by hand for job 043954), and, when that path is
+    missing or its parent holds no `.git`, the script's own checkout resolved from its own
+    path. Whatever workdir is finally chosen — supplied or resolved — MUST exist and be inside
+    a git work tree (`git -C <wd> rev-parse --show-toplevel` succeeding) before the door is
+    called: dispatched work is committed in the same run, and a non-checkout makes that
+    impossible, so a pick whose workdir fails the check is REFUSED — skipped, never
+    dispatched, with a loud line on the night log AND on stderr naming the rejected workdir,
+    the key and the title, never silent — and the night moves on to the next pick. The workdir
+    handed to `-C` is the single source of truth: it is the value the job's sidecar records,
+    so `job-collect` and the self-change watcher's workdir claim both judge the tree the
+    builder actually works in, and no second value is fabricated anywhere on the path.
+60b. A brief that cites a record is held against the record's NEWEST state at the moment of
+    dispatch, never dispatched on the state it was composed from. Immediately before the door
+    is opened for a pick naming a record — after [jobs.md](jobs.md) rule 27a's state re-read,
+    before the dry run's would-dispatch line and before the live call alike — the night renders
+    the record again (`lib/eng current`) and compares it, byte for byte, with the view the
+    selector was handed when the brief was composed (rule 58c). A record that moved — an
+    amendment, a touch, a hand's correction, anything — makes the brief STALE: it is not
+    dispatched, not silently and not ever; the night log names the record, the staleness and
+    when the record was last touched; and the record returns to the unjudged set, so the next
+    round's batch — at once, when nothing was dispatched this round — REGENERATES the brief
+    from the record as it now stands, and that regenerated brief faces both of this rule's
+    checks again. Then, moved or not, the brief is held against the record's superseded
+    paragraphs: `lib/eng quotes-superseded <id>` finding a sentence of a retired instruction in
+    the brief REFUSES the dispatch — skipped, never dispatched, with a loud line on the night
+    log AND on stderr naming the record, the quoted sentence and the title — and the round
+    moves on to the next pick; the record stays judged for this pass, as any refused pick
+    does. Together the two checks are the guarantee the origin asks for: a retired instruction
+    is absent from the view the brief is composed from (rule 58c), a brief composed before the
+    retirement is thrown away and composed again, and a brief that quotes the retired words
+    anyway cannot reach the door. The origin (2026-08-21 18:22, record
+    `i-amend-a-record-and-then-act-from-the-version-b`): the store brief was rewritten to drop
+    the exact block from the move prompt, and the builder dispatched thirty seconds later still
+    carried the old plan.
+61. `DESKCRAB_NO_DISPATCH` MUST dry-run the whole phase — real material, real selection,
+    would-dispatch lines, nothing started and no ledger written — so the selection can be watched
+    in daylight without spending a builder. The dry run resolves and verifies the workdir
+    exactly as a real round does (rule 60a), holds each record pick to rule 60b's two checks
+    exactly as a real round does, and its would-dispatch line names the resolved
+    workdir, so what is watched in daylight is what the night would actually do.
+
+## DATA
+
+| Path | Owner | Role |
+|---|---|---|
+| `~/.local/share/deskcrab/last-slept` | sleep | epoch, timestamp, then yield and coverage on one line: added, chunks, chars, passes (rule 14a) |
+| `~/.local/share/deskcrab/sleep/<date>.log` | sleep | the night's ingest output |
+| `~/.local/share/deskcrab/wants.md`, `wants/` | tidy | the shelf and its bodies |
+| `${STATE_PREFIX}-shelf-overruns.txt` | the shelf-line check | rules 21a/21b: written when entries stand over the budget, removed by a clean check, rendered by the state block |
+| `~/.local/share/deskcrab/tidy-claims/<date>.md` | the undestinated-claims check | rules 21c/21d: the day's vouched, undestinated, unbacked claims — one report per checked day with findings, none for a clean day; the day's engineering record is filed beside it through `crab eng` |
+| `~/.local/share/deskcrab/conduct/` | tidy | conduct and its per-rule files |
+| `~/.local/share/deskcrab/engineering/` | tidy | the pre-records archive and its index — closed to the night's selector (rule 58c) |
+| `~/.local/share/deskcrab/engineering/records/` | `crab eng` ([engineering-records.md](engineering-records.md)) | the live thread records; the night's work reads the `state: open` ones back as its thread material (rule 58c) |
+| `~/.local/state/deskcrab/notice-self.snapshot` | the watcher | the tree as last judged |
+| `~/.local/state/deskcrab/notice-self.suppress` | write declarations | strong and weak records |
+| `~/.local/state/deskcrab/notice-self.declared.log` | the watcher | one line per harvest |
+| `~/.local/state/deskcrab/streams/<epoch>-<pid>.jsonl` | the watcher | archived stream, evidence only |
+| `~/.local/state/deskcrab/notice-self.heartbeat` | the emitter | the number the canary watches |
+| `~/.local/share/deskcrab/self-shadows/` | the watcher | rule 25e: private (0700 tree, 0600 copies) shadows of the non-git text constituents, mirrored by absolute path; refreshed only after a report lands, or at judgement for her own quiet writes |
+| `~/.local/share/deskcrab/self-baselines/` | her, by hand | the 2026-08-28 manual stopgap copies; rule 25e seeds a conf-dir file's first shadow from its same-named baseline, and the drawer stays as history |
+| `~/.local/state/deskcrab/canary-self.log` | the canary | one line per check |
+| `~/.local/state/deskcrab/unit-sync.json`, `unit-sync.log`, `unit-sync.attention` | installed-unit sync | pending reload journal, last refresh/failure evidence, and the prompt's plain attention line (rule 6b) |
+| `~/.local/share/deskcrab/claudisms.md` | her, by hand | the phrase list: what is borrowed, and why |
+| `~/.local/share/deskcrab/sleep/claudism-review/<date>/` | the claudism review | rule 43: the pre-edit copy of every file the night's review edited |
+| `~/.local/share/deskcrab/promise-ledger.jsonl` | the promise checker; the sweep appends its records (rule 53), its retained later-day commitments and their outcomes (rules 53k-53l), and any hand appends resolutions through the resolve door (rule 53f) | live catches, end-of-day misses and their resolutions, `type: due` rows and their `due-outcome` rows ([turn-pipeline.md](turn-pipeline.md) DATA); the night's work reads the unresolved sweep records back as owed-work material (rules 53f, 58b), through `lib/promise_ledger.py` alone |
+| `~/.local/share/deskcrab/night-work/dispatched.tsv` | the night's work | one line per dispatched pick: night, key, job id, title (rule 59) — threads, swept promises and wake-parked work alike |
+| `~/.local/share/deskcrab/wants/<slug>.md`, `wants.md` | the wants tool ([wants.md](wants.md)) | the want reflection's ONLY writes, on a WANT verdict, through `lib/eng --kind want new` alone (rule 53i); the reflection owns no file of its own, and a NOTHING night writes nothing at all |
+
+Units in the repository: the wake timer and service, the wake restore service, the sleep timer and
+service, the tidy timer and service (the shelf-line check and the undestinated-claims check run as
+the service's `ExecStartPre`, never gating the job — rules 21a/21b and 21c/21d), the self-change
+path and service, the transcription path
+and service, the canary timer and service, the phone server service. The tidy prompt still lives
+as the unit's embedded command string (`MAJ-23`); `tests/test_tidy.sh` is still owed.
+
+## INTERACTIONS
+
+**Nightly processes may call:** the memory store, the wake queue's `book()`, the write-declaration
+helper, the account chain.
+
+**Nightly processes may be called by:** their timers and path units, and by hand for testing.
+
+**Nightly processes must never:** speak, open a window, or write to the conversation. Their output
+reaches her through an event wake or through a record she reads.
+
+## VERIFIED-CORRECT RULES
+
+- **A failed ingest does not stamp.** The stamp is a claim that the night happened, and it must be
+  true.
+- **The exit status is the ingest's own.** Taking a pipeline's final status made a failed night
+  stamp as slept.
+- **Sleep and tidy are separate on purpose.** Tidy touches memory not at all.
+- **The watcher seeds silently on first run**, so an existing backlog never fires.
+- **The two-tier declaration model is correct**, including that a weak declaration never excuses a
+  deletion.
+- **A declaration counts if it was alive at any point since judgement last ran.**
+- **The memory database is excused when one of her sessions ran recently**, because sqlite plumbing
+  touches that file on nearly every prompt build and every opener of the store is her own code —
+  deletions still excepted.
+- **The forensics are evidence and cannot alter a declaration**, and the test asserts exactly that.
+- **The canary's repeating poke.** A path unit does not queue.
+- **The canary's sentinel is invisible to the emitter's snapshot.**
+- **Three outcomes, one alarm.** An already-busy emitter is inconclusive, never a failure.
+
+## KNOWN DEFECTS
+
+| Id | What implementation must fix |
+|---|---|
+| `MAJ-23` | The tidy units are in the repository now, but the prompt of the one nightly process that moves lines between the shelf, conduct and the engineering threads, and deletes orphaned want documents, still lives as an embedded command string in the service file, and `tests/test_tidy.sh` does not exist. The shelf-line check (rules 21a/21b) is tested; the tidy job itself is not. |
+| `MAJ-24` | The engineering threads are maintained nightly and named in no prompt path. |
+| `MAJ-25` | The rot check has no caller. The stamp is write-only, so a stalled ingest surfaces nowhere. |
+| `MAJ-32` | Ingest tail-clamped its input against a journal several times the cap, so the day's earliest material was never ingested. Closed 2026-08-11: the ingest now windows on whole chunk boundaries and runs the distiller once per window, reporting each pass ([memory-recall.md](memory-recall.md) rule 29). |
+| `MIN-30` | A stray file duplicates the engineering namespace: unreachable by every reader, and inside the watcher's glob. |
+| `MIN-31` | The tidy prompt asks for a dated prose line in a machine-written record, where the journal reader skips it and the ingest drops it. Tidy's own record never survives. |
+| `MIN-32` | The canary reports the path unit disabled and only revives it in-session, so it will not come back after a reboot. |
+
+## TESTS
+
+`tests/test_unit_sync.sh` — rule 6b: only existing copies and drop-ins are refreshed, installed
+permissions retained, masks and external links preserved, repository links reloaded on byte
+changes without replacing the link, and one reload per changed batch with no unit activation.
+No-op/status calls leave the manager alone. Reload refusal and a crash after copying recover
+without another source edit; copy refusal retries, a post-rename durability error still reloads,
+and a damaged journal and interrupted attention clear repair themselves. Failures reach the
+prompt's state block. Concurrent callers return promptly. The real watcher deploys before seed
+and no-change exits and again after an edit during its run; the real canary reconciles while
+the watcher is busy. Every destination and manager command is sandboxed.
+
+**Existing:** `tests/test_notice_selfchange.sh` — 125 assertions in the most hermetic sandbox in the
+suite, and the model for every other test; among them, `.git` internals under a watched drawer and
+under an extra watch directory fire nothing (rule 25a), and the run window both ways (rule 25b): a
+write whose mtime sits inside her own window — a live registration, a finished session's log line,
+a reaped `?`-duration line, or the grace just past the end — stays quiet, while the same write with
+no session running still fires exactly one wake, and a deletion inside a live window still surfaces;
+and the shadow diffs (rule 25e) end to end: a one-line outside edit to the non-git conf reports its
+own unified hunk, seeded from the manual baseline so the pre-shadow drift shows too, with the shadow
+tree 0700, the copies and the report 0600, and not a byte of diff in the wake text, the log, or on
+stdout; a report that cannot land keeps the old shadow, logs the failure, and the next report shows
+the whole distance across both edits; a quiet write of her own advances the shadow with no report; a
+deletion names the retained shadow and keeps it; an over-cap file is named too large and never
+copied; a binary file and an unreadable one are each named for what they are, the prior shadow
+retained; and the settle's two singletons (rules 24a, 24b): the tail of a burst books the one named
+re-check and no stamped per-trigger unit, a trigger arriving while that re-check is armed books
+nothing at all, and a run that finds the judgement lock held folds into the re-check and wakes
+nobody, while the same change is judged in full the moment the lock is free; and a deletion's
+recovery line (rule 25f), against a repo with a real staged deletion: the report calls it a staged
+deletion, never untracked or unrecoverable, and the `git show HEAD:<path>` route it prints is run
+and returns the content whole, while an unstaged deletion keeps its git-tracked line; a file staged
+but never committed, then removed, is still named not recoverable with no HEAD route invented; and
+a file taken out of the index, edited and then deleted names both the HEAD blob and the retained
+shadow, the shadow kept and its content never inlined.
+`tests/test_notice_jobclaim.sh` — rules 25c and 25d both ways, against a fabricated jobs ledger and
+a scratch tree: a running job's save, three successive saves, a committed change, and two concurrent
+jobs' writes all stay quiet with the job id on the quiet line; a deletion under a live claim still
+fires with the job named in the report; collection reopens reporting at once; an unclaimed path and
+a pre-dispatch mtime still fire; journal writes stay quiet with and without a job while a journal
+deletion fires; and the bounded windows: a finished-uncollected job sharing a workdir with a live
+one loses the attribution to the more recently started, a finished-uncollected job past its grace
+suppresses nothing while one inside the grace still claims its last bytes without ever being called
+running, a `running` sidecar older than the ceiling claims no new byte but keeps the ones from
+inside it, and no report calls the orphan running.
+`tests/test_claudism_review.sh` — rules 39-44: the judge is handed the spoken halves and never a
+job's entry, the flag log, the persona sheet, the conduct files, and the recalled records with
+their ids; the tidy's prose reaches the judge under the housekeeping heading and never as
+something said aloud, and a day of housekeeping alone is still reviewed (rule 40); the score of
+rule 40a on a fixture holding 2026-08-18's own counts — 546 spoken words with no proof-of-work
+use read 0.00 per 1,000 while the tidy's 178 words with two read 11.24, the pooled 2.76 printed
+nowhere, a job's entry and the display halves in neither numerator nor denominator; each rate
+holds still while the other series' words are multiplied; a night without a tidy note is a gap
+in the housekeeping curve and not a zero; a mention scores nothing, an entry that will not
+compile is counted on the score's own line, and the same score reaches the judge and the night
+log; a NOTHING answer writes nothing; a record rewrite supersedes the old record, a retire
+retires it, and a file edit lands only when its old text occurs exactly once, with the file copied
+to the night's backup directory first; an edit outside the persona sheet and the conduct drawer is
+refused; the cap holds; and no wake is booked.
+`tests/test_promise_check.sh` — rules 51-53c: the sweep
+hands the model the day's replies with their outcomes and the live ledger, surfaces a genuine miss
+as a ledger record and one morning wake in the checker's name, and books nothing on a clean day;
+the two series (rule 51a) — a journal whose only replying rows are the tidy's line and a builder's
+log is nothing to sweep, no judge called, no row and no wake, while the same words on a wake row
+of hers with no artefact behind them are still a miss, the tidy's identical line and the file it
+names absent from what the judge is handed, and the job's log absent as before;
+the widened evidence (rule 52a) — the day's named files statted from disk, an existing artefact
+with its modification time and a claimed one shown NOT found alike, and the resident player's
+game outcomes at their own timestamps — reaches the judge as labelled sections, with an absent
+game record presented as an empty section rather than omitted; every sweep row lands carrying
+`sweep_time` and `item` (rule 53), the misses ride the morning wake numbered with the resolve
+door named beside them; and the resolve door itself (rule 53f) appends a resolution row bearing
+the run's own `sweep_time` while refusing an item the run never surfaced and a decision outside
+the three.
+`tests/test_promise_tomorrow.sh` — rules 53k-53m: the follow-up of a promise made about a
+later day, every case against a stub judge and an isolated ledger — a LATER verdict on the
+origin day's sweep retains one `type: due` row with the due day counted from the ORIGIN day
+(the fixture's day is far from the wall clock on purpose), books no wake and lands no sweep
+row, and a MISS the judge quotes in the same words is dropped beside it; the same day swept
+again retains nothing twice; the resolver's arithmetic — tomorrow in its dresses, in N days,
+a weekday, next week, a dated day, an unreadable moment falling to the next day, a same-day
+moment resolving to the origin day; the due day's sweep, whose journal never names the
+promise, hands the judge the fallen-due item beside its origin and the named path statted
+from disk, and a KEPT verdict lands one outcome row and no wake; the day swept again asks the
+judge nothing about it; a MISSED verdict lands as a numbered sweep row of that night carrying
+its origin, rides the morning wake with its origin named, settles through the resolve door,
+and leaves the owed shelf when resolved; a due row for a later day is not asked about; an
+unanswered item stays pending while one past the grace surfaces unjudged; a due day with no
+journal is still swept for its fallen-due rows; and a judge with no verdict retains nothing,
+settles nothing, and leaves every pending row pending.
+`tests/test_night_work.sh` — rules 54-61: the daylight window guard; the cap counted from every
+dispatched-or-running job; the live shelf (rule 58c) — a record standing `state: open` under the
+records drawer reaches the selector's prompt whole, front matter and body, newest-touched first,
+while a settled record and the frozen pre-records archive never enter the prompt at all;
+validation skips null-shaped briefs, thin briefs, and promise or wake keys already on
+the ledger; a backlog past one batch is judged in several calls, every eligible record's body
+exactly once, a record whose ledgered or daytime job is still live or that was dispatched
+tonight never reaching the prompt, a record whose earlier job finished or vanished judged again
+with its attempts shown, the oldest promise key on the ledger still reaching the selector, and a
+record pick from outside the current batch refused (rules 58, 58c, 59); a
+NOTHING verdict over the whole shelf with nothing of tonight's running ends the night's work early, never
+calling the backlog dry; a blocked job door ends it
+for the night; the cutoff stops dispatch; the owed-work material (rule 58b) — the sweep's ledger
+misses and the pending wake reasons reach the selector as labelled sections, the live checker's
+raw catches do not, and an unreadable ledger is presented as unreadable, never silently omitted;
+the sweep runs before the night's work inside `sleep-nightly run`; a resolved sweep row —
+explicit `sweep_time`/`item` identity and the legacy shape resolved by run-and-ordinal across a
+ledger clock tick alike (rule 53f) — never reaches the selector while the unresolved neighbour
+still does and the count of excluded resolved rows is stated in the section; and a run that
+cannot even parse its
+cutoff never unstamps the night (exercised through `sleep-nightly run`).
+`tests/test_night_work_queue.sh` — rules 56 and 56a: the queued backlog dispatched oldest first
+through `crab job dispatch` before any selection, under the cap, with `DESKCRAB_JOB_NIGHT` set on
+every door call; a builder still standing `dispatched` holds its cap slot; a night with no
+engineering threads at all still takes up the queue, spends no selection call, and ends when the
+queue is dry; the cutoff re-checked before each dispatch so nothing new starts past it; a
+refused queued brief skipped for the night while a blocked door ends it; and the dry run naming
+its would-dispatches without starting anything.
+`tests/test_night_work_utf8.sh` — rule 58a over rule 58c's material: with an em-dash straddling
+the per-record budget and the job-list budget at once, the prompt the selector receives is valid
+UTF-8, plain grep — no `-a` — still reads it, each split character is dropped whole at its
+boundary, an em-dash clear of the boundary survives intact, and the budgets themselves still
+hold; each outgrown section is named on the night log with its true size and its budget; the
+total record budget clips oldest-touched first, announced, with the clipped record riding the
+overflow list rather than vanishing; and a night whose material fits its budgets announces
+nothing.
+`tests/test_night_work_amend.sh` — rules 58c and 60b over
+[engineering-records.md](engineering-records.md) rules 7a and 9a: an explicit removal — the
+retired paragraph is absent from the selector's prompt while its stub, its live neighbour and
+the amendment ride, a brief quoting the retired sentence is REFUSED with no door call and a loud
+line on the night log and stderr, and a brief composed without it dispatches; one requirement
+amended while two remain active, the two riding and dispatching while the retired one is
+refused; an unchanged record riding byte-identical to its file and dispatching with neither
+check speaking; an amendment landing between composition and dispatch — the stale brief, which
+quotes the dropped sentence, never reaches the door, the record is judged again at once from its
+current view, the regenerated brief dispatches without the sentence, exactly one builder and one
+ledger line result — and a plain touch in the same window judged stale the same way; and the
+dry run holding both checks before its would-dispatch line, writing no ledger.
+`tests/test_night_work_workdir.sh` — rule 60a: an empty workdir field and the literal `-` both
+dispatch with an explicit `-C` naming the deployed symlink's parent, and the sidecar records
+that same path; with no deployed symlink — and with a symlink whose parent holds no `.git` —
+the fallback is the script's own checkout; an explicit git-tree workdir dispatches exactly as
+given; an explicit workdir that exists but is no git tree, and one that does not exist at all,
+are REFUSED — no door call, a loud line naming the workdir, the key and the title on the night
+log and stderr both — while the round continues to the next pick and a later valid pick still
+dispatches; and no dispatch path without `-C` remains in the script at all.
+`tests/test_sleep_stamp_coverage.sh` — rule 14a: the header parsed to chunks, chars and passes;
+the pass-count fallback where the header predates stating it; a field the log never states is
+omitted; a log with no header still stamps and still counts as slept; and the status command
+renders a widened and a legacy added-only stamp alike.
+`tests/test_symlink_deploy.sh` — rule 6a: the deployed shape rebuilt as a directory symlink into
+the checkout's `lib/`; the nightly phases and the promise auditor invoked through it source the
+library and answer, the sweep runs through it to its own closing line (rule 53a), and a whole
+night run through the symlink stamps with every phase speaking for itself — no phase sourcing a
+`lib/common.sh` that does not exist, no unbound variable, no `PHASE SILENT` complaint.
+`tests/test_sleep_phase_silence.sh` — rules 14b and 53a: a chatty night carries no complaint; a
+phase that exits zero saying nothing is named `PHASE SILENT` in the night log itself; a phase
+that dies leaving only noise in another voice draws both complaints, did-not-finish landing in
+the log file too; a phase that fails after speaking draws only did-not-finish — and every such
+night still stamps and still exits with the ingest's zero.
+
+`tests/test_record_merge_pass.sh` — rules 53b-53e, against the real local embedder (a mocked one
+cannot prove semantic scoring): a true twin pair scores above every same-area-but-distinct pair
+and above the candidate threshold, while a settled record — however similar its text — is never
+scored, never judged; the judge is the deciding gate, not the score (a same-area pair handed to
+it and answered DISTINCT is never proposed); the judgement prompt carries the same-complaint-
+never-same-area rule, the confidence form, and the person's-ruling-outranks-yours line, and runs
+on the phase-2 model with no fallback; the judged bound announces what it dropped; `run` without
+`--apply` leaves the records directory byte-identical whatever the confidence; an unanswerable
+judge and an unreachable embedder both end the pass conservatively, folding nothing, exiting
+zero; `--apply` on fixtures folds a `MERGE CERTAIN` through `crab eng` alone — the earlier-opened
+winner keeps its `opened`, carries both bodies whole under a fold entry that names the loser, the
+score and the confidence and rides the tool's own dated heading, the loser dies pointing at the
+winner's id and keeps its own body — while `MERGE LIKELY` and a bare confidence-less `MERGE`
+stay proposals under the default gate, the records byte-identical, and
+`ENG_MERGE_FOLD_CONFIDENCE=likely` widens the gate to fold a LIKELY; a second `--apply` finds
+nothing left to propose; and the wiring: sleep runs the pass after the promise sweep, before the
+night's work, WITH `--apply` (rule 53d), and the pass speaks through the deployed symlink (rule
+6a) even with no records drawer at all.
+`tests/test_want_reflection.sh` — rules 53g-53j, the phase run whole against a stub codex
+standing in for the night judge: the lived day reaches the judge's prompt — her words and the
+user's from the fixture journal, the drawer's live and dormant titles beside them — while a
+builder's `kind: job` entry never enters it; an explicit NOTHING verdict writes not one byte,
+the drawer and the shelf byte-identical; a WANT verdict lands exactly one want through the
+wants tool — state `live`, the judge's first-person sentences in the body with the provenance
+named, the summary naming the day, and the shelf line appended in the one shape the shelf
+reader matches; a title the drawer already carries, differently cased, is named and not
+re-recorded; an ambiguous verdict carrying both tokens forms nothing; a day with no journal
+and a day of only builder rows each end the phase without spending the judge; a switched-off
+reflection says so and spends nothing; and the wiring: `sleep-nightly run` speaks
+`want-reflect:` after `eng-merge:` and before `night-work:`.
+`tests/test_sleep_sol_judgment.sh` — rules 14c-14e, the effective nightly call graph against a
+stub codex and a stub claude, no real model spent: the night-work selector, the promise sweep's
+judge, and the eng-merge judge (against a scratch HTTP embedder) each reach `codex exec` at the
+default `gpt-5.6-sol` with `model_reasoning_effort=high` on the argv, with not one claude call
+beside them; a codex refusal on the selector ends selection with the cooldown recorded in the
+scratch codex state and NO fallback model consulted (rule 14e); the shared walk's Claude branch
+still walks the flat list on a Claude-named override, model on the argv; the ingest's two-stage
+boundary (rule 14d) end to end through `crab memory ingest --dry-run` — the summariser (stub
+claude, `--model` the summary model) receives the raw day while the judge's codex stdin carries
+the summariser's summary and NOT the raw material's marker, the would-add candidates are the
+JUDGE's answer, and a candidate array smuggled into the summariser's summary text never lands;
+the default cutoff prints as 06:00 through the daylight guard and the default cap still counts
+two — the routine's shape unmoved under the model change.
+`tests/test_tidy_undestinated_claims.sh` — rules 21c/21d, against a fixture day and a fixture
+drawer: the one sentence that vouches durability, names no drawer, and has nothing on disk behind
+it is the day's ONE finding — quoted in the check's own name, written to the day's report, filed
+as one open engineering record through `crab eng` with its time and channel, and never filed
+twice by a re-run; while everything the narrowing exists for stays quiet — a claim that names its
+drawer, the same claim with its artefact touched inside the turn's window and sharing the
+paragraph's phrases (the clearing artefact named), a builder's `kind: job` entry carrying the
+same words, a firing sentence below the display delimiter, and a plain unvouched "wrote it down";
+a clean day is one line, exit zero, nothing filed; a day with no journal is a quiet nothing; and
+`scan` replays days without writing a byte.
+`tests/test_tidy_claims_conf_roots.sh` — rule 21e, against a scratch conf and a scratch data
+home: with the environment empty the check's roots, report dir, lead and slack all come from the
+conf, a root written with `$HOME` in the conf arriving expanded; an explicit environment variable
+beats the conf for the roots, and the pinned `DAY_JOURNAL_DIR` beats the conf's journal line while
+unsetting it hands the journal to the conf; a missing conf, a conf with a syntax error, and a
+non-numeric lead all degrade to the shipped defaults without an exception; and the same conf
+resolution holds when the script is reached through a symlink whose own directory holds no
+`common.sh` — the realpath step of rule 6a is what finds the library.
+`tests/test_shelf_check.sh` — rules 21a/21b: a synthetic over-long shelf line is flagged with its
+measured size, the budget, and the `wants/<slug>.md` document its line points at; a line naming
+no document is flagged as exactly that; a genuinely one-line shelf is silent — one line, exit
+zero, no record; the record stands under `${STATE_PREFIX}-shelf-overruns.txt`, renders in the
+state block and the assembled prompt, and a later clean check removes it; the budget answers
+`WANTS_SHELF_LINE_BUDGET`; and the shelf file is byte-identical before and after every check —
+the check reports and never rewrites. Rule 21g in the same file: a conduct body no index line
+names in backticks is reported by filename with the shelf measure still running beside it, an
+indexed body is not accused, the drawer is byte-identical after the check, and a clean, empty or
+absent drawer adds not a line.
+
+`tests/test_shelf_recheck.sh` — the cure cycle of rules 21a/21b: an over-budget line puts the
+record up and the state block shouts it; the line trimmed, a second check through the by-hand
+door `crab shelf-check` exits zero, REMOVES the record, and the state block renders no finding
+the same night; and the tidy brief ends on the shelf-check step — asserted against the brief the
+shipped unit's `ExecStart` actually dispatches, never a copy held by the test.
+
+`tests/test_tidy_touch_declaration.sh` — rule 21h: the brief the shipped unit's `ExecStart`
+actually dispatches opens on the `crab touching` declaration — present, standing before the step
+numbered 1, a window of at least 1800 seconds, and all five drawer paths named under
+`.local/share/deskcrab` — read out of the unit file itself, never a copy held by the test.
+
+**To be written:**
+
+- `tests/test_sleep_nightly.sh` — the status command reports rot past the threshold; something reads
+  that status. (The stamp half is written: `tests/test_sleep_ingest_failure.sh` holds both a failed
+  ingest not stamping and a healthy night stamping, rule 10a.)
+- `tests/test_tidy.sh` — once the units are in the repository: tidy declares its writes, touches no
+  memory, leaves its own dated record somewhere a reader reads, and never creates a second
+  namespace.
+- `tests/test_canary.sh` — the repeating poke; the three outcomes; a disabled path unit produces the
+  durable-repair message, not a silent in-session start.
+- `tests/test_units.sh` — every scheduled process named in this spec has a unit file in the
+  repository, is persistent, and its command resolves.

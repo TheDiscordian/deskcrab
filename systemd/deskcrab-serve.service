@@ -1,0 +1,33 @@
+[Unit]
+Description=DeskCrab phone server (crab serve)
+Documentation=https://github.com/TheDiscordian/deskcrab
+After=network-online.target
+# Never give up permanently. The default rate limit (5 starts / 10 s) would put
+# the unit in a failed state if the port is briefly held by a stray manual
+# server or if a boot race makes the first few binds fail — and a phone server
+# that has quietly stopped retrying is worse than one that never started.
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+# SERVE_SECRET and SERVE_PORT are read from ~/.config/deskcrab/deskcrab.conf
+ExecStart=%h/.local/bin/crab serve
+WorkingDirectory=%h
+Restart=always
+RestartSec=3
+# A restart must not cut a phone reply off mid-sentence: serve.py traps
+# SIGTERM, refuses new turns, and exits once the ones in flight have finished
+# (drain capped just past the 600 s turn timeout). KillMode=mixed keeps that
+# SIGTERM off the in-flight claude/ffmpeg/piper children — the default
+# control-group mode would kill the reply directly, drain or no drain — and
+# TimeoutStopSec gives the drain room before systemd escalates to SIGKILL.
+KillMode=mixed
+TimeoutStopSec=660
+# The server shells out to claude, ffmpeg, whisper-cli and piper, all of which
+# live in ~/.local/bin — not on PATH for a systemd user unit by default.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin:/bin
+StandardOutput=append:/tmp/crab-serve.log
+StandardError=append:/tmp/crab-serve.log
+
+[Install]
+WantedBy=default.target

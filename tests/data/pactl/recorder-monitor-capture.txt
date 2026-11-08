@@ -1,0 +1,43 @@
+Source Output #140041
+	Driver: PipeWire
+	Owner Module: n/a
+	Client: 140040
+	Source: 36
+	Sample Specification: float32le 1ch 48000Hz
+	Channel Map: mono
+	Format: pcm, format.sample_format = "\"float32le\""  format.rate = "48000"  format.channels = "1"  format.channel_map = "\"mono\""
+	Corked: no
+	Mute: no
+	Volume: mono: 65536 / 100% / 0.00 dB
+	        balance 0.00
+	Buffer Latency: 0 usec
+	Source Latency: 0 usec
+	Resample method: PipeWire
+	Properties:
+		client.api = "pipewire-pulse"
+		pulse.server.type = "unix"
+		application.name = "OBS Studio"
+		application.icon_name = "obs"
+		application.process.id = "5151"
+		application.process.user = "user"
+		application.process.host = "desk"
+		application.process.binary = "obs"
+		application.language = "C.UTF-8"
+		window.x11.display = ":1"
+		application.process.machine_id = "00000000000000000000000000000000"
+		media.name = "OBS Desktop Audio"
+		pulse.corked = "false"
+		node.rate = "1/48000"
+		node.latency = "1024/48000"
+		target.object = "36"
+		stream.monitor = "true"
+		stream.capture.sink = "true"
+		stream.is-live = "true"
+		node.name = "OBS Studio"
+		node.want-driver = "true"
+		node.autoconnect = "true"
+		media.class = "Stream/Input/Audio"
+		port.group = "stream.0"
+		object.id = "140641"
+		object.serial = "140041"
+		module-stream-restore.id = "source-output-by-application-name:OBS Studio"

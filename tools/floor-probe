@@ -1,0 +1,193 @@
+#!/usr/bin/env python3
+"""The retrieval-floor measuring instrument (memory-recall.md rules 13d-13f).
+
+Reproduces the 2026-08-28 engineering record's method: copy the live memory
+store to a fresh /tmp directory and read ONLY that copy — the live store is
+never opened for writing, never reinforced, never touched — then sample real
+queries from the day journal (distinct turn messages and wake agendas), embed
+them through the live local embedder, and report what the shipped floors and
+the abstain instrument do to each query against what cap-only selection (the
+pre-calibration behaviour) would have taken.
+
+Prints, per query class: rows cut by each absolute floor, by the relative
+margin, per-query pool counts under each floor, the abstention rate, and —
+the lose-nothing acceptance bar — every row cap-only selection takes that the
+shipped configuration loses. The record's five adversarial probes run as
+fixed cases. Re-run this and re-set the shipped values whenever the embedder
+or the keying discipline changes shape (rule 13d).
+
+Needs the live embedder; run under the store venv:
+    ~/.local/share/deskcrab/venv/bin/python tools/floor-probe [--limit N]
+"""
+import argparse
+import glob
+import importlib.util
+import json
+import os
+import random
+import shutil
+import statistics
+import sys
+import tempfile
+from datetime import datetime
+
+REPO = os.path.dirname(os.path.dirname(os.path.realpath(__file__)))
+
+ADVERSARIAL = [
+    ("gibberish", "flurp znag borkle vim quandrix zzt plomb"),
+    ("unrelated-technical", "The Reynolds number characterises the ratio of "
+     "inertial to viscous forces in fluid flow through a pipe."),
+    ("german-prose", "Der alte Mann ging langsam durch den verschneiten Wald "
+     "und dachte an die Tage seiner Jugend zurueck."),
+    ("unrelated-historical", "The Treaty of Westphalia in 1648 ended the "
+     "Thirty Years War and reshaped European sovereignty."),
+    ("full-stop", "."),
+]
+
+# Environment shapes for the two phases. Cap-only neutralises every floor and
+# bar — the measured pre-calibration behaviour, where no floor ever cut a row
+# and every query filled its caps. Shipped pins the module defaults into the
+# environment so the live conf cannot skew the instrument.
+CAP_ONLY = {"MEMORY_SIM_FLOOR": "-1", "MEMORY_DIRECTIVE_FLOOR": "-1",
+            "MEMORY_EPISODIC_FLOOR": "-1", "MEMORY_SIM_MARGIN": "9",
+            "MEMORY_ABSTAIN_FLOOR": "-1", "MEMORY_NULL_CEILING": "2"}
+
+
+def load_memory():
+    spec = importlib.util.spec_from_file_location(
+        "memory", os.path.join(REPO, "lib", "memory.py"))
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def journal_queries(journal_dir):
+    turns, wakes = [], []
+    seen_t, seen_w = set(), set()
+    for f in sorted(glob.glob(os.path.join(journal_dir, "*.jsonl"))):
+        for line in open(f):
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                d = json.loads(line)
+            except ValueError:
+                continue
+            u = (d.get("user") or "").strip()
+            if not u:
+                continue
+            if d.get("kind") in ("phone", "desktop") and u not in seen_t:
+                seen_t.add(u)
+                turns.append(u)
+            elif d.get("kind") == "wake" and u not in seen_w:
+                seen_w.add(u)
+                wakes.append(u)
+    return turns, wakes
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--limit", type=int, default=80,
+                    help="queries sampled per class (default 80)")
+    ap.add_argument("--seed", type=int, default=4257)
+    args = ap.parse_args()
+
+    memory = load_memory()
+    live = os.environ.get("DESKCRAB_MEMORY_DIR") or os.path.expanduser(
+        "~/.local/share/deskcrab/memory")
+    src = os.path.join(live, "memory.db")
+    if not os.path.exists(src):
+        sys.exit(f"floor-probe: no store at {src}")
+    workdir = tempfile.mkdtemp(prefix="floor-probe-", dir="/tmp")
+    shutil.copy(src, os.path.join(workdir, "memory.db"))
+    os.chmod(os.path.join(workdir, "memory.db"), 0o600)
+    print(f"store copy: {workdir} (live store is read for the copy only)")
+    store = memory.Store(workdir)
+
+    journal = os.environ.get("DAY_JOURNAL_DIR") or os.path.expanduser(
+        "~/.local/share/deskcrab/journal")
+    turns, wakes = journal_queries(journal)
+    rng = random.Random(args.seed)
+    sample = [("turn", q) for q in rng.sample(turns, min(args.limit, len(turns)))]
+    sample += [("wake", q) for q in rng.sample(wakes, min(args.limit, len(wakes)))]
+    print(f"sampled {len(sample)} real queries "
+          f"(of {len(turns)} distinct turn messages, {len(wakes)} wake agendas)")
+
+    shipped = {"MEMORY_SIM_FLOOR": str(memory.SIM_FLOOR),
+               "MEMORY_DIRECTIVE_FLOOR": str(memory.DIRECTIVE_FLOOR),
+               "MEMORY_EPISODIC_FLOOR": str(memory.EPISODIC_FLOOR),
+               "MEMORY_SIM_MARGIN": str(memory.SIM_MARGIN),
+               "MEMORY_ABSTAIN_FLOOR": str(memory.ABSTAIN_FLOOR),
+               "MEMORY_NULL_CEILING": str(memory.NULL_CEILING)}
+
+    def run(query, env):
+        saved = {k: os.environ.get(k) for k in env}
+        os.environ.update(env)
+        try:
+            return store.search(query)
+        finally:
+            for k, v in saved.items():
+                if v is None:
+                    os.environ.pop(k, None)
+                else:
+                    os.environ[k] = v
+
+    def pool_counts(query):
+        qvec = memory.embed([query], query=True)[0]
+        rows = store.knn(qvec, 0, kinds=memory.RECALL_KINDS)
+        return {
+            "note": sum(1 for r in rows if r[2] == "note"
+                        and r[9] < memory.SIM_FLOOR),
+            "directive": sum(1 for r in rows if r[2] == "directive"
+                             and r[9] < memory.DIRECTIVE_FLOOR),
+            "episodic": sum(1 for r in rows if r[2] == "episodic"
+                            and r[9] < memory.EPISODIC_FLOOR),
+        }
+
+    per_class = {}
+    for cls, query in sample:
+        st = per_class.setdefault(cls, {
+            "n": 0, "abstained": 0, "lost": [],
+            "cut_note": [], "cut_dir": [], "cut_epi": []})
+        st["n"] += 1
+        base_rows, _, _, _ = run(query, CAP_ONLY)
+        new_rows, _, _, abstained = run(query, shipped)
+        if abstained:
+            st["abstained"] += 1
+        new_ids = {r[0] for r in new_rows}
+        lost = [r for r in base_rows if r[0] not in new_ids and not r[3]]
+        st["lost"].extend((query, r[2], r[1][:70], r[9]) for r in lost)
+        pc = pool_counts(query)
+        st["cut_note"].append(pc["note"])
+        st["cut_dir"].append(pc["directive"])
+        st["cut_epi"].append(pc["episodic"])
+
+    for cls, st in per_class.items():
+        mean = lambda xs: sum(xs) / len(xs) if xs else 0.0
+        print(f"\n== {cls} queries ({st['n']})")
+        print(f"   pool rows under SIM_FLOOR {memory.SIM_FLOOR}: "
+              f"mean {mean(st['cut_note']):.1f}/query "
+              f"(min {min(st['cut_note'])}, max {max(st['cut_note'])})")
+        print(f"   pool rows under DIRECTIVE_FLOOR {memory.DIRECTIVE_FLOOR}: "
+              f"mean {mean(st['cut_dir']):.1f}/query")
+        print(f"   pool rows under EPISODIC_FLOOR {memory.EPISODIC_FLOOR}: "
+              f"mean {mean(st['cut_epi']):.1f}/query")
+        print(f"   abstained: {st['abstained']} of {st['n']}")
+        print(f"   rows cap-only takes that shipped LOSES: {len(st['lost'])}"
+              + ("  <-- ACCEPTANCE BAR BROKEN" if st["lost"] else ""))
+        for query, kind, text, sim in st["lost"][:10]:
+            print(f"     lost {kind} sim {sim:.3f} on {query[:50]!r}: {text}")
+
+    print("\n== adversarial probes (shipped configuration)")
+    for name, text in ADVERSARIAL:
+        base_rows, _, _, _ = run(text, CAP_ONLY)
+        new_rows, _, _, abstained = run(text, shipped)
+        base_n = sum(1 for r in base_rows if not r[3])
+        new_n = sum(1 for r in new_rows if not r[3])
+        verdict = (f"ABSTAINED ({abstained})" if abstained
+                   else f"cut {base_n - new_n} of {base_n} cap-only rows")
+        print(f"   {name:<22} {verdict}")
+
+
+if __name__ == "__main__":
+    main()

@@ -1,0 +1,567 @@
+# game-reflex — visible state into sub-second actions
+
+## PURPOSE
+
+Playing a real-time world cannot mean a reasoning turn per urgent moment: by the time a model call
+returns, the fight is over. This layer is the fast body — a trigger-action machine that watches the
+**visible** game state and answers time-critical moments (eat when health is low and food is in the
+bag, run when it is low and the bag is empty, warn when a threshold is crossed) in well under a
+second, mechanically, with **no model call anywhere in the loop**. Deliberate play — goals, routes,
+spending, conversation — stays where it always was; this layer only executes the habits the player
+has explicitly written down, and every habit is a named, tunable, disableable rule rather than a
+buried constant.
+
+The first game is the local single-player OpenRSC world, through a small bridge compiled into that
+client. The engine itself knows nothing OpenRSC-specific beyond the trigger and action vocabulary,
+which is a closed list this spec owns.
+
+Three parts:
+
+- **the bridge** — a per-tick hook inside the game client (`orsc/ReflexBridge.java` under
+  `Core-Framework/Client_Base/src` in the local OpenRSC checkout, not this repo). It publishes a
+  snapshot of what the player can see and executes the small closed set of actions. It holds no
+  opinions: no thresholds, no rules.
+- **the engine** — `lib/game_reflex.py`, stdlib only, run as `betty-game run`. It reads snapshots,
+  evaluates the rule table, and emits at most one game action at a time.
+- **the rule table** — a durable JSON file the player views and edits through `betty-game`.
+
+## CONTRACT
+
+### Files and places
+
+1. Ephemeral exchange lives in `$DESKCRAB_GAME_STATE_DIR` (default `/tmp/deskcrab-game`):
+   `state.json` (bridge → engine), `action.json` (engine → bridge, game channel), `notice-<id>.json`
+   (engine → bridge, the notice queue — one file per notice firing), `receipt.json` (bridge → engine),
+   `hold` (the override flag,
+   either side may create it), `decisions.jsonl` (the engine's event log), `engine-state.json`
+   (the engine's completion and debounce state). Durable configuration lives in
+   `$DESKCRAB_GAME_DIR` (default `~/.local/share/deskcrab/game`): `reflex-rules.json` and
+   `food-heals.xml`. Every path is overridable by those two variables alone; the test sandbox pins
+   both.
+
+2. Every file either side writes into the exchange directory is written atomically: temp file in
+   the same directory, then rename. A reader never sees a half-written snapshot or action.
+
+### The snapshot
+
+3. The bridge writes `state.json` at least every 250 ms while the client runs — **including at the
+   title and login screens**, where it carries `logged_in: false` and nothing else of substance.
+   The snapshot is one JSON object: `v` (format version, this document describes 1), `ts` (epoch
+   milliseconds at write), `tick` (a counter that increments every client game tick since launch),
+   `logged_in`, and, when logged in: `hits` and `hits_max` (the Hits skill, current and base),
+   `fatigue` (0–100), `skills` (every skill's `id`, `name`, base `level`, and cumulative `xp`),
+   `magic_level` (the live current Magic level), `selected_spell` (the selected spell id or
+   `null`), and `spells` (the complete client spellbook: id, name, description, required level,
+   semantic target kind, `ready`, and every required rune's id/name, literally held count,
+   required count, and staff-aware `available` result),
+   `x` and `z` (world coordinates), `walking` (the local player still has
+   an unconsumed client waypoint, or a movement-capable bridge action was dispatched within the
+   last second and may still be waiting for its server path), `in_combat`, `hover_text` (the
+   colour-free action hint actually rendered at the top-left for the current pointer; empty when
+   no hint or while the full context menu is open),
+   `right_click_menu_open` (the ordinary world context menu is visibly open), `menu_options`
+   (its live visible entries as colour-free text, otherwise empty), `ui_panel_open` and `ui_panel`
+   (whether a hover-open side panel currently covers the world and its semantic name—inventory,
+   minimap, skills/quests, magic/prayer, friends, or options—otherwise false and `null`),
+   `trade_open` (either ordinary player-trade screen is visible) and `trade` (`null` while no
+   trade is open; otherwise the structured state of the open screen: `stage` (`offer` or
+   `confirm`), `partner`, `my_accepted`, `their_accepted`, and `my_offer`/`their_offer` as
+   id/name/count arrays),
+   `duel_open` (either ordinary duel screen — the stake-and-options setup or the final
+   confirmation — is visible) and `duel` (`null` while no duel screen is open; otherwise the
+   structured state of the open screen: `stage` (`setup` or `confirm`), `opponent` (the exact
+   player name the open screen itself displays — the setup screen's challenged or challenging
+   player, or the confirmation screen's server-sent name), `my_accepted` (this client has
+   accepted the currently open stage), `their_accepted` (the setup screen's
+   other-player-has-accepted indicator; `null` at the confirmation stage, where the client is
+   never told), `options` (`no_retreat`, `no_magic`, `no_prayer`, `no_weapons` — true when that
+   restriction is on for the open stage), and `my_stake`/`their_stake` (the open stage's staked
+   items as id/name/count arrays)),
+   `talking_to_npc` (an NPC choice menu is open or
+   the client received NPC-spoken quest dialogue within the last four seconds; NPC speech is the
+   quest-channel `Name: words` form with an empty sender, not the local player's named reply),
+   `dialogue_open` (the server is currently asking for an NPC reply), `dialogue_options` (the
+   live reply texts as a colour-free array, otherwise empty), `opponent`
+   (`{"x":…,"z":…}`
+   while a fighting opponent is visible, else `null`), `sleeping` (whether the sleep-word screen
+   owns input), `sleep_fatigue` (the fatigue shown on that screen), and `sleep_status` (its current
+   status text), alongside ordinary `fatigue`; `inventory` (slot-order array of
+   `{"id":…,"name":…,"count":…,"equipped":…,"wearable":…,"commands":[…]}`; commands are the item's
+   current definition-backed verbs), `equipment` (the equipped subset as named id/count entries),
+   `equipment_stats` (the client's resulting named Armour/aim/power/magic/prayer bonuses),
+   `messages` (the last 20 messages seen by the client, newest last; each is
+   `{"id":…,"channel":…,"incoming":…,"sender":…,"text":…}`, where `id` is unique across
+   client restarts, `channel` distinguishes `local`, `private`, and non-player message types, and
+   `incoming` is true only for chat received from another player), `players` (other players the
+   client currently holds as visible, nearest by ordinary walking steps first, capped at 24: each
+   `{"sidx":…,"name":…,"x":…,"z":…}`), `npcs` (the NPCs the
+   client currently holds as loaded, nearest by ordinary walking steps to the player first,
+   capped at 64: each
+   `{"sidx":…,"id":…,"name":…,"description":…,"commands":[…],"attackable":…,"stats":{"attack":…,
+   "strength":…,"defense":…,"hits":…},"x":…,"z":…,"distance":…,
+   "clear_shot":…,"terrain_melee_reachable":…}` — the client's own index for that NPC, its
+   client-cache identity, definition verbs, stats and world tile, Chebyshev distance, the ordinary-game
+   projectile-line result, and whether the
+   currently loaded movement topology contains a route from it into melee range), plus `npc_count`
+   (the complete loaded count) and `npcs_truncated` (whether the 64-entry safety cap omitted
+   anything). Scenery does not occlude this list: an absent NPC is outside the client's loaded set
+   or, when explicitly marked, beyond the cap. `objects` (the game objects — scenery: fishing spots, gates, ranges, trees —
+   the client currently holds as loaded, nearest by walking steps first, capped at 12: each
+   `{"id":…,"name":…,"description":…,"commands":[…],"x":…,"z":…,"dir":…,
+   "blocks_movement":…,"projectiles_pass":…}` — type id/name and the two client-cache verbs,
+   world tile, facing direction, and its two collision
+   properties), and `bounds` (the
+   wall objects — doors and other boundaries — likewise nearest by walking steps first, capped at
+   12, with those same semantic fields plus `reachable`, collision-aware `path_distance` (null
+   when unreachable), and `open_command` (1/2, or zero when it has no Open command); `dir` is which
+   wall of the tile the boundary stands on, so two doors sharing a tile stay distinct). `terrain`
+   is a compact radius-6 topology centred on the player. `default_surface` names the implicit
+   natural ground; `underfoot` names the player's current overlay and conservative surface kind;
+   and `surface_cells` gives every non-default tile's absolute `x/z`, raw client-cache `overlay`,
+   and kind (`path`, `water`, `floor`, `bridge`, or `surface-N` when no conservative semantic name
+   exists). Fully blocked cells and cardinal `barriers` are listed separately, and every such entry
+   independently says `projectiles_pass`; barrier endpoints are absolute `a:[x,z]` and `b:[x,z]`
+   tiles. It comes from the same loaded map and collision data used by ordinary client walking and
+   the same projectile-permeability classifications used by ordinary client play. `ground_items`
+   (items currently visible on the ground, reachable items first by collision-aware walking steps,
+   capped at 12: each carries client-cache `id`/`name`/`description`, world `x/z`, `reachable`, and
+   `path_distance`). An unreachable
+   item may also carry a `door` identity only when the player's and item's collision components
+   meet on the two sides of that loaded, blocking, openable boundary; visual proximity alone never
+   names a door. `shop_open` and
+   `bank_open`, plus `shop_items` and `bank_items`. A shop item is
+   `{"slot":…,"id":…,"name":…,"count":…,"noted":…}` from the open shop's 40-slot
+   display. A bank item is `{"slot":…,"id":…,"name":…,"count":…}` from the complete
+   item list the open bank interface has already received; it is empty while the bank is closed.
+   Only what the
+   player's own client can see is ever in it; the bridge reads
+   no server internals.
+
+   A second read-only IPC pair, `route-request.json` / `route-result.json`, lets the player ask the
+   running client to plan from the complete landscape archive already installed for that client.
+   The request may include openable object/boundary observations learned from normal snapshots;
+   those become high-cost portal edges. The planner does not send a packet, consume the action
+   slot, read server files, or require the server to know that it exists.
+
+4. The bridge is **inert by default**. It activates only when `DESKCRAB_GAME_STATE_DIR` is present
+   in the client's environment; the stock launcher does not set it, so the plain client is
+   byte-for-byte unaffected in behaviour. A separate launcher script beside the stock one is the
+   opt-in door: `launch-client-reflex.sh`, **committed at the root of the same Core-Framework
+   checkout that carries the bridge** — it exports `DESKCRAB_GAME_STATE_DIR` (respecting a value
+   already set) and hands over to the stock launcher it finds beside the checkout; the callable
+   file next to the stock launcher is a symlink to that committed copy, so both routes run the
+   same versioned bytes. The bridge suite pins all three properties: the launcher is under
+   version control, the stock launcher never mentions the variable, and executing the committed
+   bytes sets the exchange directory before handing over.
+
+4a. Once the opted-in client is logged in, the bridge dismisses the client-local post-login
+   welcome overlay before it publishes state or consumes any queued action. This close-first
+   precondition uses the overlay's own client state, never a remembered pointer coordinate, so
+   the window cannot obscure the player's sight or intercept ordinary play.
+
+### Actions
+
+5. The action vocabulary is closed, and grows only by a change to this spec: `eat` (use one
+   inventory food item, by slot), `walk` (walk toward an absolute tile), `retreat` (the bridge's
+   combat-lock-aware escape walk; an in-combat `flee` rule compiles to this), `warn` (display a local client-side message to the player — nothing is sent to the
+   server), `chat-local` (send public chat to nearby players), `chat-private` (send a private
+   message to a named online player at any distance), `talk-npc` (initiate dialogue with a currently visible NPC by server index — the
+   same walk-and-talk the player's own Talk-to menu entry performs; it addresses server-defined
+   NPCs only and structurally cannot message another player), `attack-npc` (walk to and attack an
+   attackable visible NPC by server/type identity through the native NPC attack packet), `interact-npc`
+   (perform command 1 or 2 from a visible NPC's own definition — the same
+   walk-and-command as its context-menu entry, without reconstructing that menu), `cast-npc`
+   (cast one NPC/player-targeted spell by spell id on a visible NPC server/type identity after
+   rechecking the live Magic level and staff-aware rune requirements, through the ordinary
+   walk-and-cast packet path, or, with `stationary=1`, the cast packet without an approach walk
+   after enforcing Magic's four-tile range), `interact-object` (perform a menu
+   command on a loaded game object at an absolute tile — the same walk-and-act the object's own
+   right-click Command entry performs; `cmd` 1 or 2 picks the object definition's first or second
+   command, so a fishing spot's Net and Bait, a gate's Open, a range's nothing-at-all are all the
+   game's own menu, never an invented verb), and `interact-bound` (the same for a wall object —
+   a door or other boundary — at a tile and wall direction; Open and Close are its usual
+   commands), and `click-entity` (move the private display's pointer to a currently rendered NPC,
+   player, game object, or wall object identified by stable game identity, let the game loop
+   process that pointer position on a later frame, then click button 1, 2, or 3 without blocking
+   that loop; a player is identified by server index plus exact visible name, and button 3 opens
+   that player's own live context menu exactly as the ordinary right-click does),
+   `click-inventory` (find an inventory item by item id, open the inventory tab, resolve the
+   current slot centre, and click button 1, 2, or 3, but refuse while a trade or duel owns the
+   interface because those screens place different item grids over the same pixels),
+   `equip-inventory` / `unequip-inventory`
+   (idempotently request the named held item's equipped state, returning `already-equipped` or
+   `already-unequipped` without sending a second toggle), `command-inventory` (run one of the
+   held item's published definition-backed commands by one-based command number and positive
+   amount), `use-item-object` (resolve a held item id and loaded object identity together, walk to
+   that object, and send the ordinary item-on-object packet as one operation, without opening the
+   inventory pane or staging pointer clicks), `use-item-npc` (resolve a held item id and a visible
+   NPC's server/type identity together, walk to that NPC, and send the ordinary item-on-NPC packet
+   as one operation, without selecting the inventory item or moving the pointer), `use-item-item`
+   (resolve two currently held item ids together — a tinderbox and the logs it lights — to two
+   DISTINCT live inventory slots and send the ordinary item-on-item packet, the same
+   Use-x-with-y the inventory menu builds, as one operation with no selection phase and no
+   pointer; one held stack can never be used on itself), `click-shop` and `click-bank` (find an item
+   by id in the currently open interface, expose its containing page or scroll row, resolve its
+   current slot centre, and click button 1, 2, or 3; bank identity covers
+   inventory items shown for deposit even when no bank stack exists),
+   `bank-deposit` / `bank-withdraw` and `shop-buy` / `shop-sell` (send the
+   open interface's ordinary transaction by item identity and positive amount,
+   without selecting a row or an amount button), `trade-player` (send the ordinary Trade-with
+   request to a currently visible non-local player by server identity), `trade-offer` /
+   `trade-remove` (change the open offer by item identity and positive amount without using
+   either interface grid), `trade-accept` (accept the currently open offer or confirmation stage
+   after rechecking that exact stage), `duel-accept` (accept the
+   currently open duel stage — the setup screen's Accept or the confirmation screen's final
+   Accept — through the same ordinary packet its own button sends, only after proving at
+   execution time that the emitter and the client agree on which stage is open and on the exact
+   opponent), `duel-decline` (send the open duel screen's own ordinary Decline, closing the
+   duel), `choose-menu` (choose an
+   option from the context menu that is open now by a case-insensitive text fragment; an absent or
+   ambiguous fragment is refused), `choose-dialogue` (choose one currently open NPC reply by the
+   same exact-then-unambiguous text discipline), `take-ground` (walk to and take a
+   currently visible ground item identified by item id and world tile), `drop-inventory`
+   (release one held item by item identity through the client's ordinary drop packet against
+   that item's current slot; the slot's own contents decide the released quantity — the live
+   server ignores a claimed amount while its Drop X option is disabled, so one dispatch
+   releases one non-stackable item or a stackable's whole held stack), `use-item-ground`
+   (resolve a held item id and a currently visible ground item identified by item id and world
+   tile together, walk to that tile, and send the ordinary item-on-ground-item packet as one
+   operation, without an inventory selection phase or pointer staging — the sequence the game
+   itself demands when it says the logs must be put down before they are lit), and `retreat` (while in
+   combat, choose a collision-map-reachable walk away from an identified opponent or a supplied
+   fallback direction, trying alternate directions and nearer tiles without sending failed path
+   probes). `talk-npc`, `attack-npc`, `interact-npc`, `cast-npc`, `interact-object`, `interact-bound`,
+   `click-entity`, `click-inventory`, `use-item-object`, `use-item-npc`, `use-item-item`,
+   `equip-inventory`, `unequip-inventory`, `command-inventory`, `click-shop`,
+   `click-bank`, the four bank/shop transaction actions, `trade-player`, `trade-offer`,
+   `trade-remove`, `trade-accept`, `duel-accept`,
+   `duel-decline`, `choose-menu`, `choose-dialogue`, `take-ground`, `drop-inventory`,
+   `use-item-ground`, `retreat`,
+   `chat-local`, and `chat-private` belong to the deliberate-play
+   channel — an action file written by the player's own hand or harness — not to
+   reflex rules: the engine's rule-action vocabulary stays `eat`, `walk`/`flee`, and `warn`
+   (rule 9). The reflex table cannot author speech. Nothing in this layer can log in or create
+   or delete a character. Dropping releases owned stock into the world, so like trading it is
+   available only through the deliberate `drop-inventory` action and is absent from both
+   executable rule tables. Trading is available only through a deliberate player action;
+   neither executable rule table can initiate it. Duelling is the same: only a deliberate
+   action can accept, decline, or progress a duel stage, and the duel actions are absent from
+   both executable rule tables. Spending through `shop-buy` is available
+   only to a deliberate action; it is absent from both executable rule tables.
+   The bridge refuses any action type it does not know.
+
+6. `action.json` and every notice file are flat `key=value` lines: `ts` (epoch ms when the engine
+   emitted it), `id` (the engine's monotonically increasing action id), `type`, then the type's
+   parameters (`slot` and `item` — the item id the engine saw in that slot — for eat; `x`, `z`,
+   optional arrival radius `arrive`, optional preflight ceiling `max_path`, and optional
+   collision-path prefix length `route_step` for walk; `text` for warn and chat-local; `target`
+   and `text` for chat-private; `sidx` and `npc` — the server index and the type id the emitter saw
+   there, the latter deliberately NOT named `id` so it can never collide with the action id line —
+   for talk-npc, attack-npc, and interact-npc (attack-npc and interact-npc may carry `within`
+   0–10; interact-npc also carries `cmd` 1 or 2), so a despawned or swapped NPC is refused as `refused-no-such-npc` or
+   `refused-npc-mismatch`, never talked to blind. Immediately before dispatch the bridge also
+   refuses `refused-nearer-equivalent` when another currently loaded NPC of that type is strictly
+   fewer walking steps away; `attack-npc` additionally refuses `refused-not-attackable`; both it
+   and `interact-npc` recheck `within` against the NPC's current tile and
+   refuses `refused-npc-out-of-range` if it roamed beyond the cap. `cast-npc` carries `spell`,
+   `sidx`, and `npc`, plus optional `within` 0–10 and 0/1 `stationary`,
+   `require_clear_shot`, and `require_melee_unreachable`; it refuses a missing spell, a non-NPC spell target, insufficient live Magic,
+   or any unavailable rune as `refused-no-such-spell`, `refused-wrong-spell-target`,
+   `refused-magic-level`, or `refused-missing-runes`, then applies the same NPC identity and
+   nearer-equivalent and locality checks before dispatch. A stationary cast beyond four tiles is
+   `refused-stationary-out-of-range`; requested terrain relations are re-read on that same NPC and
+   refuse as `refused-no-clear-shot` or `refused-melee-reachable` when no longer true. No approach
+   walk is emitted for a stationary cast. `x`, `z`, `obj` — the object type id, NOT named
+   `id` for the same collision reason — and `cmd` for interact-object, so an unloaded or swapped
+   object is refused as `refused-no-such-object` or `refused-object-mismatch` and a `cmd` outside
+   1–2 as `refused-bad-command`; `x`, `z`, `dir`, `obj`, `cmd` for interact-bound, matched on
+   tile AND wall direction, refused as `refused-no-such-bound` / `refused-bound-mismatch` /
+   `refused-bad-command` the same way; `kind` (`player`, `npc`, `object`, or `bound`) and `button` for
+   click-entity, plus the same identity fields as that entity's normal action — for
+   `kind=player` those are `sidx` and the exact visible `name`, both of which must still match
+   one currently visible non-local player, refused as `refused-no-such-player` when the index
+   has vanished and `refused-player-mismatch` when a different name now holds it; `item` and `button`
+   for click-inventory, click-shop, and click-bank; `item`, `x`, `z`, and `obj` for
+   use-item-object; `item`, `sidx`, and `npc`, plus optional `within` 0–10, for use-item-npc;
+   `item` and `target` — the second held item id, deliberately NOT a second `item` line because
+   the flat map keeps one value per key — for use-item-item;
+   `item` for equip-inventory and
+   unequip-inventory; `item`, one-based `cmd`, and positive `amount` for command-inventory;
+   `item` and `amount` for the
+   four transaction actions; `sidx` for trade-player; `item` and positive `amount` for
+   trade-offer and trade-remove; `stage` (`offer` or `confirm`) for trade-accept; `stage`
+   (`setup` or `confirm`) and `name`
+   — the exact opponent the emitter saw on the open duel screen — for duel-accept, and an
+   optional `stage` for duel-decline; `text` for choose-menu and
+   choose-dialogue; `x`, `z`, and
+   `item` for take-ground; `item` and positive `amount` for drop-inventory (the amount rides the
+   ordinary packet for protocol fidelity; the server's slot contents remain the authority on the
+   released quantity); `item`, `x`, `z`, and `ground` — the ground item's type id, NOT named `id`
+   for the same collision reason — for use-item-ground; `distance` 1–10 and fallback `dx`/`dz` for retreat). The bridge resolves
+   the identity against the current client arrays at execution time, obtains that exact entity's
+   latest rendered screen point, and emits pointer move then click as one bridge operation. A
+   missing, swapped, or off-screen entity is refused with the same identity refusal or
+   `refused-not-on-screen`; a world pointer click while `ui_panel_open` is true is refused as
+   `refused-ui-panel-open`, leaving the panel visible so the player must notice, dismiss, verify,
+   and retry deliberately. Interface-targeting actions are not blocked by this guard. No screen
+   coordinates cross the action file. For click-inventory it
+   finds the first matching current item id, opens the inventory tab, and calculates the slot
+   centre from the current client UI; a missing item is `refused-no-such-item`. An open trade or
+   duel instead yields `refused-trade-open` or `refused-duel-open` before any pointer movement,
+   because those modal interfaces own different item grids. The snapshot's
+   `selected_inventory_item` is the item id currently selected for a later Use-with action, or
+   null. It distinguishes a consumed click from a pointer that merely reached the item. No slot or
+   screen coordinate crosses the action file. Equipment actions resolve the same live identity, refuse a
+   non-wearable item, and never invert an item already in the requested state. Inventory commands
+   recheck that the requested definition command still exists on that item before sending the
+   ordinary item-command packet. `use-item-object` rechecks both the item's current slot and the
+   object's exact tile/type before sending the same walk-and-use packet as the client's ordinary
+   menu action; a missing item or changed object is refused rather than becoming a stale second
+   click. `use-item-npc` performs the equivalent rechecks against the current inventory slot and
+   NPC server/type identity, including the nearer-equivalent and optional locality checks used by
+   other NPC actions. It sends the ordinary item-on-NPC packet without an inventory selection
+   phase. `drop-inventory` resolves the item's current slot at execution time
+   (`refused-no-such-item` when the item is gone, `refused-bad-amount` below one) and sends the
+   client's ordinary drop packet against that slot. `use-item-ground` rechecks the held slot
+   (`refused-no-such-item`) and the pile's exact tile and item id with take-ground's own matching
+   and reachability discipline (`refused-no-such-ground-item`, `refused-ground-item-mismatch`,
+   `refused-ground-item-needs-door`, `refused-ground-item-unreachable`) before sending the
+   ordinary walk-and-use packet. `use-item-item` re-resolves both ids in the current inventory at execution time and
+   requires two DISTINCT live slots — the `target` id may equal `item` only when a second slot
+   holds it. A negative or absent id half is `refused-bad-use-target`; a half no slot (or no
+   second slot) can satisfy is `refused-no-such-item`. It then sends the ordinary item-on-item
+   packet exactly as the client's own Use-x-with-y menu writes it — the target's slot rides
+   first, the used item's slot second — with no selection phase, no pointer, and no approach
+   walk, and clears any pending inventory selection just as the menu path does. `click-shop`
+   and `click-bank` use the same identity-only
+   contract. A closed interface or missing item is refused; for a bank item the bridge switches
+   the live bank to the page or scroll row containing the item before resolving its slot centre.
+   A transaction rechecks that its interface is open and that its item has a
+   positive live quantity in the relevant source (shop stock, bank, or
+   inventory), clamps an overlarge request to that quantity, and then sends the
+   ordinary client transaction. Amount zero or negative is refused.
+   `trade-player` re-matches the server index against the current visible player list and refuses
+   a vanished player. Trade offer/remove actions require the structured offer stage, re-resolve
+   the requested id in the live inventory or current offer, clamp nothing beyond the caller's
+   already validated positive amount, and send the ordinary offer/remove packet without moving
+   the pointer. Trade accept requires the named live stage and refuses a closed, changed, or
+   already-accepted stage. The playing harness does not treat any of those dispatch receipts as
+   completion: offer/remove must produce the exact expected count for that id in a newer
+   `my_offer`, offer acceptance must expose this client's acceptance or the confirmation stage,
+   and final acceptance must close with explicit successful-trade feedback. `duel-accept` reads
+   the live duel screens at execution time, never a
+   remembered stage: a malformed `stage` is `refused-bad-duel-stage`, no open duel screen is
+   `refused-duel-closed`, a live stage other than the named one is `refused-duel-stage-changed`,
+   a missing `name` or one that is not exactly the live opponent's is
+   `refused-duel-opponent-mismatch`, and a stage this client has already accepted is
+   `refused-already-accepted`; only after every check passes is that stage's own ordinary accept
+   packet sent. `duel-decline` requires an open duel screen (`refused-duel-closed`) and, when a
+   `stage` rides the file, the same live-stage agreement, then sends the open screen's ordinary
+   decline. Neither duel action moves the pointer, and no screen coordinate crosses the action
+   file. Player-targeted clicks re-match both the server index and the exact visible
+   name the emitter saw there — an index now held by someone else is refused as
+   `refused-player-mismatch`, never clicked. They resolve that player's latest rendered screen point inside the client immediately before
+   moving and clicking; no pixel coordinate crosses the action file, so a walking player cannot
+   leave a stale point behind. `choose-menu` strips client colour tags, normalizes case and whitespace,
+   prefers one exact full-label match, and otherwise requires exactly one containing match; it
+   never guesses between two options.
+   `choose-dialogue` applies that same matching contract to the current server-authored NPC reply
+   menu and sends its ordinary option packet. A closed menu, absent choice, or ambiguous fragment
+   is refused. The snapshot exposes `dialogue_open` and colour-free `dialogue_options` separately
+   from the ordinary context menu, while `talking_to_npc` remains true across the short NPC-speech
+   gaps between reply menus.
+   `take-ground` re-matches the item id at the named tile
+   immediately before sending the game's own walk-and-take action; a missing tile or changed item
+   is refused rather than taking a replacement. `action.json` is a single slot: one action, and the engine never
+   writes a second while one is in flight (rule 10). A notice is **never** a single slot: each
+   firing is written to its own `notice-<id>.json`, named by the same monotonic id it carries, so
+   two notice rules firing on one snapshot — or on adjacent snapshots inside one bridge tick —
+   can never overwrite each other; every firing the log records is a file the bridge will see.
+   The engine sweeps notice files whose `ts` has aged past rule 7's 1500 ms freshness window (the
+   bridge would drop them as stale anyway), so an exchange directory with no bridge attached
+   cannot fill without bound; the sweep runs only in the live loop, never in replay.
+
+7. The bridge polls `action.json` and the notice queue every client tick. It executes at most one
+   game action per tick from `action.json`, then deletes the file; it drains the notice queue
+   oldest id first — numeric id order, not filename order — at most 8 notices per tick, the rest
+   waiting their turn with order preserved. Before executing anything it checks, in order: the
+   client is logged in, the `hold` flag is absent, and `ts` is no older than 1500 ms. An `eat`
+   additionally executes only when the named slot still holds the named `item` and that item's own
+   first inventory command is eat or drink — a shifted bag or a poisoned food table must not make
+   the bridge consume, bury, or light something else. A check that fails still deletes the file
+   and, on the game channel, writes the receipt with status `held`, `stale`, or `refused-<why>` —
+   a refused action is never silently dropped. Notices need no receipt; `action.json` always gets
+   one: `receipt.json` carrying `id`, `status` (`done` or the refusal), and `ts`. A `walk` uses
+   the client's collision map and pathfinder. `arrive` is bounded to 0–10. `max_path`, when
+   positive, refuses a loaded destination whose actual collision path is longer than that ceiling.
+   `route_step`, when present, is bounded to 1–32 and instead asks the pathfinder for at most that
+   many actual steps along the complete currently loaded path toward `x,z`: the action file still
+   names the real destination, and the bridge—not a model-authored coordinate guess—chooses and
+   dispatches the grounded prefix endpoint. If its destination is outside the currently loaded
+   map, the client clips the request to the edge of the current region in the destination's
+   direction, searches that edge for a reachable alternative when the direct crossing is blocked,
+   and `route_step` truncates that proven regional path to the same bounded prefix. A later action
+   re-plans from the resulting live region; no guessed intermediate coordinates cross the action
+   file. If the destination is already loaded, an ordinary walk remains exact while a route-step
+   walk follows only its grounded prefix. A visible NPC currently standing on the destination tile
+   does not pre-refuse that walk: NPCs move, are not static collision landmarks, and the client's
+   own pathfinder remains authoritative. Semantic NPC actions express an intended interaction, but
+   NPC presence cannot turn an otherwise valid navigation request into a prohibition. A walk for
+   which no progressive local path exists is
+   `refused-no-path`, never `done`. A retreat tries the requested distance first in its preferred
+   direction, then alternate directions and shorter nonzero distances, and sends only the first
+   pathfinder-approved ordinary walk. With no reachable candidate it reports
+   `refused-no-retreat-path`. Its `done` receipt remains dispatch only: the server's three-opponent-
+   hit escape lock is authoritative, and the game-player layer verifies `in_combat: false` before
+   calling the retreat complete. Chat text and
+   private targets must be non-empty single lines; text is capped at the client's 80-character
+   input limit and targets at 40 characters. `click-entity`, `click-inventory`, `click-shop`, and
+   `click-bank` accept only mouse
+   buttons 1, 2, and 3, and never fall back to coordinates supplied by the caller. Invalid values
+   are refused rather than truncated.
+
+8. The bridge may never break the game: every per-tick step runs inside a catch-everything guard,
+   and after 5 consecutive failing ticks the bridge announces once (a local client message) that it
+   has disabled itself, and goes quiet until the client restarts.
+
+### Rules
+
+9. `reflex-rules.json` holds `defaults` (`stale_ms` 2000, `poll_ms` 150, `min_action_interval_ms`
+   0, `max_actions_per_min` 0, `inflight_timeout_ms` 2000, `eat_pick` `min`) and `rules`, each:
+   `name` (unique), `enabled`, `channel` (`game` or `notice`), `priority` (higher wins),
+   `cooldown_ms` (required to be 0 on the game channel; notices may throttle presentation),
+   `hold_ticks` (the trigger must be true on this many consecutive snapshots before
+   firing — the debounce), `trigger` (a set of named conditions, all of which must hold), and
+   `action` (`type` plus parameters). The trigger vocabulary is closed: `hp_below` (fraction of
+   `hits_max`, 0–1), `requires_food` (inventory holds an item in the food table), `no_food` (it
+   holds none), `in_combat` (on a game-channel rule a live dispatch gate — rule 10a),
+   `fatigue_above` (fraction, 0–1). An unknown trigger key, action type,
+   channel, or out-of-range value is refused loudly at load and by `betty-game set`/`add` — a rule
+   that cannot be evaluated must not sit in the table looking armed.
+
+10. Engine evaluation, once per fresh snapshot: rules are considered in descending priority.
+    Notice-channel rules fire independently (each is only bound by its own cooldown and
+    `hold_ticks`), and every firing lands in its own queue file (rule 6) — when two notice rules
+    fire on one snapshot, both are delivered, neither overwritten. Game-channel rules compete for
+    one slot: the highest-priority eligible rule
+    fires; every other eligible game rule is logged as a conflict loss, not fired. A game action
+    fires only when no previous game action is in flight. A receipt is dispatch evidence; the
+    action's observed postcondition releases the slot immediately. `inflight_timeout_ms` is only a
+    maximum failure lease when completion never arrives. Game cooldown, minimum-interval and
+    per-minute-cap fields are fixed at zero and legacy nonzero values are migrated on load.
+
+10a. Combat gates eating, and an eat completes only by its own observed effect. On a game-channel
+    rule the `in_combat` condition is a **live dispatch gate**, not part of the debounced need:
+    the `hold_ticks` streak accumulates on the rule's remaining conditions while the gate stays
+    unmatched, and the rule dispatches on the first fresh snapshot whose combat state matches —
+    the deferral is logged once per continuous episode as `combat-hold`. So during a fight the
+    reflex layer's answer to "low health with food in the bag" is to stand aside with its need
+    held, never to race the deliberate-play layer's retreat (which owns combat — game-player
+    rule 7b) for the one action slot, and the eat lands on the first out-of-combat snapshot.
+    An executable `eat` rule must declare `trigger.in_combat: false` — the loader refuses a table
+    whose eat rule lacks it and migrates a stored rule by adding it — and eat compilation refuses
+    an in-combat snapshot as `eat-requires-out-of-combat` whatever the table says, so no eat
+    action can reach the bridge while `in_combat` is true. An eat's `done` receipt is dispatch
+    evidence only (rule 10): the engine retains the slot until a newer snapshot proves the causal
+    postcondition — `hits` above the fired baseline (healing), the eaten item id's total
+    inventory quantity below its fired baseline (consumption), or a new server eating message —
+    logged as `action-complete` with what was observed; the server's own while-fighting refusal
+    message completes it as `action-failed`. Either way completion releases the slot at once, and
+    `inflight_timeout_ms` remains the maximum failure lease when no evidence ever arrives.
+    Out of combat the deliberate-play layer returns the courtesy: game-player rule 7i's healing
+    prerequisite keeps learned rules off the shared slot while this armed eat need is unmet, so
+    the first safe snapshot's eat is neither raced for the slot nor cancelled by a learned
+    action re-provoking the fight before healing is observed.
+
+11. Stale-state protection: a snapshot whose `ts` is older than `stale_ms` fires nothing, and the
+    engine logs the transition into and out of staleness. A snapshot with `logged_in: false` fires
+    nothing and resets every rule's `hold_ticks` counter. The engine never acts on a tick it has
+    already acted on.
+
+12. `eat` picks the slot: among inventory items in the food table, `eat_pick: min` (the default)
+    takes the lowest heal value — a panicked early eat wastes the least — and `max` the highest.
+    The food table is `food-heals.xml`, in the game server's own `ItemEdibleHeals.xml` format
+    (item id → heal), installed by `betty-game init --food-xml <path>`. `betty-game run` refuses
+    to start while any **enabled** rule needs the food table and the table is missing or empty —
+    an eat rule that can never find food must not sit there looking like protection.
+
+13. `flee` compiles according to combat state. While `in_combat: true`, it emits the bridge's
+    `retreat` action with the rule's `distance` and fallback `dx`/`dz`, so the server's first-three-
+    round lock, live opponent direction, collision-map alternatives, and no-path refusals are
+    handled as combat rather than mistaken for an ordinary walk. Once out of combat, it compiles
+    to a `distance`-tile walk along the configured `dx`/`dz` direction (default south) — but only
+    within a short separation window after combat actually ended (15 s): separation is an
+    escape's tail, not a standing condition. Past the window the rule refuses
+    (`flee-separation-complete-no-recent-combat`), because a low-health, foodless character
+    standing safely is deliberation's problem — get food, rest — and a zero-cooldown flee with
+    no combat gate otherwise walks the body away five tiles forever, which is exactly how a
+    starving player jogged around the desert instead of eating. The engine clamps ordinary
+    walks to at most 15 tiles from the player's position.
+
+14. The shipped default table carries exactly three rules: `warn-low-health` (notice channel,
+    enabled, `hp_below` 0.5), `eat-low-health` (game, **disabled**, `hp_below` 0.5 +
+    `requires_food`), and `flee-starved` (game, **disabled**, `hp_below` 0.35 + `no_food`). The
+    game-channel rules ship disabled deliberately: a reflex is enabled by the player's own hand
+    after the moment that justifies it, never inherited pre-armed from a default file.
+
+### Override
+
+15. The `hold` flag is the manual override, honoured at **both** ends: while it exists the engine
+    emits nothing (checked every loop iteration, so within `poll_ms`), and the bridge executes
+    nothing (checked immediately before every execution, so an action already emitted still dies).
+    `betty-game hold` creates it, `betty-game resume` removes it, `betty-game state` shows it.
+    Stopping the engine process is always sufficient by itself: no emitter, no actions, and
+    anything already emitted goes stale inside 1500 ms (rule 7).
+
+### Logging and replay
+
+16. Every engine decision is an event line in `decisions.jsonl`: fired actions (with the snapshot
+    values the trigger read), conflict losses, notice cooldown suppressions, combat deferrals
+    (once per episode, rule 10a), completions and failures as an action's observed postcondition
+    lands, stale and logged-out
+    transitions, hold transitions, receipts as they are consumed, and refusals. `betty-game log`
+    tails it. The game-player layer's reflex-fire ledger (game-player rule 10a) reads this log
+    read-only and presents this engine's firings to each model deliberation alongside its own,
+    tagged `engine: reflex`; nothing here changes for that — the log line format above is the
+    interface. `betty-game run --record <file>` additionally appends every snapshot evaluated, and
+    `betty-game replay <file>` re-evaluates a recording through the current rule table, printing
+    what would have fired, writing **no** action or notice files anywhere.
+
+### The CLI
+
+17. `betty-game` (a thin wrapper on `lib/game_reflex.py`, plain python3, no venv) exposes:
+    `state` (the current snapshot, its age, and the hold flag), `rules` (the table with priority,
+    channel, enabled, trigger, cooldown), `actions` (the action vocabulary and each type's
+    parameters), `enable <rule>` / `disable <rule>`, `set <rule> <key> <value>` (dotted keys reach
+    trigger and action parameters), `add` / `remove`, `hold` / `resume`, `run`, `replay`, `log`,
+    and `init` (write the default table if absent, install the food table). Every mutation is
+    validated by rule 9's loader before it is written. `add` defaults `cooldown_ms` by channel:
+    a game rule arrives at 0 — the only value rule 10 admits, so a plain valid add never needs
+    the override — and a notice rule keeps the 1500 ms presentation throttle. The installed door is
+    `~/.local/bin/betty-game`, a symlink to the deployed `~/.local/lib/deskcrab/betty-game`, so
+    the command resolves by name from an ordinary shell like the other `betty-*` doors — and the
+    suite pins the door itself, resolved off the user's own `bin` and executed, never only the
+    checkout-relative wrapper.
+
+### Boundaries
+
+18. No model call is ever made by the bridge or the engine — the layer is mechanical end to end;
+    that is what makes sub-second honest. And the layer never plays on its own: with no rules
+    enabled it does nothing, with the engine stopped it does nothing, and nothing in it can
+    initiate sessions, log in, or act while `logged_in` is false — so it structurally cannot
+    create, enter, or alter a character on its own.
+
+## KNOWN LIMITS
+
+- The bridge sees exactly what the client renders for the player. Poison, prayer, quest state and
+  other players' actions are invisible to version 1 snapshots; rules cannot trigger on what is not
+  in rule 3.
+- The version 1 bridge resolves `opponent` only when the client can name the fighter cheaply. The
+  combat-aware `retreat` action rechecks that live identity inside the client and otherwise uses
+  the flee rule's `dx`/`dz`, trying collision-map alternatives. The server remains authoritative
+  over whether the first-three-round lock permits escape; the receipt proves only dispatch.
+- The engine's latency floor is `poll_ms` plus the bridge's write cadence — about 150–400 ms in
+  practice. That is sub-second, not sub-tick; a rule cannot outrun the game's own 640 ms combat
+  round anyway.
+- One game in, one game's bridge. The engine and rule table are game-agnostic by construction, but
+  nothing has proven that against a second game yet.

@@ -1,0 +1,714 @@
+#!/usr/bin/env python3
+"""claudism-mirror — the live half of the claudism guard: scan and splice.
+
+specs/speech-output.md rules 38-45. The mirror never decides: it finds the
+line that tripped her own phrase list, and the rewrite it splices in is one
+she wrote herself in the mirror pass, or nothing changes. Every failure here
+is the caller's cue to FAIL OPEN — the exit codes are the contract, and
+nothing may raise past main.
+
+Modes:
+  scan <phrase-file>
+      Spoken text on stdin. Prints a JSON list of flags — [{"sentence",
+      "pattern", "note", "use"}] — one per flagged sentence, in draft order,
+      "use" the mention test's answer (use/mention, rule 50 as amended).
+      An unreadable or empty list prints [] and exits 0.
+  splice
+      {"response": ..., "sentence": ..., "rewrite": ...} on stdin. Replaces
+      the first occurrence of the sentence in the SPOKEN half only and prints
+      the whole spliced response. Exit 3 when the sentence is not found — the
+      caller keeps the original (rule 42). With "echo_guard": true — the
+      mirror-rewrite callers, never the table-swap fold — a rewrite the
+      spoken half already carries as another sentence is spliced as a
+      deletion instead (rule 41a), so the reply says the words once.
+  logflag <flags-dir> <kind> <pid> <outcome> [rewrite]
+      One flag object on stdin; appends the day's record — claudism-capture's
+      shape plus {"stage": "live", "outcome": ...} — flocked, like the
+      capture and the day journal. A rewrite outcome hands the replacement
+      text as the fifth argument and the row carries it as before/after,
+      the pair a table-swap row already has (rule 51).
+  family <phrase-file> <function>
+      Prints the named function family, one entry per line — pattern, then
+      the why — the live: no wide net included (rule 52). Context for the
+      mirror call's prompt, so a missing file or an unknown function prints
+      nothing and exits 0: the call goes out exactly as before.
+  voice
+      {"before", "after", "pattern", "fix", "draft"} on stdin — the held
+      sentence, her resay, the fired entry's pattern and fix, the spoken
+      draft. Prints {"voice": kept|flat|costume, "why": ...} (rule 58): a
+      deterministic reading of the resay's register, never a gate on it.
+      Any failure prints nothing and exits 2; the caller reads nothing as
+      "no reading" and the resay goes out as it always did.
+  tableswap <phrase-file> <flags-dir> <kind> <pid>
+      The whole response on stdin. Her replacement table (rules 47-49),
+      applied to the spoken half: every sentence an entry's own replace
+      lines fully repair is swapped, each swap logged to the day's flag log
+      with before, after and outcome table-swap BEFORE it lands — a swap
+      that cannot be logged is not applied, so the sentence stays for the
+      caller's own scan to hold and route as ever. Prints the response,
+      swapped or untouched.
+
+The phrase list format is defined by lib/claudism-capture (an entry is a
+bullet or heading whose first backtick span is a case-insensitive regex, the
+prose around it is the why); the parser here must stay compatible with that
+one. lib/tts-streamer imports this file for load_patterns/first_flag, so the
+library half must import with no side effects.
+"""
+
+import fcntl
+import json
+import os
+import re
+import sys
+import time
+
+# The near-duplicate blend and the quiet marker come from the shared sentence
+# module (specs/speech-output.md rule 41a: one threshold everywhere) — the
+# same import lib/tts-streamer already makes from this directory.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from sentence_stream import QUIET_RE, near_duplicate
+
+DELIM = "---DISPLAY---"
+
+
+def load_patterns(path):
+    """claudism-capture's parser, kept identical line for line — the list has
+    ONE declared shape and two readers is already the seam nightly.md tracks
+    as MIN-34; two parsers of it would be the same drift one layer down."""
+    entries, bad = [], 0
+    head_re = re.compile(r"^#{1,6}\s+(.*)")
+    pat_re = re.compile(r"^\s*[-*]\s*pattern:\s*(.*)", re.IGNORECASE)
+    rep_re = re.compile(r"^\s*[-*]\s*replace:\s*`(.*)`\s*->\s*`(.*)`\s*$",
+                        re.IGNORECASE)
+    fn_re = re.compile(r"^\s*[-*]\s*function:\s*([a-z0-9][a-z0-9-]*)\s*$",
+                       re.IGNORECASE)
+    fix_re = re.compile(r"^\s*[-*]\s*fix:\s*(delete|resay)\s*$", re.IGNORECASE)
+    live_re = re.compile(r"^\s*[-*]\s*live:\s*(yes|no)\s*$", re.IGNORECASE)
+    why_re = re.compile(r"^\s*[-*]\s*why:\s*(.*\S)\s*$", re.IGNORECASE)
+    entry_re = re.compile(r"^(?:[-*]|#{1,6})\s+(.*)")
+    span_re = re.compile(r"`([^`]+)`")
+
+    def new_entry(rx, pat, note):
+        return {"rx": rx, "pat": pat, "note": note, "replaces": [],
+                "function": "", "fix": "", "live": True, "why": ""}
+
+    def add_replace(m):
+        # A replace line rides the entry above it and is NEVER a trigger. A
+        # stray one (no entry yet) or a broken regex is skipped like any
+        # unparseable entry — the entry itself still fires, it just routes
+        # to her instead of swapping.
+        nonlocal bad
+        if not entries:
+            bad += 1
+            return
+        # The replacement is spliced literally, so a backreference in it is
+        # not a backreference — it is a backslash and a digit landing in my
+        # mouth. One did, 2026-08-10 12:03: "a failure of mine\1". A line
+        # like that is skipped as unparseable and the sentence routes to me.
+        if re.search(r"\\[0-9g]", m.group(2)):
+            bad += 1
+            return
+        try:
+            entries[-1]["replaces"].append(
+                (re.compile(m.group(1), re.IGNORECASE), m.group(2)))
+        except re.error:
+            bad += 1
+
+    def add_tag(raw):
+        # function/fix/live lines ride the entry above them, like a replace.
+        nonlocal bad
+        m = fn_re.match(raw)
+        if m:
+            if entries:
+                entries[-1]["function"] = m.group(1).lower()
+            else:
+                bad += 1
+            return True
+        m = fix_re.match(raw)
+        if m:
+            if entries:
+                entries[-1]["fix"] = m.group(1).lower()
+            else:
+                bad += 1
+            return True
+        m = live_re.match(raw)
+        if m:
+            if entries:
+                entries[-1]["live"] = m.group(1).lower() != "no"
+            else:
+                bad += 1
+            return True
+        m = why_re.match(raw)
+        if m:
+            if entries:
+                entries[-1]["why"] = m.group(1).strip()
+            else:
+                bad += 1
+            return True
+        return False
+
+    with open(path, encoding="utf-8") as f:
+        lines = f.read().splitlines()
+    if any(pat_re.match(ln) for ln in lines):
+        # The declared shape. Only pattern: lines are triggers, so a why
+        # line quoting code can never become one; the heading above names
+        # the claudism in the flag record.
+        head = ""
+        for raw in lines:
+            hm = head_re.match(raw)
+            if hm:
+                head = hm.group(1).strip()
+                continue
+            rm = rep_re.match(raw)
+            if rm:
+                add_replace(rm)
+                continue
+            if add_tag(raw):
+                continue
+            pm = pat_re.match(raw)
+            if not pm:
+                continue
+            span = span_re.search(pm.group(1))
+            if not span:
+                bad += 1
+                continue
+            try:
+                entries.append(new_entry(
+                    re.compile(span.group(1).strip(), re.IGNORECASE),
+                    span.group(1).strip(), head))
+            except re.error:
+                bad += 1
+    else:
+        for raw in lines:
+            rm = rep_re.match(raw.rstrip())
+            if rm:
+                add_replace(rm)
+                continue
+            if add_tag(raw.rstrip()):
+                continue
+            m = entry_re.match(raw.rstrip())
+            if not m:
+                continue
+            span = span_re.search(m.group(1))
+            if not span:
+                continue
+            pat = span.group(1).strip()
+            note = span_re.sub("", m.group(1)).strip(" —-–:,.")
+            try:
+                entries.append(new_entry(re.compile(pat, re.IGNORECASE),
+                                         pat, note))
+            except re.error:
+                bad += 1
+    for e in entries:
+        if not e["fix"]:
+            e["fix"] = "delete" if e["replaces"] else "resay"
+    return entries, bad
+
+
+# The mention test — specs/turn-pipeline.md rule 32b, specs/speech-output.md rule
+# 50. Words inside a code span or an unclosed double quote are quoted, not
+# said; a sentence that names its own entry, or that carries the vocabulary
+# of the list itself, is talking about the habit rather than having it. The
+# meta words are deliberately few and STRONG — "pattern", "flagged" and
+# "rewrite" are everyday engineering words in her mouth and are not here on
+# purpose; quoting and entry-naming carry those cases. A mention is still
+# logged and still shown in the review, so a wrong call is visible, never
+# lost. Kept identical to lib/claudism-capture's, like the parser above it.
+META_RE = re.compile(
+    r"claudism|\bban(?:ned|ning|s)?\b|phrase list|\bthe list\b|flag log|"
+    # "the word" marks a sentence ABOUT a word — "the word 'honest'", "the
+    # word itself". Bare, it is the idiom "say the word", which is an entry
+    # of its own: the wide form swallowed every live firing of the
+    # compliance promise and scored a night of plain uses as talk about the
+    # list (specs/speech-output.md rule 55).
+    r"conduct sheet|\bthe word [\"'“`]|\bthe word itself\b|\bforbidden\b",
+    re.IGNORECASE)
+
+
+def classify_use(sentence, start, end, note=""):
+    """'use' when the matched words are being said; 'mention' when they are
+    quoted or talked about. start/end bound the match inside sentence; note
+    is the entry's heading, whose short name (before the em-dash) appearing
+    in the sentence is a mention of the entry itself."""
+    before = sentence[:start]
+    if before.count("`") % 2 == 1:
+        return "mention"
+    if before.count('"') % 2 == 1:
+        return "mention"
+    if before.count("“") > before.count("”"):
+        return "mention"
+    title = re.split(r"\s+—\s+", note or "")[0].strip()
+    if len(title) >= 4 and title.lower() in sentence.lower():
+        return "mention"
+    if META_RE.search(sentence):
+        return "mention"
+    return "use"
+
+
+def first_flag(text, patterns):
+    """The first live entry this text USES — or, when every matching live
+    entry is merely mentioned, the first of those, its record saying so.
+    specs/speech-output.md rule 50, amended 2026-08-24: quotation marks are
+    still inaudible, but holding her mid-sentence to reword a sentence ABOUT
+    a word cost more than the quote did, so the caller skips the hold and
+    the mirror call on use=mention and still logs the flag. The classifier
+    is classify_use above — the capture's, the corpus reader's and the
+    nightly scan's, one mention test everywhere — aggregated their way: a
+    use anywhere in the sentence outranks any number of mentions, judged
+    per entry, so a sentence fires on an entry it uses and never on one it
+    merely quotes or names. If classifying fails the entry fires as a use,
+    which is the old behaviour exactly (fail towards firing, never towards
+    a lost flag). A `live: no` entry never fires here — the capture still
+    records both. The streamer hands one sentence at a time, so 'anywhere'
+    is one sentence. The rx and replaces keys carry the entry itself for
+    the table of rule 47; scan() rebuilds its records from the plain
+    fields, so nothing uncompilable ever reaches a JSON boundary."""
+    mention = None
+    for e in patterns:
+        if not e["live"]:
+            continue
+        if not e["rx"].search(text):
+            continue
+        try:
+            cls = "mention"
+            for m in e["rx"].finditer(text):
+                if classify_use(text, m.start(), m.end(), e["note"]) == "use":
+                    cls = "use"
+                    break
+        except Exception:
+            cls = "use"
+        flag = {"pattern": e["pat"], "note": e["note"], "rx": e["rx"],
+                "replaces": e["replaces"], "function": e["function"],
+                "fix": e["fix"], "use": cls}
+        if cls == "use":
+            return flag
+        if mention is None:
+            mention = flag
+    return mention
+
+
+def table_swap(sentence, rx, replaces):
+    """Her replacement table, applied where it fully covers the fire
+    (specs/speech-output.md rules 47-48). Every replace line of the firing
+    entry is applied; if the entry's own pattern still matches what is left,
+    the table did not cover this fire and the sentence holds as usual. Code
+    then repairs ONLY what deleting a span breaks — the doubled space, an
+    orphaned leading comma, the sentence's leading capital — and nothing
+    else. Returns the repaired sentence, or None to hold. The replacement
+    text is hers, spliced literally: never a template, never expanded."""
+    if not replaces:
+        return None
+    out = sentence
+    for rep_rx, rep_text in replaces:
+        out = rep_rx.sub(lambda _m, _t=rep_text: _t, out)
+    if out == sentence:
+        return None
+    out = re.sub(r" {2,}", " ", out)
+    out = re.sub(r"^(\s*),\s*", r"\1", out)
+    for i, ch in enumerate(out):
+        if not ch.isalpha():
+            continue
+        if ch.islower():
+            for bch in sentence:
+                if bch.isalpha():
+                    if bch.isupper():
+                        out = out[:i] + ch.upper() + out[i + 1:]
+                    break
+        break
+    if not out.strip() or rx.search(out):
+        return None
+    return out
+
+
+def flag_row(kind, pid, rec, outcome, rewrite=None):
+    """One live-stage flag record — claudism-capture's shape plus stage and
+    outcome, the same row logflag has always written. A rewrite hands its
+    replacement text in and the row carries it as before/after, the pair a
+    table-swap row already has (rule 51): outcome alone says a line was
+    resaid, never what it became."""
+    now = int(time.time())
+    row = {
+        "epoch": now,
+        "time": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+        "kind": kind,
+        "pid": int(pid) if str(pid).isdigit() else None,
+        "sentence": str(rec.get("sentence", "")),
+        "pattern": str(rec.get("pattern", "")),
+        "stage": "live",
+        "outcome": outcome,
+    }
+    for key in ("note", "function", "use", "voice", "voice_why"):
+        if rec.get(key):
+            row[key] = str(rec[key])
+    # The voice reading's second pass (rule 58): how many times the line
+    # was resaid before this `after` stood. Absent means once, as ever.
+    try:
+        if int(rec.get("resays") or 0) > 1:
+            row["resays"] = int(rec["resays"])
+    except (TypeError, ValueError):
+        pass
+    if rewrite:
+        row["before"] = row["sentence"]
+        row["after"] = str(rewrite)
+    return row
+
+
+def family_lines(patterns, function):
+    """Every entry of one function family — the fired sibling included, and
+    the live: no wide net too, since a sibling invisible at resay time is
+    the one that gets reached for (rule 52). Each entry carries its why:
+    the heading alone is a word list, and a word list is answered with a
+    synonym — the reason is what makes the resay leave the slot instead of
+    refilling it. Plain lines, not JSON: the reader is the model,
+    mid-call."""
+    out = []
+    for e in patterns:
+        if e["function"] == function:
+            out.append("- %s%s" % (e["pat"],
+                                   " — " + e["note"] if e["note"] else ""))
+            if e.get("why"):
+                out.append("  why: " + e["why"])
+    return out
+
+
+def append_flag(flags_dir, row):
+    """Append one row to the day's flag log — flocked, like the capture and
+    the day journal. Raises on failure: every caller decides what an
+    unwritable log means, and for a table swap the answer is rule 49's — the
+    swap is NOT applied."""
+    os.makedirs(flags_dir, exist_ok=True)
+    day = time.strftime("%Y-%m-%d",
+                        time.localtime(row.get("epoch", int(time.time()))))
+    with open(os.path.join(flags_dir, day + ".jsonl"), "a",
+              encoding="utf-8") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        f.write(json.dumps(row, ensure_ascii=False) + "\n")
+        f.flush()
+
+
+def sentences(text):
+    out = []
+    for para in text.splitlines():
+        para = para.strip()
+        if para:
+            out.extend(s.strip() for s in re.split(r"(?<=[.!?…])\s+", para) if s.strip())
+    return out
+
+
+def echo_sentence(rewrite, text, flagged):
+    """Is her rewrite already a sentence of the draft? Returns the first
+    OTHER speakable sentence of `text` the rewrite near-duplicates, or None
+    (specs/speech-output.md rule 41a). Quiet lines never sound, so they are
+    no basis for absorbing a rewrite; the flagged sentence itself — and any
+    near-copy of it — is the slot under repair, never an echo. The caller
+    treats None as "no echo" and an exception as its own cue to fail open,
+    so an unanswerable question speaks the rewrite exactly as rule 41
+    always has."""
+    if not (rewrite or "").strip():
+        return None
+    flagged = (flagged or "").strip()
+    for para in text.splitlines():
+        para = para.strip()
+        if not para or QUIET_RE.match(para):
+            continue
+        # sentences() on the one line: the same splitter the scan uses, kept
+        # byte-identical with claudism-capture's twin (MIN-34) — never a
+        # third copy of the boundary expression.
+        for sent in sentences(para):
+            if flagged and near_duplicate(sent, flagged):
+                continue
+            if near_duplicate(rewrite, sent):
+                return sent
+    return None
+
+
+# --- The voice reading of a resay — specs/speech-output.md rule 58 ---------
+# A rewrite that came back from the mirror call used to be spliced and logged
+# `rewrite` whatever it sounded like, so the receipt claimed a clean catch
+# for a line scrubbed of its phrase and left in the same register (2026-08-20
+# 01:03: "the catcher fired and the rewrite landed in the same flat register
+# wearing different words"). A phrase list cannot catch cadence; a SHAPE can
+# be read. Deterministic, no model call, never a word of hers changed: the
+# reading rides the flag row and buys one more pass on the whole-draft paths.
+# It never rewards a tic — a plain line is kept, and a flourish is not voice.
+_WORD_RE = re.compile(r"[A-Za-z0-9']+")
+# The bare acknowledgement token as a whole first sentence: the register
+# rule's "reading the panel out" — Noted. Understood. Yes, I understand.
+_ACK_RE = re.compile(
+    r"^\s*(?:noted|understood|acknowledged|confirmed|done|correct|agreed|right|"
+    r"all right|alright|okay|ok|yes|fair enough|quite right|"
+    r"yes,?\s+i\s+understand|understood,?\s+[^.!?]{0,40})[.!]?\s*$", re.I)
+# Status-report vocabulary. Judged only when the RESAY introduces it — a
+# line that already carried the word is not flattened by keeping it.
+_REPORT_RE = re.compile(
+    r"\b(?:noted|acknowledged|understood|confirmed|verified|implemented|"
+    r"in progress|pending|status)\b", re.I)
+# A sentence about her own wording where the held one was about the thing:
+# the sixth shape (talking about the drift is drift), and the 2026-10-20
+# 19:46 defence nobody asked for.
+_SELF_RE = re.compile(
+    r"\b(?:my (?:earlier|previous|last|first) (?:wording|phrasing|sentence|"
+    r"words|reply|answer)|what i meant(?: to say)?|i should have (?:said|put|"
+    r"worded|phrased)|to be clear|to clarify|in other words|put (?:it )?"
+    r"(?:differently|another way)|let me (?:rephrase|put that)|(?:needlessly|"
+    r"too) vague|made (?:it|the work|that) sound)\b", re.I)
+
+
+def _toks(s):
+    return [w.lower() for w in _WORD_RE.findall(s or "")]
+
+
+def _first_sentence(text):
+    ss = sentences(text or "")
+    return ss[0] if ss else (text or "").strip()
+
+
+def _closing_tag(sent):
+    """The short tag a sentence closes on after its last comma or dash — up
+    to three words, normalised — or None. "…, I suppose." -> "i suppose"."""
+    s = (sent or "").strip().rstrip(".!?…\"'”’ ")
+    m = re.search(r"[,—–-]\s*([^,—–-]{1,40})$", s)
+    if not m:
+        return None
+    tag = " ".join(_toks(m.group(1)))
+    if not tag or len(tag.split()) > 3:
+        return None
+    return tag
+
+
+def _slot_refilled(before, after, pattern):
+    """Is the resay the held sentence with ONLY the fired span swapped for
+    other words — every token before and after it identical? Returns the
+    (hit, replacement) pair when so, else None. A deletion (nothing in the
+    slot) is the cure and reads None; a resay that changed anything else is
+    a different sentence and reads None too."""
+    try:
+        rx = re.compile(pattern, re.I)
+    except re.error:
+        return None
+    m = rx.search(before)
+    if not m:
+        return None
+    pre, post = _toks(before[:m.start()]), _toks(before[m.end():])
+    hit = _toks(m.group(0))
+    at = _toks(after)
+    if not pre and not post:
+        return None
+    if at[:len(pre)] != pre:
+        return None
+    if post:
+        if len(at) < len(pre) + len(post) or at[len(at) - len(post):] != post:
+            return None
+        mid = at[len(pre):len(at) - len(post)]
+    else:
+        mid = at[len(pre):]
+    if not mid or mid == hit:
+        return None
+    return (" ".join(hit), " ".join(mid))
+
+
+def voice_reading(before, after, pattern="", fix="", draft=""):
+    """Read a resay for its voice: {"voice": kept|flat|costume, "why": ...}.
+    `flat` is the report register — the slot refilled on a delete entry (rule
+    55's named failure), a bare acknowledgement opener, report vocabulary the
+    line did not carry, or a sentence about its own wording. `costume` is
+    rule 54's crutch doubled: a closing tag the held line lacked and the
+    draft already leans on elsewhere. Everything else is `kept`."""
+    before = (before or "").strip()
+    after = (after or "").strip()
+    if not after:
+        return {"voice": "kept", "why": "nothing to read"}
+    if (fix or "").lower() == "delete":
+        sw = _slot_refilled(before, after, pattern)
+        if sw:
+            return {"voice": "flat",
+                    "why": "the slot was refilled, not emptied: '%s' became "
+                           "'%s' and the sentence stayed" % sw}
+    fa, fb = _first_sentence(after), _first_sentence(before)
+    if _ACK_RE.match(fa) and not _ACK_RE.match(fb):
+        return {"voice": "flat",
+                "why": "opens on a bare acknowledgement: '%s'" % fa}
+    intro = ({m.lower() for m in _REPORT_RE.findall(after)}
+             - {m.lower() for m in _REPORT_RE.findall(before)})
+    if intro:
+        return {"voice": "flat",
+                "why": "reaches for report vocabulary the line did not "
+                       "have: %s" % ", ".join(sorted(intro))}
+    ms = _SELF_RE.search(after)
+    if ms and not _SELF_RE.search(before):
+        return {"voice": "flat",
+                "why": "talks about its own wording instead of the thing: "
+                       "'%s'" % ms.group(0)}
+    ta, tb = _closing_tag(after), _closing_tag(before)
+    if ta and ta != tb and ta not in " ".join(_toks(before)):
+        for para in (draft or "").splitlines():
+            for s in sentences(para):
+                if near_duplicate(s, before) or near_duplicate(s, after):
+                    continue
+                if _closing_tag(s) == ta:
+                    return {"voice": "costume",
+                            "why": "closes on '%s', a tag the line did not "
+                                   "have and the draft already leans on" % ta}
+    return {"voice": "kept", "why": ""}
+
+
+def scan(text, patterns):
+    flags = []
+    for sent in sentences(text):
+        f = first_flag(sent, patterns)
+        if f:
+            rec = {"sentence": sent, "pattern": f["pattern"],
+                   "note": f["note"]}
+            if f.get("function"):
+                rec["function"] = f["function"]
+            if f.get("fix"):
+                rec["fix"] = f["fix"]
+            if f.get("use"):
+                # Rule 50 (amended): the caller reads mention as "skip the
+                # mirror call, keep the record". Absent means unavailable,
+                # and the caller fires as it always did.
+                rec["use"] = f["use"]
+            flags.append(rec)
+    return flags
+
+
+def split_spoken(response):
+    """(spoken half, tail-including-delimiter) — the delimiter judged the way
+    claudism-capture judges it: its own line, whitespace-tolerant."""
+    lines = response.split("\n")
+    for i, ln in enumerate(lines):
+        if ln.strip() == DELIM:
+            return "\n".join(lines[:i]), "\n".join(lines[i:])
+    return response, ""
+
+
+def splice(response, sentence, rewrite, echo_guard=False):
+    head, tail = split_spoken(response)
+    for cand in (sentence, sentence.strip()):
+        if cand and cand in head:
+            # The echo guard (rule 41a), opt-in per caller: a mirror rewrite
+            # the spoken half already carries as another sentence is spliced
+            # as a DELETION of the held sentence, so the reply says the words
+            # once, where she wrote them. The table-swap fold never sets the
+            # flag — a swap has already sounded, so its fold must keep its
+            # byte-for-byte behaviour.
+            if echo_guard and rewrite.strip() \
+                    and echo_sentence(rewrite, head, cand) is not None:
+                rewrite = ""
+            head = head.replace(cand, rewrite, 1)
+            if not rewrite.strip():
+                # Repair only what deleting a span breaks: the doubled space
+                # the vanished sentence leaves between its neighbours.
+                head = re.sub(r"[ \t]{2,}", " ", head)
+            return head + ("\n" + tail if tail else "")
+    return None
+
+
+def main(argv):
+    mode = argv[0] if argv else ""
+    if mode == "scan":
+        try:
+            patterns, _bad = load_patterns(argv[1])
+        except (IndexError, OSError):
+            patterns = []
+        text = sys.stdin.read()
+        print(json.dumps(scan(text, patterns) if patterns else [],
+                         ensure_ascii=False))
+        return 0
+    if mode == "splice":
+        try:
+            d = json.load(sys.stdin)
+            out = splice(str(d["response"]), str(d["sentence"]),
+                         str(d["rewrite"]), bool(d.get("echo_guard")))
+        except Exception:
+            return 2
+        if out is None:
+            return 3
+        sys.stdout.write(out)
+        return 0
+    if mode == "logflag":
+        try:
+            flags_dir, kind, pid, outcome = argv[1:5]
+            rewrite = argv[5] if len(argv) > 5 else ""
+            rec = json.load(sys.stdin)
+        except Exception:
+            return 2
+        try:
+            append_flag(flags_dir,
+                        flag_row(kind, pid, rec, outcome, rewrite or None))
+        except OSError:
+            return 2
+        return 0
+    if mode == "voice":
+        # Rule 58: {"before", "after", "pattern", "fix", "draft"} on stdin;
+        # the reading on stdout. Any failure is exit 2 and NOTHING printed,
+        # which every caller reads as "no reading" — the resay goes out
+        # exactly as it always did, the row with no voice field.
+        try:
+            d = json.load(sys.stdin)
+            out = voice_reading(str(d.get("before", "")), str(d.get("after", "")),
+                                str(d.get("pattern", "")), str(d.get("fix", "")),
+                                str(d.get("draft", "")))
+        except Exception:
+            return 2
+        print(json.dumps(out, ensure_ascii=False))
+        return 0
+    if mode == "family":
+        # Context for the mirror call, never a gate: anything unreadable
+        # here means the call goes out exactly as it always has.
+        try:
+            patterns, _bad = load_patterns(argv[1])
+            fn = argv[2].strip().lower()
+        except (IndexError, OSError):
+            return 0
+        if fn:
+            for ln in family_lines(patterns, fn):
+                print(ln)
+        return 0
+    if mode == "tableswap":
+        try:
+            phrase_file, flags_dir, kind, pid = argv[1:5]
+        except ValueError:
+            return 2
+        text = sys.stdin.read()
+        try:
+            patterns, _bad = load_patterns(phrase_file)
+        except OSError:
+            patterns = []
+        head, tail = split_spoken(text)
+        out = head
+        for sent in sentences(head) if patterns else []:
+            f = first_flag(sent, patterns)
+            if not f or not f["replaces"]:
+                continue
+            repaired = table_swap(sent, f["rx"], f["replaces"])
+            if repaired is None or sent not in out:
+                continue
+            # Rule 49: the flag log gets the swap BEFORE the swap lands. A
+            # row that cannot be written leaves the sentence exactly as it
+            # was, so the caller's own scan still flags it and it holds and
+            # routes to her as it always did.
+            row = flag_row(kind, pid, {"sentence": sent,
+                                       "pattern": f["pattern"],
+                                       "note": f["note"],
+                                       "use": f.get("use", "")}, "table-swap")
+            row["before"], row["after"] = sent, repaired
+            try:
+                append_flag(flags_dir, row)
+            except OSError:
+                continue
+            out = out.replace(sent, repaired, 1)
+        sys.stdout.write(out + ("\n" + tail if tail else ""))
+        return 0
+    sys.stderr.write("usage: claudism-mirror scan <phrase-file> | splice | "
+                     "logflag <flags-dir> <kind> <pid> <outcome> [rewrite] | "
+                     "tableswap <phrase-file> <flags-dir> <kind> <pid> | "
+                     "family <phrase-file> <function>\n")
+    return 2
+
+
+if __name__ == "__main__":
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except Exception:  # fail open, never fail the caller's turn
+        sys.exit(2)

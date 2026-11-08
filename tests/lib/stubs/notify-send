@@ -1,0 +1,6 @@
+#!/bin/bash
+# The notifier. A test must never raise a notification on the live desktop —
+# tts_verify_spoken announces a failed speech path, and an unstubbed run pops
+# that announcement on his screen every time the suite runs.
+printf '%s\n' "$*" >> "${SANDBOX_NOTIFY_LOG:-/dev/null}"
+exit 0

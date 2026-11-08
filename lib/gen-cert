@@ -1,0 +1,94 @@
+#!/usr/bin/env bash
+# Generate (or refresh) a self-signed TLS certificate for `crab serve`.
+#
+# Why this exists: a browser will not hand a page the microphone over plain
+# http unless the origin is localhost. A phone is not localhost, so the phone
+# client needs https. A real certificate (`tailscale cert`) is nicer, but it
+# needs an account feature flag and working DNS; this path needs neither and
+# works with the network entirely offline. The cost is one "accept the risk"
+# tap on the phone, the first time.
+#
+# Usage: gen-cert <dir>   -> writes <dir>/cert.pem and <dir>/key.pem
+#
+# The certificate names every address the phone might dial: this host's
+# Tailscale name and IPs (when Tailscale is up), the plain hostname, the
+# .local mDNS name, and loopback. Nothing is hardcoded — a machine that has
+# never heard of Tailscale still gets a usable cert.
+set -euo pipefail
+
+DIR="${1:?usage: gen-cert <dir>}"
+CERT="$DIR/cert.pem"
+KEY="$DIR/key.pem"
+DAYS=825          # the maximum most browsers will accept for a leaf cert
+RENEW_WITHIN=$((7 * 86400))
+
+command -v openssl >/dev/null || { echo "gen-cert: openssl not found" >&2; exit 1; }
+
+# Reuse a cert that is still comfortably valid. Regenerating on every start
+# would invalidate the exception the phone already accepted.
+if [ -s "$CERT" ] && [ -s "$KEY" ] \
+   && openssl x509 -in "$CERT" -noout -checkend "$RENEW_WITHIN" >/dev/null 2>&1; then
+    exit 0
+fi
+
+names=()
+add() { for n in "${names[@]:-}"; do [ "$n" = "$1" ] && return; done; names+=("$1"); }
+
+if command -v tailscale >/dev/null && ts=$(tailscale status --json 2>/dev/null); then
+    while read -r n; do [ -n "$n" ] && add "$n"; done < <(
+        printf '%s' "$ts" | python3 -c '
+import json, sys
+try:
+    self_ = json.load(sys.stdin).get("Self") or {}
+except Exception:
+    sys.exit(0)
+dns = (self_.get("DNSName") or "").rstrip(".")
+if dns:
+    print(dns)
+    print(dns.split(".")[0])
+for ip in self_.get("TailscaleIPs") or []:
+    print(ip)
+' 2>/dev/null
+    )
+fi
+
+host=$(hostname 2>/dev/null || echo localhost)
+add "$host"
+add "$host.local"
+add localhost
+add 127.0.0.1
+add ::1
+
+# A bare address has to be an IP SAN — browsers ignore it as a DNS name.
+alt=""
+for n in "${names[@]}"; do
+    if printf '%s' "$n" | grep -qE '^([0-9]{1,3}\.){3}[0-9]{1,3}$|^[0-9a-fA-F:]*:[0-9a-fA-F:]*$'; then
+        alt="$alt,IP:$n"
+    else
+        alt="$alt,DNS:$n"
+    fi
+done
+alt="${alt#,}"
+
+mkdir -p "$DIR"
+chmod 700 "$DIR"
+
+tmpc=$(mktemp "$DIR/.cert.XXXXXX")
+tmpk=$(mktemp "$DIR/.key.XXXXXX")
+trap 'rm -f "$tmpc" "$tmpk"' EXIT
+
+openssl req -x509 -newkey rsa:2048 -nodes \
+    -keyout "$tmpk" -out "$tmpc" -days "$DAYS" \
+    -subj "/CN=$host" -addext "subjectAltName=$alt" \
+    -addext "basicConstraints=critical,CA:FALSE" \
+    -addext "keyUsage=critical,digitalSignature,keyEncipherment" \
+    -addext "extendedKeyUsage=serverAuth" >/dev/null 2>&1
+
+chmod 600 "$tmpk"
+chmod 644 "$tmpc"
+mv "$tmpc" "$CERT"
+mv "$tmpk" "$KEY"
+trap - EXIT
+
+echo "gen-cert: self-signed certificate for $alt" >&2
+echo "gen-cert: $CERT (valid $DAYS days)" >&2

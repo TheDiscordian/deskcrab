@@ -1,0 +1,41 @@
+Source Output #140031
+	Driver: PipeWire
+	Owner Module: n/a
+	Client: 140030
+	Source: 62
+	Sample Specification: float32le 1ch 48000Hz
+	Channel Map: mono
+	Format: pcm, format.sample_format = "\"float32le\""  format.rate = "48000"  format.channels = "1"  format.channel_map = "\"mono\""
+	Corked: yes
+	Mute: no
+	Volume: mono: 65536 / 100% / 0.00 dB
+	        balance 0.00
+	Buffer Latency: 0 usec
+	Source Latency: 0 usec
+	Resample method: PipeWire
+	Properties:
+		client.api = "pipewire-pulse"
+		pulse.server.type = "unix"
+		application.name = "Firefox"
+		application.icon_name = "firefox"
+		application.process.id = "5151"
+		application.process.user = "user"
+		application.process.host = "desk"
+		application.process.binary = "firefox"
+		application.language = "C.UTF-8"
+		window.x11.display = ":1"
+		application.process.machine_id = "00000000000000000000000000000000"
+		media.name = "AudioCallbackDriver"
+		pulse.corked = "true"
+		node.rate = "1/48000"
+		node.latency = "1024/48000"
+		target.object = "62"
+		stream.is-live = "true"
+		node.name = "Firefox"
+		node.want-driver = "true"
+		node.autoconnect = "true"
+		media.class = "Stream/Input/Audio"
+		port.group = "stream.0"
+		object.id = "140631"
+		object.serial = "140031"
+		module-stream-restore.id = "source-output-by-application-name:Firefox"

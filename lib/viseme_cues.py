@@ -1,0 +1,372 @@
+"""Mouth cue tracks derived from the synthesiser's own phoneme record.
+
+piper logs, per synthesised sentence, the exact eSpeak IPA phoneme string it
+spoke and the seconds of audio it produced. This module turns that pair into
+a timed viseme track: which mouth shape stands at which offset from the
+clip's playback start. It is deliberately a pure function of (phonemes,
+duration) — no audio analysis at runtime, no model, no guessing from the
+delivered words — so the same inputs always give the same track and a test
+can hold the whole thing still.
+
+The shapes speak the compact family of specs/face.md rule 20:
+
+  rest    — the expression's own mouth (lip closures land here too: p b m)
+  slight  — barely parted, neutral consonants and reduced vowels
+  open    — open vowels (father, cup, cat)
+  wide    — spread lips (ee, ay, s, sh)
+  round   — rounded lips (oh, oo, w)
+  teeth   — upper teeth on lower lip (f, v)
+
+Timing is proportional: each phoneme carries a relative weight, punctuation
+carries a fixed pause, and the weights are scaled so the track fills the
+clip's measured duration. That is an approximation of piper's internal
+alignment, not a readout of it; the measured error of the whole path is
+recorded in the portrait drawer's review sheets, and the honest bound is
+"phoneme-proportional, anchored to real clip starts", not "frame-exact".
+"""
+
+import json
+import math
+import os
+import re
+import time
+
+# Multi-character IPA sequences first, longest match wins.
+_MULTI = (
+    "aɪə", "aʊə",
+    "eɪ", "aɪ", "ɔɪ", "aʊ", "oʊ", "əʊ", "ɪə", "eə", "ʊə",
+    "iː", "uː", "ɜː", "ɑː", "ɔː", "ɒː", "æː", "ʌː",
+    "tʃ", "dʒ",
+)
+
+_VOWEL_VISEME = {
+    "i": "wide", "iː": "wide", "ɪ": "wide", "eɪ": "wide", "ɪə": "wide",
+    "e": "slight", "ɛ": "slight", "ə": "slight", "ɐ": "slight",
+    "ɜ": "slight", "ɜː": "slight", "eə": "slight",
+    "a": "open", "æ": "open", "æː": "open", "ʌ": "open", "ʌː": "open",
+    "ɑ": "open", "ɑː": "open", "aɪ": "open", "aɪə": "open",
+    "ɒ": "round", "ɒː": "round", "ɔ": "round", "ɔː": "round",
+    "ɔɪ": "round", "o": "round", "oʊ": "round", "əʊ": "round",
+    "u": "round", "uː": "round", "ʊ": "round", "ʊə": "round",
+    "aʊ": "round", "aʊə": "round",
+}
+
+_CONS_VISEME = {
+    "p": "rest", "b": "rest", "m": "rest",
+    "f": "teeth", "v": "teeth",
+    "s": "wide", "z": "wide", "ʃ": "wide", "ʒ": "wide",
+    "tʃ": "wide", "dʒ": "wide", "j": "wide",
+    "w": "round",
+    "t": "slight", "d": "slight", "n": "slight", "l": "slight",
+    "k": "slight", "ɡ": "slight", "g": "slight", "ŋ": "slight",
+    "h": "slight", "ɹ": "slight", "r": "slight", "ɾ": "slight",
+    "θ": "slight", "ð": "slight", "x": "slight", "ʔ": "slight",
+}
+
+# Relative time weights. Long vowels and diphthongs hold the mouth longest;
+# stops barely register.
+_WEIGHT = {"vowel": 1.6, "long_vowel": 2.3, "consonant": 0.7, "h": 0.45}
+_PAUSE = {",": 0.22, ";": 0.28, ":": 0.28,
+          ".": 0.34, "!": 0.34, "?": 0.34, "…": 0.4}
+
+_IGNORE = set("ˈˌː ‍͡()")   # stress, length alone, ties
+
+MIN_CUE = 0.045   # cues shorter than this merge into their neighbour
+
+_PIPER_PHONEMES = re.compile(r"Converting \d+ phoneme\(s\) to ids: (.*)$")
+_PIPER_DURATION = re.compile(r"Synthesized ([0-9.]+) second")
+
+
+def _tokens(ipa):
+    """Greedy longest-match tokenisation of an eSpeak IPA string."""
+    out, i = [], 0
+    while i < len(ipa):
+        ch = ipa[i]
+        matched = None
+        for m in _MULTI:
+            if ipa.startswith(m, i):
+                matched = m
+                break
+        if matched:
+            out.append(matched)
+            i += len(matched)
+            continue
+        if ch in _PAUSE:
+            out.append(ch)
+        elif ch in _IGNORE:
+            pass
+        elif ch.strip():
+            out.append(ch)
+        else:
+            out.append(" ")
+        i += 1
+    return out
+
+
+def _classify(tok):
+    """(viseme, weight) for one token; None for word gaps."""
+    if tok in _VOWEL_VISEME:
+        weight = (_WEIGHT["long_vowel"]
+                  if len(tok) > 1 or tok.endswith("ː")
+                  else _WEIGHT["vowel"])
+        return _VOWEL_VISEME[tok], weight
+    if tok in _CONS_VISEME:
+        weight = _WEIGHT["h"] if tok == "h" else _WEIGHT["consonant"]
+        return _CONS_VISEME[tok], weight
+    # An IPA character this table does not know: treat as a neutral
+    # consonant rather than dropping time on the floor.
+    return "slight", _WEIGHT["consonant"]
+
+
+def cue_track(ipa, duration):
+    """[[offset_seconds, viseme], ...] for one clip of `duration` seconds.
+
+    The track always begins at 0 and always ends with a `rest` cue, so a
+    viewer that plays it to the end has closed the mouth without needing
+    any further message.
+    """
+    duration = max(float(duration), 0.0)
+    if duration <= 0 or not (ipa or "").strip():
+        return [[0.0, "rest"]]
+
+    toks = _tokens(ipa)
+    segs = []          # (viseme, weight) speech segments
+    pause_total = 0.0
+    for tok in toks:
+        if tok == " ":
+            continue
+        if tok in _PAUSE:
+            segs.append(("rest", ("pause", _PAUSE[tok])))
+            pause_total += _PAUSE[tok]
+            continue
+        segs.append(_classify(tok))
+
+    weight_total = sum(w for _v, w in segs if not isinstance(w, tuple))
+    speech_time = max(duration - pause_total, duration * 0.5)
+    scale = (speech_time / weight_total) if weight_total else 0.0
+    # If punctuation pauses alone would overflow the clip, shrink them too.
+    pause_scale = 1.0
+    if pause_total and speech_time + pause_total > duration:
+        pause_scale = max(duration - speech_time, 0.0) / pause_total
+
+    cues, t = [], 0.0
+    for viseme, w in segs:
+        dt = w[1] * pause_scale if isinstance(w, tuple) else w * scale
+        if dt <= 0:
+            continue
+        if cues and (cues[-1][1] == viseme or dt < MIN_CUE):
+            # Merge into the standing cue rather than flickering.
+            t += dt
+            continue
+        cues.append([round(t, 3), viseme])
+        t += dt
+    if not cues or cues[0][0] > 0:
+        cues.insert(0, [0.0, cues[0][1] if cues else "rest"])
+    if cues[-1][1] != "rest":
+        cues.append([round(min(t, duration), 3), "rest"])
+    return cues
+
+
+def piper_records(debug_text):
+    """The ordered phoneme/duration pairs in one Piper ``--debug`` log.
+
+    Piper writes a phoneme line followed by a duration line for each input
+    utterance.  Other stderr (including ffmpeg's) is ignored.  A duration
+    without a preceding phoneme line is not useful for mouth motion and is
+    deliberately skipped.
+    """
+    records = []
+    ipa = ""
+    for line in str(debug_text or "").splitlines():
+        match = _PIPER_PHONEMES.search(line)
+        if match:
+            ipa = match.group(1).strip()[:4096]
+            continue
+        match = _PIPER_DURATION.search(line)
+        if not match or not ipa:
+            continue
+        try:
+            duration = float(match.group(1))
+        except ValueError:
+            ipa = ""
+            continue
+        if math.isfinite(duration) and duration > 0:
+            records.append({"phonemes": ipa, "duration": duration})
+        ipa = ""
+        if len(records) >= 64:
+            break
+    return records
+
+
+def cue_document(debug_text, measured_duration):
+    """A retained phone-clip document from Piper's log and the real file.
+
+    One Opus file may contain several Piper input lines (for example, an
+    em-dash pause made by ``TTS_FIXES``).  Their own durations anchor the
+    cue pieces; any measured time left in the encoded file is divided into
+    resting gaps after those pieces.  The final file duration remains the
+    authority, and every gap therefore closes the mouth naturally.
+    """
+    try:
+        measured = float(measured_duration)
+    except (TypeError, ValueError):
+        return None
+    if not math.isfinite(measured) or measured <= 0:
+        return None
+    records = piper_records(debug_text)
+    if not records:
+        return None
+
+    spoken = sum(r["duration"] for r in records)
+    gap = max(0.0, measured - spoken) / len(records)
+    cues = []
+    offset = 0.0
+    for record in records:
+        for cue_offset, viseme in cue_track(
+                record["phonemes"], record["duration"]):
+            at = round(min(offset + cue_offset, measured), 3)
+            if cues and cues[-1][1] == viseme:
+                continue
+            cues.append([at, viseme])
+        offset += record["duration"] + gap
+        if offset < measured and (not cues or cues[-1][1] != "rest"):
+            cues.append([round(offset, 3), "rest"])
+    if not cues:
+        return None
+    if cues[-1][1] != "rest":
+        cues.append([round(measured, 3), "rest"])
+    return {
+        "version": 1,
+        "duration": round(measured, 3),
+        "phoneme_records": [
+            {"phonemes": r["phonemes"], "duration": round(r["duration"], 3)}
+            for r in records
+        ],
+        "cues": cues[:400],
+    }
+
+
+def write_cue_document(debug_path, measured_duration, output_path):
+    """Atomically retain a cue document.  False means cues were unavailable."""
+    try:
+        with open(debug_path, errors="replace") as fh:
+            doc = cue_document(fh.read(), measured_duration)
+        if doc is None:
+            return False
+        tmp = "%s.%d.tmp" % (output_path, os.getpid())
+        with open(tmp, "w") as fh:
+            json.dump(doc, fh, ensure_ascii=False, separators=(",", ":"))
+        os.replace(tmp, output_path)
+        return True
+    except Exception:
+        try:
+            os.unlink(tmp)
+        except (OSError, UnboundLocalError):
+            pass
+        return False
+
+
+def stream_debug_to_broker(lines, clip_prefix, lead=0.25,
+                           sentence_silence=0.2, count_path=""):
+    """Drain a live Piper debug stream and publish each utterance's cues.
+
+    The caller keeps Piper's raw stdout connected straight to playback.  This
+    independent stderr drain therefore cannot put cue preparation in front of
+    a spoken sample.  After the first broker failure it keeps draining but
+    stops connecting, so an absent face cannot back-pressure the voice.
+    """
+    ipa = ""
+    count = 0
+    burst_end = 0.0
+    broker_available = True
+    try:
+        lead = max(0.0, float(lead))
+        sentence_silence = max(0.0, float(sentence_silence))
+    except (TypeError, ValueError):
+        lead, sentence_silence = 0.25, 0.2
+    for raw_line in lines:
+        line = str(raw_line or "").rstrip("\n")
+        match = _PIPER_PHONEMES.search(line)
+        if match:
+            ipa = match.group(1).strip()[:4096]
+            continue
+        match = _PIPER_DURATION.search(line)
+        if not match or not ipa:
+            continue
+        try:
+            duration = float(match.group(1))
+        except ValueError:
+            ipa = ""
+            continue
+        if not math.isfinite(duration) or duration <= 0:
+            ipa = ""
+            continue
+        # The broker bounds one voice burst to 64 utterances. Keep draining
+        # Piper after that bound: closing its stderr reader can SIGPIPE the
+        # synthesiser and would turn a face limit into lost speech.
+        if count >= 64:
+            ipa = ""
+            continue
+        count += 1
+        now = time.time()
+        start = max(burst_end, now + lead)
+        burst_end = start + duration + sentence_silence
+        if broker_available:
+            try:
+                import face_state
+                reply = face_state.send_cmd({
+                    "cmd": "speak",
+                    "clips": [{
+                        "id": "%s-%d" % (str(clip_prefix)[:56], count),
+                        "start": start,
+                        "duration": duration,
+                        "cues": cue_track(ipa, duration),
+                    }],
+                }, timeout=0.08)
+                broker_available = bool(reply and reply.get("ok"))
+            except Exception:
+                broker_available = False
+        ipa = ""
+    if count_path:
+        try:
+            tmp = "%s.%d.tmp" % (count_path, os.getpid())
+            with open(tmp, "w") as fh:
+                fh.write(str(count) + "\n")
+            os.replace(tmp, count_path)
+        except Exception:
+            pass
+    return count
+
+
+def end_burst(clip_prefix, count):
+    """Close one local utterance burst with a single bounded broker call."""
+    try:
+        count = max(0, min(64, int(count)))
+        if count == 0:
+            return True
+        import face_state
+        reply = face_state.send_cmd({
+            "cmd": "speak-end-many",
+            "ids": ["%s-%d" % (str(clip_prefix)[:56], i)
+                    for i in range(1, count + 1)],
+        }, timeout=0.08)
+        return bool(reply and reply.get("ok"))
+    except Exception:
+        return False
+
+
+if __name__ == "__main__":
+    import sys
+    if sys.argv[1:2] == ["--piper-debug"] and len(sys.argv) == 5:
+        raise SystemExit(0 if write_cue_document(
+            sys.argv[2], sys.argv[3], sys.argv[4]) else 1)
+    if sys.argv[1:2] == ["--stream-broker"] and len(sys.argv) in (4, 5):
+        count_path = sys.argv[4] if len(sys.argv) == 5 else ""
+        stream_debug_to_broker(sys.stdin, sys.argv[2], sys.argv[3],
+                               count_path=count_path)
+        raise SystemExit(0)
+    if sys.argv[1:2] == ["--end-burst"] and len(sys.argv) == 4:
+        raise SystemExit(0 if end_burst(sys.argv[2], sys.argv[3]) else 1)
+    ipa = sys.argv[1] if len(sys.argv) > 1 else "həlˈoʊ wˈɜːld"
+    dur = float(sys.argv[2]) if len(sys.argv) > 2 else 1.4
+    print(json.dumps(cue_track(ipa, dur)))

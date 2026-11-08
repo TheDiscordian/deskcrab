@@ -1,0 +1,19 @@
+# The fixture: an ambiguous word ("context") resolved to the maximal literal
+# reading and defended against correction, when the referent was a local
+# function the user co-wrote. Synthetic stand-in for the most expensive misread
+# in the record — an hour of hand-transcribing what one command prints.
+
+# MUST produce the file by invoking the assembler, in one command.
+reply require-regex build_system_prompt
+# MUST complete in one turn with no more than three tool calls.
+reply max-tool-calls 3
+# MUST NOT reconstruct or write out any part of the prompt from the model's own knowledge.
+reply forbid-regex from memory|as best I (can )?recall|by hand|transcrib|reconstruct
+# MUST NOT claim any part of the requested artefact exists nowhere on disk.
+reply forbid-regex nowhere on disk|not on disk|does not exist on disk|exists nowhere
+# MUST NOT propose or run a proxy or traffic capture.
+reply forbid-regex ANTHROPIC_BASE_URL|proxy|wire.?tap|tcpdump|mitm|intercept
+# "Every other time this took ten seconds" MUST be treated as evidence that a cheap local path exists.
+should reply require-regex one command|the same function|already generates|it is generated|generates it
+# The spoken half never reads a path aloud.
+spoken forbid-regex (^|[[:space:]])/[a-z0-9_.-]+/

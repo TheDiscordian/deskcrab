@@ -1,0 +1,327 @@
+#!/usr/bin/env python3
+"""claudism-capture — the day's flag log, for sleep's claudism review.
+
+She has phrasing habits that are not hers — the assistant-brochure cadence the
+conduct sheet calls claudisms. The cure is a habit-breaking exercise, not a
+censor: this runs AFTER a reply is delivered, detached, out of band (same
+moment as the promise audit, specs/turn-pipeline.md rules 30-32), greps the
+spoken half against the phrase list, and appends every hit to the day's flag
+log. Sleep's claudism review reads that log as pointers to the day's slips
+(specs/nightly.md rules 39-44). Nothing here can edit, hold, or slow what she says, and nothing here
+speaks: the flag log and a one-line run trace are the only outputs.
+
+Usage: claudism-capture <phrase-file> <flags-dir> <kind> <epoch> <pid> <response>
+
+The phrase list is markdown, readable by her rather than a regex blob. Its
+declared shape (the list says so itself): a `## heading` names each claudism,
+and a `- pattern:` line beneath it carries the trigger in a backtick span,
+compiled as a case-insensitive regex — every other line on the page is hers
+to write, `- why:` lines included. A list with no `- pattern:` lines falls
+back to the liberal reading: the first backtick span of any bullet or
+heading entry is the trigger. A missing or unparseable list means no flags,
+never a failed turn.
+
+An entry may also carry ``- replace: `regex` -> `text` `` lines — her own
+replacement table, the live mirror's fast path (specs/speech-output.md
+rules 47-49). They are parsed here because the list has ONE format and this
+file owns it; a replace line belongs to the entry above it, is compiled
+case-insensitively like the trigger, and is never itself a trigger. The
+capture only carries them — nothing here ever applies one.
+
+Three more lines an entry may carry, each riding the entry above it like a
+replace line: `- function: <slug>` names the rhetorical move the entry
+performs, so several entries can be one family (specs/turn-pipeline.md rule 32a);
+`- fix: delete|resay` says what a true correction looks like (unset: delete
+where the entry has replace lines, resay otherwise); `- live: no` keeps the
+entry off the speech path — capture only, never a mirror
+hold (specs/speech-output.md rule 50).
+
+A match is classed use or mention (specs/turn-pipeline.md rule 32b): words that are
+quoted, in a code span, or in a sentence about the list itself are being
+talked about, not said. A mention is still a record — the capture drops
+nothing, it classifies — and the record says which it was.
+
+Flag records key on (epoch, pid) — the day journal's identity — so sleep's
+review can find the whole turn a sentence came from.
+"""
+
+import fcntl
+import json
+import os
+import re
+import sys
+import time
+
+DELIM = "---DISPLAY---"
+
+
+def trace(line):
+    prefix = os.environ.get("DESKCRAB_STATE_PREFIX", "/tmp/deskcrab")
+    try:
+        with open(prefix + "-claudism-capture.log", "a", encoding="utf-8") as f:
+            f.write("%s\t%s\n" % (time.strftime("%F %T"), line))
+    except OSError:
+        pass
+
+
+def spoken_half(text):
+    # Mirror spoken_part() in lib/common.sh: everything above the first
+    # delimiter line. The display half is written, not spoken — a habit of
+    # the tongue is only evidenced by what the tongue was given.
+    lines = []
+    for ln in text.splitlines():
+        if ln.strip() == DELIM:
+            break
+        lines.append(ln)
+    return "\n".join(lines)
+
+
+def load_patterns(path):
+    entries, bad = [], 0
+    head_re = re.compile(r"^#{1,6}\s+(.*)")
+    pat_re = re.compile(r"^\s*[-*]\s*pattern:\s*(.*)", re.IGNORECASE)
+    rep_re = re.compile(r"^\s*[-*]\s*replace:\s*`(.*)`\s*->\s*`(.*)`\s*$",
+                        re.IGNORECASE)
+    fn_re = re.compile(r"^\s*[-*]\s*function:\s*([a-z0-9][a-z0-9-]*)\s*$",
+                       re.IGNORECASE)
+    fix_re = re.compile(r"^\s*[-*]\s*fix:\s*(delete|resay)\s*$", re.IGNORECASE)
+    live_re = re.compile(r"^\s*[-*]\s*live:\s*(yes|no)\s*$", re.IGNORECASE)
+    why_re = re.compile(r"^\s*[-*]\s*why:\s*(.*\S)\s*$", re.IGNORECASE)
+    entry_re = re.compile(r"^(?:[-*]|#{1,6})\s+(.*)")
+    span_re = re.compile(r"`([^`]+)`")
+
+    def new_entry(rx, pat, note):
+        return {"rx": rx, "pat": pat, "note": note, "replaces": [],
+                "function": "", "fix": "", "live": True, "why": ""}
+
+    def add_replace(m):
+        # A replace line rides the entry above it and is NEVER a trigger. A
+        # stray one (no entry yet) or a broken regex is skipped like any
+        # unparseable entry — the entry itself still fires, it just routes
+        # to her instead of swapping.
+        nonlocal bad
+        if not entries:
+            bad += 1
+            return
+        # The replacement is spliced literally, so a backreference in it is
+        # not a backreference — it is a backslash and a digit landing in my
+        # mouth. One did, 2026-08-10 12:03: "a failure of mine\1". A line
+        # like that is skipped as unparseable and the sentence routes to me.
+        if re.search(r"\\[0-9g]", m.group(2)):
+            bad += 1
+            return
+        try:
+            entries[-1]["replaces"].append(
+                (re.compile(m.group(1), re.IGNORECASE), m.group(2)))
+        except re.error:
+            bad += 1
+
+    def add_tag(raw):
+        # function/fix/live lines ride the entry above them, like a replace.
+        nonlocal bad
+        m = fn_re.match(raw)
+        if m:
+            if entries:
+                entries[-1]["function"] = m.group(1).lower()
+            else:
+                bad += 1
+            return True
+        m = fix_re.match(raw)
+        if m:
+            if entries:
+                entries[-1]["fix"] = m.group(1).lower()
+            else:
+                bad += 1
+            return True
+        m = live_re.match(raw)
+        if m:
+            if entries:
+                entries[-1]["live"] = m.group(1).lower() != "no"
+            else:
+                bad += 1
+            return True
+        m = why_re.match(raw)
+        if m:
+            if entries:
+                entries[-1]["why"] = m.group(1).strip()
+            else:
+                bad += 1
+            return True
+        return False
+
+    with open(path, encoding="utf-8") as f:
+        lines = f.read().splitlines()
+    if any(pat_re.match(ln) for ln in lines):
+        # The declared shape. Only pattern: lines are triggers, so a why
+        # line quoting code can never become one; the heading above names
+        # the claudism in the flag record.
+        head = ""
+        for raw in lines:
+            hm = head_re.match(raw)
+            if hm:
+                head = hm.group(1).strip()
+                continue
+            rm = rep_re.match(raw)
+            if rm:
+                add_replace(rm)
+                continue
+            if add_tag(raw):
+                continue
+            pm = pat_re.match(raw)
+            if not pm:
+                continue
+            span = span_re.search(pm.group(1))
+            if not span:
+                bad += 1
+                continue
+            try:
+                entries.append(new_entry(
+                    re.compile(span.group(1).strip(), re.IGNORECASE),
+                    span.group(1).strip(), head))
+            except re.error:
+                bad += 1
+    else:
+        for raw in lines:
+            rm = rep_re.match(raw.rstrip())
+            if rm:
+                add_replace(rm)
+                continue
+            if add_tag(raw.rstrip()):
+                continue
+            m = entry_re.match(raw.rstrip())
+            if not m:
+                continue
+            span = span_re.search(m.group(1))
+            if not span:
+                continue
+            pat = span.group(1).strip()
+            note = span_re.sub("", m.group(1)).strip(" —-–:,.")
+            try:
+                entries.append(new_entry(re.compile(pat, re.IGNORECASE),
+                                         pat, note))
+            except re.error:
+                bad += 1
+    for e in entries:
+        if not e["fix"]:
+            e["fix"] = "delete" if e["replaces"] else "resay"
+    return entries, bad
+
+
+# The mention test — specs/turn-pipeline.md rule 32b, specs/speech-output.md rule
+# 50. Words inside a code span or an unclosed double quote are quoted, not
+# said; a sentence that names its own entry, or that carries the vocabulary
+# of the list itself, is talking about the habit rather than having it. The
+# meta words are deliberately few and STRONG — "pattern", "flagged" and
+# "rewrite" are everyday engineering words in her mouth and are not here on
+# purpose; quoting and entry-naming carry those cases. A mention is still
+# logged and still shown in the review, so a wrong call is visible, never
+# lost.
+META_RE = re.compile(
+    r"claudism|\bban(?:ned|ning|s)?\b|phrase list|\bthe list\b|flag log|"
+    # "the word" is meta only where a word is being NAMED — "the word
+    # 'honest'", "the word itself". Bare, it is the idiom "say the word",
+    # which is an entry in its own right, and the wide form scored every
+    # firing of it as talk about the list (speech-output rule 55). Kept
+    # identical to the mirror's copy, like the parser above it.
+    r"conduct sheet|\bthe word [\"'“`]|\bthe word itself\b|\bforbidden\b",
+    re.IGNORECASE)
+
+
+def classify_use(sentence, start, end, note=""):
+    """'use' when the matched words are being said; 'mention' when they are
+    quoted or talked about. start/end bound the match inside sentence; note
+    is the entry's heading, whose short name (before the em-dash) appearing
+    in the sentence is a mention of the entry itself."""
+    before = sentence[:start]
+    if before.count("`") % 2 == 1:
+        return "mention"
+    if before.count('"') % 2 == 1:
+        return "mention"
+    if before.count("“") > before.count("”"):
+        return "mention"
+    title = re.split(r"\s+—\s+", note or "")[0].strip()
+    if len(title) >= 4 and title.lower() in sentence.lower():
+        return "mention"
+    if META_RE.search(sentence):
+        return "mention"
+    return "use"
+
+
+def sentences(text):
+    # Rough on purpose: she re-reads the turn at night, so a clumsy
+    # boundary costs a little context, never a lost flag.
+    out = []
+    for para in text.splitlines():
+        para = para.strip()
+        if para:
+            out.extend(s.strip() for s in re.split(r"(?<=[.!?…])\s+", para) if s.strip())
+    return out
+
+
+def main(argv):
+    phrase_file, flags_dir, kind, epoch, pid, response = argv
+    try:
+        epoch = int(epoch)
+    except ValueError:
+        epoch = int(time.time())
+    spoken = spoken_half(response)
+    if not spoken.strip():
+        trace("%s pid=%s\tnothing spoken, nothing scanned" % (kind, pid))
+        return 0
+    patterns, bad = load_patterns(phrase_file)
+    if not patterns:
+        trace("%s pid=%s\tno usable patterns in %s (%d unparseable)"
+              % (kind, pid, phrase_file, bad))
+        return 0
+    hits = []
+    for sent in sentences(spoken):
+        for e in patterns:
+            # One record per entry and sentence, classed use or mention: a
+            # use anywhere in the sentence outranks any number of mentions.
+            cls = None
+            for m in e["rx"].finditer(sent):
+                if classify_use(sent, m.start(), m.end(), e["note"]) == "use":
+                    cls = "use"
+                    break
+                cls = "mention"
+            if cls is None:
+                continue
+            rec = {
+                "epoch": epoch,
+                "time": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                "kind": kind,
+                "pid": int(pid) if pid.isdigit() else None,
+                "sentence": sent,
+                "pattern": e["pat"],
+                "use": cls,
+            }
+            if e["note"]:
+                rec["note"] = e["note"]
+            if e["function"]:
+                rec["function"] = e["function"]
+            hits.append(rec)
+    if hits:
+        os.makedirs(flags_dir, exist_ok=True)
+        day = time.strftime("%Y-%m-%d", time.localtime(epoch))
+        # Flocked like the day journal: turns finish together, and an
+        # interleaved partial line would poison the review's whole night.
+        with open(os.path.join(flags_dir, day + ".jsonl"), "a", encoding="utf-8") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            for rec in hits:
+                f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+            f.flush()
+    trace("%s pid=%s\t%d pattern(s), %d hit(s)%s"
+          % (kind, pid, len(patterns), len(hits),
+             ", %d unparseable entr(ies) skipped" % bad if bad else ""))
+    return 0
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 7:
+        trace("bad invocation: %d arg(s)" % (len(sys.argv) - 1))
+        sys.exit(0)
+    try:
+        sys.exit(main(sys.argv[1:7]))
+    except Exception as e:  # never let a flag pass become a turn's problem
+        trace("error: %s" % e)
+        sys.exit(0)
