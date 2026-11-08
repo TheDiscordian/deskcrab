@@ -304,13 +304,15 @@ for reduction here — every rule below makes the queue **visible and bounded**,
        writing: that these words were not worth opening her mouth for. A wake that chose to speak
        has something it judges worth saying out loud and that choice stands whatever the clock
        says — rule 29 is untouched. What is held is a note, and a note keeps.
-     - **Held, never dropped — at hold time.** The words go back through the queue's one door as
-       an event wake `WAKE_HOT_RETRY` out — comfortably past the hot window, so the retry is not a
-       second interruption — with the held words in the reason, so she meets them again in a quiet
-       minute and decides afresh with the conversation in front of her. What the comeback then
-       faces at fire time is rule 27b's staleness gate, which may retire a note the intervening
-       conversation has already covered — journalled and ledgered, never silently. The booking is
-       capped
+     - **Held, never dropped — and the retry is seconds, not minutes.** The words wait IN THIS
+       PROCESS for the heat to pass (rule 27g) and go out the moment it does, judged first against
+       what was said while they waited. Only a wait that ran dry hands them to the queue: the
+       words go back through the queue's one door as an event wake `WAKE_HOT_RETRY` out —
+       comfortably past the hot window, so the retry is not a second interruption — with the held
+       words in the reason, so she meets them again in a quiet minute and decides afresh with the
+       conversation in front of her. What the comeback then faces at fire time is rule 27b's
+       staleness gate, which may retire a note the intervening conversation has already covered —
+       journalled and ledgered, never silently. The booking is capped
        (`WAKE_HOT_HOLD_CAP`, scoped to the held-reason prefix): a stack of held asides all landing
        on the first quiet minute is the same storm one delay later. The comeback is a booking like
        any other and the cap can refuse it, so the hold MUST read the booking's answer BEFORE the
@@ -370,7 +372,8 @@ for reduction here — every rule below makes the queue **visible and bounded**,
        what has been said since — never its worth. It exists on the user's instruction, the night
        of the incident.
 27c. A wake whose delivery moment finds an interactive turn IN FLIGHT is held WHOLE — the spoken
-     half included — and comes back through the queue exactly as rule 27a's hold does. In flight
+     half included — and comes back exactly as rule 27a's hold does: rule 27g's wait in this
+     process first, the queue only when that wait runs dry. In flight
      is mechanical, read from the delivery queue's own tickets
      ([turn-pipeline.md](turn-pipeline.md) rule 15a): a desk or phone turn takes its ticket before
      the prompt is built and releases it when the reply has been delivered, judged alive by pid
@@ -383,9 +386,10 @@ for reduction here — every rule below makes the queue **visible and bounded**,
      - The boundary with rule 29 holds: nothing reads the reply. The gate reads the pipeline's own
        state — tickets and pids — and decides WHEN, never WHETHER. The words go back through the
        queue's one door with the held stamp, so rule 27b judges the comeback for staleness and a
-       wake that chose to speak is spoken in the first quiet minute unless the record proves the
-       exchange already covered it. Rule 20 holds too: the session ran, the work is journalled,
-       the audit and the judges fired — only the delivery moves.
+       wake that chose to speak is spoken in the first clear moment — the wait's, or the
+       comeback's — unless the record proves the exchange already covered it. Rule 20 holds too:
+       the session ran, the work is journalled, the audit and the judges fired — only the
+       delivery moves.
      - Held, never dropped, on rule 27a's own terms: the same booking (the hot-hold identity, the
        held-reason prefix, the stamp, the cap), the same read-the-booking-answer-first
        discipline. The journal line says in those words that a turn was in flight, and a hold the
@@ -475,11 +479,60 @@ for reduction here — every rule below makes the queue **visible and bounded**,
      - Only the answer changes. The mute, its journal wording and rule 40b's `idle-defer` reason
        are untouched; the other busy readings — the push-to-talk pidfile, the speech pidfile, a
        parley recording — stand before this one exactly as before.
+27g. A held note's retry is SECONDS, in the process that holds it — never the five-minute
+     comeback alone. Rules 27a and 27c hold the words; this rule says how they come back. The
+     words are already in hand, so the retry is a poll, not a re-fire: every gate that can hold a
+     note is re-read together every `WAKE_HOT_POLL` seconds (default 2) — a turn of his in flight,
+     the user busy, and, for output with no spoken half, the hot conversation — and the words are
+     delivered the moment every gate answers clear, exactly as they would have been with no hold
+     at all: no second generation, no new wake, nothing booked. A wake that chose to speak waits
+     for the flight and busy gates alone, because rule 27a's boundary holds: a note is held for
+     heat, and a spoken reply speaks whatever the clock says. The need was measured: a quiet
+     thought held in a live conversation re-booked itself five minutes out, and by the time it
+     came back the moment it belonged to was gone — in chess several plies can pass (the user,
+     2026-08-20 00:38).
+     - **One budget, because the wake lock is held.** The wait holds the run lock for its whole
+       length, so it is bounded by `WAKE_HOT_WAIT` (default 300 s): one deadline for the whole
+       delivery however many gates close and open in turn, so a ping-pong between the ticket
+       queue and the microphone cannot hold the lock indefinitely. Three things end the wait
+       early, each named on the speech log and on the journal line: quiet hours arriving (the
+       night gate had its say when delivery began, and the wait must not talk past it); another
+       event wake standing in the urgent lane for the lock this process holds (rule 21b promised
+       it the next turn, and a note waiting for a quiet minute must not keep a chess move or a
+       message waiting); and the budget running out.
+     - **The queue is the fallback, not the retry.** A wait that ended early or ran dry hands the
+       words to rule 27a's booking exactly as before — the hot-hold identity, the held-reason
+       prefix, the stamp, the cap, the read-the-booking-answer-first discipline, `WAKE_HOT_RETRY`
+       out — and the journal line says in those words why the wait ended before it says the
+       comeback is coming. `WAKE_HOT_WAIT=0` switches the wait off and restores the flat re-book
+       exactly.
+     - **Rule 27b's question is asked of a note that waited, too.** The fire-time gate judges a
+       comeback against the record since the hold stamp; a note that never left the process has no
+       comeback, but the exchange that makes it stale can land in the very minutes it waited — the
+       2026-08-15 shape compressed to seconds, and the shape of a turn in flight whose reply
+       answers the note's own news. So once the wait clears, and before the words go out, the
+       same record is read (the day journal, from the EARLIER of this session's start and the
+       start of any turn already in flight when the wait began — a turn's entry carries its own
+       start, which can predate the wake session by its whole generation) and the same judge is
+       asked the same one question. Nothing said since, and the judge is never called. One record
+       is judged once: a SAY stands until the record grows. Only a positive DROP retires the note
+       — journalled as dropped after it waited, ledgered `dropped-stale`, traced — and a judge
+       that fails delivers. The read waits one poll past the clear, because a turn writes its
+       journal entry after it releases its ticket.
+     - **Delivered once, structurally.** A wait that cleared delivers and books nothing; a wait
+       that ended books and delivers nothing; the identical-reason coalesce at the door folds a
+       second re-book into the pending one. Nothing here reads the reply to decide WHETHER (rule
+       29's boundary): the wait reads tickets, pids, the pidfiles and the clock, and the staleness
+       read is rule 27b's own.
+     - **The wait announces itself** on the speech log — entered, cleared, or ended and why —
+       because a delivery held here is a silence, and every silence explains itself somewhere
+       ([speech-output.md](speech-output.md) rule 53).
 28. A wake that regrouped against a live turn MUST carry the other reply forward as one reply, never
     restate it, never queue its own thought for later, and never default to silence. Rule 27c is
     not that queueing: the choice it forbids is the WRITER'S — a reply that answers "later" instead
     of folding — while 27c holds a folded reply's delivery for the seconds the other turn is still
-    owed its slot, and hands the words straight back through the queue.
+    owed its slot (rule 27g's wait), and hands the words back through the queue only when that
+    wait runs dry.
 29. No mechanism may judge a wake's written reply after the fact and decide it is not worth voicing.
     Silence is chosen while writing or not at all.
 29a. The one standing exception, on the user's instruction (2026-08-07, reaffirmed 2026-08-10): a
@@ -878,7 +931,8 @@ flowchart TD
   G2 -->|yes| G3{"quiet hours, a turn in flight,<br/>or user busy?"}
   G3 -->|"yes, a job's return (rule 27d)"| G3c["wait, bounded, for the moment to pass<br/>dry: re-book whole — original booker,<br/>original reason, stamped once"]
   G3c -->|cleared| G4
-  G3 -->|yes, a turn in flight| G3b["hold whole: journal, re-book the words<br/>through the queue (rule 27c)"]
+  G3 -->|yes, a turn in flight| G3b["wait, bounded, for the moment to pass (rule 27g)<br/>cleared: rule 27b's question, then deliver<br/>dry: journal, re-book the words through the queue (rule 27c)"]
+  G3b -->|cleared, still news| G4
   G3 -->|yes, otherwise| G3a["suppress speech<br/>journal what was swallowed"]
   G3 -->|no| G4["append to the conversation<br/>then speak, then show"]
   G1a & G2a & G3a & G4 --> E["ensure_next_wake"]
@@ -987,13 +1041,26 @@ no notifier and no conversation and books itself back with its words in the reas
 into a cold one is delivered; a SPOKEN wake is delivered hot, which is where rule 29's boundary
 sits; `CONVO_HOT_WINDOW=0` restores the old behaviour; the cap bounds the held queue, a hold the
 cap refused is journalled as refused rather than as a comeback, and a display-only hold's comeback
-carries the built content itself, not a placeholder),
+carries the built content itself, not a placeholder — rule 27g's wait pinned to a one-second
+budget throughout, so the queue fallback is what runs),
 `tests/test_wake_flight_hold.sh` (rule 27c: a SPOKEN wake fired while a desk turn holds a live
 delivery-queue ticket reaches no speaker, no notifier, no window and no conversation, journals
 that a turn was in flight, and books its words back through the queue under the hot-hold identity
 with the held stamp on the reason; the same wake with the ticket's process dead — or the ticket
 released — delivers in full, which is what makes the hold mean something; `WAKE_FLIGHT_HOLD=0`
-restores the old behaviour exactly),
+restores the old behaviour exactly — rule 27g's wait pinned to a one-second budget throughout),
+`tests/test_wake_hot_wait.sh` (rule 27g: the wait itself under a controlled clock — a hot
+conversation that goes cold is eligible again within one poll of the window's end and never at
+the five-minute comeback, a conversation that keeps going holds the words to the deadline and not
+a second past it, a turn in flight and a busy moment hold them too, quiet hours and an event wake
+in the urgent lane end the wait by name, the deadline is one budget across every call, and
+`WAKE_HOT_WAIT=0` is the flat re-book; then through `crab wake`: a quiet note held hot is
+delivered exactly once, the moment the conversation cools and only after it, with nothing booked;
+a conversation that keeps going delivers nothing while it goes on and the note lands once it
+stops; a SPOKEN wake held in flight lands once when the ticket clears and is never journalled as
+held; a wait that runs dry journals why and books the one comeback as rule 27a does; a note whose
+substance the exchange covered while it waited is dropped by rule 27b's judge, journalled and
+ledgered, a SAY delivers, and a wait with nothing said never calls the judge),
 `tests/test_job_news_delivery.sh` (rule 27d: a spoken job return beside a live delivery-queue
 ticket, and one beside a recording in progress, each wait the gate out and reach the phone — the
 audio pointer, the conversation and the synthesiser all carrying the words, exactly once, only

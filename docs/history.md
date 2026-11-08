@@ -466,6 +466,22 @@ reached his ears as her words) and `crab remote` returns an `error` field instea
 
 ---
 
+### 2026-08-20 — the hot hold's retry was five minutes flat, and the moment was gone by then
+
+A quiet note that landed in a live conversation was held (wake-queue.md rule 27a) and re-booked
+itself five minutes out — that one booking was the whole of the retry, and a comeback was a fresh
+wake session re-deciding the note with the conversation in front of it. The user named the delay a
+bug in itself at 00:38 that night: by the time the note came back the moment it belonged to had
+gone, and in chess several plies had passed. The repair is rule 27g, the shape rule 27d had already
+proven for job news: the words are already in hand, so the retry is a poll — every gate re-read
+every two seconds in the process that holds them, delivery the moment the gates clear, no second
+generation — bounded by one budget because the wake lock is held open, yielding to an event wake
+standing in the urgent lane, ending at quiet hours, and asked rule 27b's question against what was
+said while it waited before the words go out. The queue re-book is now the fallback for a wait that
+ran dry, not the retry. In the same breath the user banned the excuse that had grown up beside the
+delay — "it fired but got held because you were talking to me" — which lives in the conduct file
+rather than here, because no regex holds a story-shape.
+
 ## Speech, display, and the never-silent guarantee
 
 TTS streams in parallel with generation — speech starts before the full response is ready. The

@@ -211,6 +211,19 @@ WHISPER_MODEL="/usr/share/whisper.cpp-model-small.en/ggml-small.en.bin"
 # WAKE_JOB_NEWS_POLL=2    # seconds between re-reads of the two gates
 # WAKE_JOB_NEWS_RETRY=300 # seconds out the news is re-booked after a dry wait
 
+# Optional: the seconds-scale retry on a held wake note (specs/wake-queue.md
+# rule 27g). A wake's words held for a turn in flight or a hot conversation
+# used to go straight back through the queue five minutes out, and came back
+# to a moment that had gone. They now wait in process, every gate re-read
+# together every WAKE_HOT_POLL seconds, and are delivered the moment the gates
+# clear — judged first against what was said while they waited. The wait is
+# one budget, WAKE_HOT_WAIT; a wait that runs dry, meets quiet hours or finds
+# another event wake waiting for the run lock falls back to the queue re-book
+# WAKE_HOT_RETRY seconds out. Set WAKE_HOT_WAIT=0 for the old flat re-book.
+# WAKE_HOT_WAIT=300  # seconds a held note waits in process for the moment to pass
+# WAKE_HOT_POLL=2    # seconds between re-reads of the gates
+# WAKE_HOT_RETRY=300 # seconds out the words are re-booked after a dry wait
+
 # Optional: seconds without life signs before an autonomous wake is presumed
 # hung and reaped (default: 300). There is no wall-clock limit on wakes — a
 # session counts as alive while it streams output OR its process tree burns

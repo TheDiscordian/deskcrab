@@ -233,11 +233,25 @@ TURN_INTERRUPT_PARTIAL_MAX="${TURN_INTERRUPT_PARTIAL_MAX:-16000}"
 # 2026-08-10 were the same failure: something arriving in a conversation that
 # had moved on without it. 0 disables both readings.
 CONVO_HOT_WINDOW="${CONVO_HOT_WINDOW:-120}"
-# A wake whose output was held for a hot conversation comes back through the
+# A held note's retry is seconds-scale, and it happens in this process
+# (specs/wake-queue.md rule 27g). The flat five-minute comeback below used to
+# be the whole retry: a quiet thought that landed in a live conversation
+# re-booked itself five minutes out, and by the time it came back the moment
+# it belonged to was gone — in chess several plies can pass (the user,
+# 2026-08-20). So the held words now WAIT here, every gate re-read together
+# every WAKE_HOT_POLL seconds, and go out the moment the gates clear: no
+# second generation, no re-firing, the words already in hand. The wait is one
+# bounded budget, WAKE_HOT_WAIT, because the wake lock is held open for the
+# life of this process; a wait that runs dry, meets quiet hours, or finds
+# another event wake standing in the urgent lane for the lock falls back to
+# the queue re-book below. 0 on WAKE_HOT_WAIT restores the flat re-book.
+WAKE_HOT_WAIT="${WAKE_HOT_WAIT:-300}"
+WAKE_HOT_POLL="${WAKE_HOT_POLL:-2}"
+# The fallback for a wait that ran dry: the held words go back through the
 # queue this far out — comfortably past CONVO_HOT_WINDOW, so the retry is not
-# a second interruption. It holds at most WAKE_HOT_HOLD_CAP notes at a time;
-# past that the oldest are drained, because a queue of held asides is itself a
-# storm waiting for a quiet minute.
+# a second interruption. The queue holds at most WAKE_HOT_HOLD_CAP notes at a
+# time; past that the oldest are drained, because a queue of held asides is
+# itself a storm waiting for a quiet minute.
 WAKE_HOT_RETRY="${WAKE_HOT_RETRY:-300}"
 WAKE_HOT_HOLD_CAP="${WAKE_HOT_HOLD_CAP:-3}"
 # The staleness gate on a held note's comeback (specs/wake-queue.md rule 27b).
@@ -7217,6 +7231,144 @@ wake_hold_for_heat() {  # <the held words>
     esac
 }
 
+# --- The seconds-scale retry (specs/wake-queue.md rule 27g) ----------------
+# Wait, in this process, for the moment to pass. The hold's retry used to be
+# the queue alone: the words went back as an event wake WAKE_HOT_RETRY out —
+# five minutes — and a quiet thought held in a live conversation came back to
+# a moment that had gone. The words are already in hand, so the retry is a
+# poll: every gate that can hold a note is re-read together every
+# WAKE_HOT_POLL seconds, and the wait returns 0 the moment they all answer
+# clear — the caller then delivers exactly as it would have with no hold at
+# all. Which gates: a turn of his in flight and the user busy, always; the
+# hot conversation only for output with no spoken half, because rule 27a
+# holds a NOTE for heat and a wake that chose to speak speaks whatever the
+# clock says. One deadline for the whole delivery, shared by every call in
+# this process, because the wake lock is held open until this process ends
+# and a note must not hold it indefinitely. Three things end the wait early,
+# each returning 1 with WAKE_HOT_DRY naming it, and the caller then falls
+# back to the queue re-book: quiet hours arriving (the night gate had its say
+# when delivery began and this wait must not talk past it); another event
+# wake standing in the urgent lane for the lock this process holds (rule 21b
+# promised it the next turn, and a note waiting for a quiet minute must not
+# keep a chess move or a message waiting); and the budget running out. The
+# wait announces itself on the speech log — entered, cleared, or ended and
+# why — because a delivery held here is a silence, and every silence explains
+# itself somewhere (specs/speech-output.md rule 53).
+wake_hot_moment() {  # <1 when the output has a spoken half, else 0>
+    local NOW SPEAKS="${1:-0}" f ep
+    WAKE_HOT_DRY=""
+    [ "${WAKE_HOT_WAIT:-0}" -gt 0 ] 2>/dev/null || {
+        WAKE_HOT_DRY="the in-process wait is off"; return 1; }
+    NOW="$(date +%s)"
+    WAKE_HOT_DEADLINE="${WAKE_HOT_DEADLINE:-$(( NOW + WAKE_HOT_WAIT ))}"
+    # Where the staleness read (wake_held_note_stale) begins: the EARLIER of
+    # this session's start and the start of any turn of his already in
+    # flight when the wait began — a turn's journal entry carries its own
+    # start, which can predate this session by the whole generation, and
+    # its reply is exactly the exchange most likely to cover the note.
+    if [ -z "${WAKE_HOT_CUT:-}" ]; then
+        WAKE_HOT_CUT="${SESSION_START:-$NOW}"
+        for f in "${TURN_ORDER_DIR:-/nonexistent}"/[0-9]*.ticket; do
+            [ -e "$f" ] || continue
+            _turn_ticket_alive "$f" || continue
+            ep="$(cut -f3 "$f" 2>/dev/null)"
+            case "$ep" in ''|*[!0-9]*) continue ;; esac
+            [ "$ep" -lt "$WAKE_HOT_CUT" ] && WAKE_HOT_CUT="$ep"
+        done
+    fi
+    speech_log "held note: delivery is waiting for the moment to pass (a turn in flight, the user mid-something, or the conversation hot)"
+    while _wake_hot_moment_closed "$SPEAKS"; do
+        if in_quiet_hours; then
+            WAKE_HOT_DRY="quiet hours arrived mid-wait"
+        elif wake_urgent_waiting; then
+            WAKE_HOT_DRY="another event wake is waiting for the run lock"
+        elif [ "$(date +%s)" -ge "$WAKE_HOT_DEADLINE" ]; then
+            WAKE_HOT_DRY="the moment outlasted the ${WAKE_HOT_WAIT}s wait"
+        fi
+        [ -z "$WAKE_HOT_DRY" ] || {
+            speech_log "held note: $WAKE_HOT_DRY — handing the words back to the queue"
+            return 1
+        }
+        sleep "$WAKE_HOT_POLL"
+    done
+    # The turn that just landed writes its journal entry after it releases
+    # its ticket (session_finish's order), and the staleness read wants that
+    # entry: one more poll lets it land before the record is read.
+    sleep "$WAKE_HOT_POLL"
+    speech_log "held note: the moment passed — delivering now"
+    return 0
+}
+
+_wake_hot_moment_closed() {  # <speaks>  -> 0 while some gate still holds the note
+    interactive_turn_in_flight && return 0
+    user_busy && return 0
+    [ "$1" = 1 ] && return 1
+    convo_hot
+}
+
+# Rule 27b's question, asked of a note that waited in THIS process. The
+# fire-time gate (wake_stale_note_drop) judges a comeback against what was
+# said since the hold stamp; a note that never left the process has no
+# comeback to judge — but the exchange that makes it stale can land in the
+# very minutes it waited: the 2026-08-15 shape compressed to seconds, and the
+# shape of a turn in flight whose reply answers the note's own news. Same
+# record, same judge, same discipline: nothing said since the cut and the
+# judge is never called; only a positive DROP retires the note — journalled,
+# ledgered and traced; a judge that fails delivers. One record is judged
+# once: a SAY stands until the record grows. Returns 0 only when the note was
+# dropped.
+wake_held_note_stale() {  # <the note>
+    [ "${WAKE_STALE_GATE:-1}" = "1" ] || return 1
+    local NOTE="$1" TURNS VERDICT WHY
+    TURNS="$(wake_turns_since "${WAKE_HOT_CUT:-${SESSION_START:-$(date +%s)}}")" || TURNS=""
+    if [ -z "$(printf '%s' "$TURNS" | tr -d '[:space:]')" ]; then
+        stale_check_log "nothing said while the note waited — the judge was never called"
+        return 1
+    fi
+    [ "$TURNS" != "${WAKE_HOT_JUDGED:-}" ] || return 1
+    WAKE_HOT_JUDGED="$TURNS"
+    if ! VERDICT="$(wake_stale_judge "$NOTE" "$TURNS")"; then
+        stale_check_log "the staleness judge failed or timed out — the note that waited is delivered rather than lost"
+        return 1
+    fi
+    case "$VERDICT" in
+        DROP*)
+            WHY="${VERDICT#DROP}"; WHY="${WHY#:}"; WHY="${WHY# }"
+            [ -n "$WHY" ] || WHY="the conversation since already covers it"
+            session_outcome "(stale — held note dropped unspoken; judged against what was said while it waited: $WHY) $NOTE"
+            wake_ledger dropped-stale "${WAKE_ID:-?}" "${WAKE_KIND:-event}" \
+                "$NOTE" stale-judge
+            stale_check_log "DROP, after the in-process wait: $WHY"
+            return 0 ;;
+        *)
+            stale_check_log "SAY — the note that waited still stands: ${VERDICT#SAY}"
+            return 1 ;;
+    esac
+}
+
+# One hold, two outcomes (rules 27a, 27c, 27g). Returns 0 when the words are
+# to be delivered NOW — the in-process wait cleared and the note still stands
+# — and 1 when this wake ends here: the note dropped as stale, re-booked
+# through the queue, or refused at the door, each journalled in those words.
+# The first argument is the gate's own wording for the journal line, kept
+# verbatim from before the wait existed so the record reads as it always has;
+# the rider is what the line carries after the parenthesis.
+wake_hold_words() {  # <why, for the journal> <the words> <the journal rider> <1 when spoken, else 0>
+    local WHY="$1" WORDS="$2" RIDER="$3" SPEAKS="${4:-0}"
+    if wake_hot_moment "$SPEAKS"; then
+        wake_held_note_stale "$WORDS" && return 1
+        return 0
+    fi
+    # The booking FIRST, the record after (rule 27a): the line may promise a
+    # comeback only when one stands.
+    if wake_hold_for_heat "$WORDS"; then
+        session_outcome "(held — $WHY; ${WAKE_HOT_DRY:-the wait ended}; coming back in $((WAKE_HOT_RETRY / 60))min) $RIDER"
+    else
+        session_outcome "(held — $WHY; ${WAKE_HOT_DRY:-the wait ended}; ${WAKE_HOLD_REFUSAL:-the comeback booking failed} — the note is in this journal only) $RIDER"
+    fi
+    return 1
+}
+
 # --- Job news through the delivery gates (specs/wake-queue.md rule 27d) -----
 # A detached job's completion wake is the job's ONLY channel back to him
 # (jobs.md rules 7 and 7c), and both busy-moment exits were measured losing it
@@ -7904,12 +8056,15 @@ run_claude_wake() {
     # proves the exchange already covered it. The work is not suppressed —
     # journal, audit and judges all ran above; only the delivery moves.
     elif interactive_turn_in_flight; then
-        if wake_hold_for_heat "${SPOKEN:-${SILENT_NOTE:-$DISPLAY_PART}}"; then
-            session_outcome "(held — a turn was in flight, nothing spoken and nothing shown; coming back in $((WAKE_HOT_RETRY / 60))min) ${SPOKEN:-${SILENT_NOTE:-${DISPLAY_PART:+a display section was built and held}}}"
-        else
-            session_outcome "(held — a turn was in flight; ${WAKE_HOLD_REFUSAL:-the comeback booking failed} — the note is in this journal only) ${SPOKEN:-${SILENT_NOTE:-${DISPLAY_PART:+a display section was built and held}}}"
-        fi
-        return 0
+        # Held WHOLE — but the retry is seconds, in this process (rule 27g):
+        # the words wait here for the ticket to clear and go out the moment
+        # it does, judged first against the exchange that landed meanwhile;
+        # the queue re-book is the fallback for a wait that ran dry.
+        wake_hold_words "a turn was in flight, nothing spoken and nothing shown" \
+            "${SPOKEN:-${SILENT_NOTE:-$DISPLAY_PART}}" \
+            "${SPOKEN:-${SILENT_NOTE:-${DISPLAY_PART:+a display section was built and held}}}" \
+            "$([ -n "$(printf '%s' "$SPOKEN" | tr -d '[:space:]')" ] && echo 1 || echo 0)" \
+            || return 0
     # The user is mid-something a wake must not interrupt: a recording, speech
     # in flight, or a meeting holding the mic. Same treatment, same reason — a
     # window over the meeting he is in is an interruption too. Checked here, at
@@ -7939,8 +8094,11 @@ run_claude_wake() {
     # loud, and that choice still stands whatever the clock says. What is held
     # is a note, and a note keeps.
     #
-    # Held, not dropped: the words go back through the queue's one door as an
-    # event wake past the heat, so she comes back to it in a quiet minute and
+    # Held, not dropped — and the retry is seconds, in this process (rule
+    # 27g): the words wait here for the heat to pass and go out the moment it
+    # does, judged first against what was said while they waited. Only a wait
+    # that ran dry hands them back through the queue's one door as an event
+    # wake past the heat, so she comes back to them in a quiet minute and
     # decides again with the conversation in front of her.
     if [ -z "$(printf '%s' "$SPOKEN" | tr -d '[:space:]')" ] && convo_hot; then
         # The booking FIRST, the record after — this line used to be written
@@ -7950,12 +8108,10 @@ run_claude_wake() {
         # the display section it built (clipped by the holder), because the
         # comeback wake's reason is the only place the words survive — the
         # literal words "a display section it built" hold nothing.
-        if wake_hold_for_heat "${SILENT_NOTE:-$DISPLAY_PART}"; then
-            session_outcome "(held — the conversation was hot, nothing shown; coming back in $((WAKE_HOT_RETRY / 60))min) ${SILENT_NOTE:-${DISPLAY_PART:+a display section was built and held}}"
-        else
-            session_outcome "(held — the conversation was hot, nothing shown; ${WAKE_HOLD_REFUSAL:-the comeback booking failed} — the note is in this journal only) ${SILENT_NOTE:-${DISPLAY_PART:+a display section was built and held}}"
-        fi
-        return 0
+        wake_hold_words "the conversation was hot, nothing shown" \
+            "${SILENT_NOTE:-$DISPLAY_PART}" \
+            "${SILENT_NOTE:-${DISPLAY_PART:+a display section was built and held}}" 0 \
+            || return 0
     fi
 
     # No echo-window mute here any more: a wake that fired beside an
